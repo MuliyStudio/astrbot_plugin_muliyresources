@@ -1,0 +1,8 @@
+# 缓存
+__pycache__/
+*.pyc
+.DS_Store
+
+# 调试日志
+qr_debug_logs/
+*.log

@@ -1,0 +1,380 @@
+<p align="center">
+  <img src="assets/logo.png" width="360" alt="暮黎 Muliy Logo">
+</p>
+
+<h1 align="center">暮黎资源聚合</h1>
+
+<p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 影视(双源) / 游戏 / 软件搜索 · 软件日报 · 网易云语音名片 · VIP 解析 · 摸头/舔狗/按摩表情包</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.10.2-2B7FD8" alt="version 1.10.2">
+  <img src="https://img.shields.io/badge/AstrBot-v3.4%2B-F4D758" alt="AstrBot v4.20+">
+  <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
+</p>
+
+---
+
+> ⚠️ **免责声明**
+>
+> 本插件由各路 AI 制作，仅用于内部测试和学习交流，**切勿用于商业用途**。禁止盗卖、转载，侵权必删。
+> 交流群：**1084453386**，可体验完整功能。
+
+---
+
+## 功能一览
+
+| 模块 | 功能 | 说明 |
+|------|------|------|
+| 🎬 | **影视搜索（双源）** | a123tv 旧站（免登录）与教父.com 新站（需登录，含在线播放 + 网盘双模式）按账号自动切换；剧集自动选集数、电影直接选播放线路 |
+| 🌐 | **教父.com 新站影视源** | 配置 `muliy_username` / `muliy_password` 即启用；自动探测最低延迟节点（PoW + 登录态缓存），含网盘资源多网盘下载；未配置则回退 a123tv 旧站 |
+| 🎮 | **游戏搜索** | 在 xdgame.com 搜索游戏，支持多网盘下载链接 |
+| 💿 | **软件搜索** | 在 x6d.com 搜索软件 / 应用 / 工具资源 |
+| 🔍 | **统一搜索** | LLM 自动判断资源类型，跨库一次搜完 |
+| 📰 | **软件日报** | 每日定时推送最新软件到群聊（可生成图片 + ZIP） |
+| 🔐 | **Cookie 刷新** | 纯 HTTP 自动登录 xdgame，零浏览器依赖 |
+| 🎵 | **网易云语音名片** | 发送网易云链接 / 小程序分享，自动解析为 mp3 并以 QQ 语音发送「歌曲中间三分之一」片段 |
+| 🎵 | **网易云扫码登录** | 管理员发送 `/wyy_login` 获取登录二维码，网易云 App 扫码确认后自动提取会员 Cookie 写入 `wyy_cookie`（需 `wyy_custom_url` 后端在线） |
+| 🎞️ | **VIP 视频解析（交互式选接口）** | 支持爱奇艺/腾讯/优酷/芒果等 VIP 视频链接解析 |
+| 🤚 | **娱乐功能** | 发送 `摸摸 @某人`，自动生成并发送摸头 GIF 动图（圆形头像） <br> 发送 `给你一脚 @某人`，生成「马踢舔狗」GIF，被@成员为舔狗、发送者为踢人者（头像优先） <br> 发送 `给我按摩 @某人`，生成柴犬按摩 GIF，被@成员为被按摩者、发送者为按摩者（头像优先） |
+
+---
+
+## 快速开始
+
+### 方式一：AstrBot 插件市场（推荐）
+
+1. 打开 AstrBot WebUI → **插件管理**
+2. 搜索「暮黎资源聚合」→ 点击安装
+3. 在插件配置中填写 `xdgame_username` / `xdgame_password`（用于自动刷新游戏 Cookie；影视搜索无需配置）
+
+### 方式二：手动安装
+
+```bash
+# 克隆到 AstrBot 插件目录
+cd <astrbot>/data/plugins/
+git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
+
+# 重启 AstrBot
+```
+
+---
+
+## 配置说明
+
+在 AstrBot WebUI 插件设置中填写：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `cookie` | string | `""` | xdgame.com Cookie（可用命令自动刷新） |
+| `xdgame_username` | string | `""` | xdgame 账号（用于 game_cookie_refresh） |
+| `xdgame_password` | string | `""` | xdgame 密码 |
+| `max_search_results` | int | `32` | 最大搜索结果数（1–48） |
+| `schedule_hour` | int | `10` | 软件日报推送时间（时，UTC+8） |
+| `schedule_minute` | int | `0` | 软件日报推送时间（分） |
+| `group_ids` | string | `""` | 推送群号，逗号分隔，留空则不推送 |
+| `report_retention_days` | int | `5` | 日报 ZIP 保留天数 |
+| `wyy_auto_parse` | bool | `true` | 网易云语音名片：自动识别消息中的网易云链接 / 小程序卡片并解析 |
+| `wyy_music_type` | string | `standard` | 解析音质（传递给自建 NeteaseCloudMusicApi 的 `/song/url?level=`）：`standard` / `exhigh` / `lossless` / `hires` / `jyeffect` / `sky` / `jymaster` |
+| `wyy_custom_url` | string | `""` | **网易云解析后端地址（自建 NeteaseCloudMusicApi 实例地址，唯一后端）**。推荐填基础地址如 `http://127.0.0.1:3000`（自动取歌名/歌手）；也可填 `{id}` 模板。留空则网易云语音名片功能不可用 |
+| `wyy_cookie` | string | `""` | 黑胶会员 Cookie（用于解析 **VIP/付费歌曲**）。留空仅能解析免费歌；填黑胶会员账号 Cookie 整串（含 `MUSIC_U` 与 `__csrf`）即可解析 VIP 歌曲（`standard`/`exhigh`/`lossless` 需黑胶会员，`sky`/`jymaster` 需超级会员）。⚠️ 敏感凭证，建议用专用会员小号，勿外泄 |
+| `wyy_clip_seconds` | int | `600` | 语音最大时长上限（秒，默认 600 = 10 分钟）。中间三分之一超过该值则截断到该时长 |
+| `wyy_clip_start_ratio` | float | `0.33` | **（已废弃，v1.9.4 起不再生效）** 原用于指定高潮片段起点，现固定取歌曲中间三分之一 |
+| `wyy_audio_format` | string | `mp3` | 语音格式：`mp3`（QQ 兼容性好）或 `wav` |
+| `video_vip_parse` | bool | `true` | VIP 视频解析：消息里出现受支持的 VIP 视频链接（爱奇艺/腾讯/优酷/芒果/bilibili 等，含爱奇艺分享卡片 `playShare.html?shareId=`）会被自动识别，提取影视信息并展示解析接口菜单 |
+| `video_vip_timeout` | int | `25000` | 单个解析接口超时（毫秒，建议 8000–60000） |
+| `video_vip_browser_channel` | string | `""` | Playwright 浏览器 channel（如 `chrome`）；留空用插件自带 Chromium |
+| `muliy_username` | string | `""` | **教父.com 新站**账号（启用新站影视源必需）。配置了账号密码 → 影视搜索走新站（含网盘资源）；否则回退 a123tv 旧站 |
+| `muliy_password` | string | `""` | **教父.com 新站**密码 |
+| `muliy_cache_ttl` | int | `3600` | 新站登录态 / 域名探测结果缓存秒数（默认 1 小时） |
+
+---
+
+## 命令列表
+
+| 命令 | 权限 | 说明 |
+|------|------|------|
+| `/找游戏 <名称>` | 所有人 | 在 xdgame.com 搜索游戏（需要登陆） |
+| `/找软件 <名称>` | 所有人 | 在 x6d.com 搜索软件 |
+| `/找影视 <名称>` | 所有人 | 在 a123tv.com 搜索影视（无需登录） |
+| `/movie_status` | 所有人 | 检查 a123tv.com 站点可达性 |
+| `/game_cookie_refresh` | 仅持有者 | 纯 HTTP 自动登录 xdgame，刷新 Cookie |
+| `/game_cookie` | 所有人 | 检测 Cookie 状态（有效 / 失效 / 次数用尽） |
+| `/software_report` | 可配置 | 手动触发当日软件日报 |
+| `/wyy <链接或ID>` | 所有人 | 解析网易云歌曲为 QQ 语音名片（手动触发，支持短链自动展开） |
+| `/wyy_login` | 管理员 | 获取网易云登录二维码，App 扫码确认后自动把会员 Cookie 写入 `wyy_cookie`（依赖 `wyy_custom_url` 后端在线） |
+
+> 开启 LLM 后，以上功能均可通过自然语言触发（搜索由 LLM 工具接管，无需记忆命令）。
+> 网易云语音名片在 `wyy_auto_parse=true` 时**无需命令**，直接发链接 / 小程序卡片即自动解析。
+> **VIP 视频解析**同样无需命令：直接把爱奇艺/腾讯/优酷/芒果等 VIP 视频链接（或爱奇艺分享卡片）发到对话里，插件会自动提取影视信息、把分享卡片转为纯净播放页，并展示「解析接口」菜单让你回序号挑选；选中后返回「聊天记录格式」结果（标题+简介+截图+直链）。
+
+---
+
+### 表情包触发（无需 @机器人，直接发消息即可）
+
+| 表情 | 触发词 | 说明 |
+|------|--------|------|
+| 🤚 摸头杀 | `摸摸` / `摸头` / `摸摸头` / `pat` / `rua` + `@某人` | 摸 @到的人的头；无 @ 时摸自己；多 @ 逐个生成 |
+| 🐴 舔狗（给你一脚） | `给你一脚` / `一脚` / `踹` / `踢` / `kick` + `@某人` | 生成「马踢舔狗」GIF；被 @ 为舔狗，发送者为踢人者 |
+| 💆 按摩 | `给我按摩` / `给我揉揉` + `@某人` | 生成柴犬按摩 GIF；被 @ 为被按摩者，发送者为按摩者 |
+
+> 三个表情均 **priority=2 事件监听**，无需唤醒机器人；头像优先用成员圆形头像（QQ 平台自动拉取，其它平台回退文字）；无 @ 时对自己使用，多 @ 只处理第一个。
+
+---
+
+## LLM 工具链
+
+连接 LLM 后，插件自动注册以下工具：
+
+| 工具名 | 触发场景 | 行为 |
+|--------|----------|------|
+| `search_resource` | 资源类型不确定时 | 同时搜索游戏库 + 软件库，返回合并列表 |
+| `search_game` | 明确要游戏 | 仅搜索 xdgame.com |
+| `search_software` | 明确要软件 | 仅搜索 x6d.com |
+| `search_movie` | 明确要影视（关键词：影视/电影/剧/追剧） | 搜索 a123tv.com，自动判断剧/电影并引导选择 |
+| `paginate_results` | 说「下一页」等 | 翻页（支持影视列表） |
+| `select_search_result` | 回复数字（1、2…） | 获取详情 + 下载链接 |
+
+> **影视特殊说明**：a123tv.com 只有「在线播放」（切换采集源）一种资源类型，无网盘。
+> 用户选影视 → 自动识别剧 → 剧先选集数再选线路，电影直接选线路。
+> 严禁对影视调用 `select_download_link`（会被插件拒绝）。
+
+> **关键词智能清洗**：工具会自动去掉「游戏」「软件」等统称后缀，只保留具体名称搜索。例如「赛车游戏」→「赛车」，「微信软件」→「微信」。
+
+---
+
+## 交互示例
+
+### 有 LLM
+
+```
+用户: @机器人 "帮我找赛车游戏"
+  ↓ LLM 调用 search_resource("赛车")
+  ↓ 返回游戏列表（含序号）
+用户: "1"
+  ↓ LLM 调用 select_search_result("1")
+  ↓ 返回详情 + 多网盘下载选项
+用户: "百度网盘"
+  ↓ LLM 调用 select_download_link("百度网盘")
+  ↓ 发送合并转发
+完成
+```
+
+### 无 LLM（命令式）
+
+```
+用户: /找游戏 死亡搁浅
+  ↓ 机器人返回搜索结果列表
+用户: 1        → 显示详情 + 下载链接
+用户: 下一页   → 翻页
+用户: 0        → 取消
+```
+
+### 影视搜索示例
+
+```
+用户: /找影视 怪物
+  ↓ 机器人返回影视列表（含 emoji 序号 1⃣2⃣3⃣…，超过 9 个回落 [n]）
+用户: 5        → 机器人识别是剧 → 自动列集数「[1] 第1集 [2] 第2集 …」
+用户: 3        → 列播放线路「[1] HD中字 · 720p [2] 更新 · 1080p …」
+用户: 2        → 合并转发（🎬 怪物 第3集 + 📡 线路 + 📖 简介 + 🔗 链接 + 封面图）
+
+注：电影自动跳过集数步骤，直接显示播放线路。
+```
+
+### 网易云语音名片示例
+
+```
+# 自动模式（wyy_auto_parse=true，默认开启）
+用户: https://music.163.com/song?id=1861173563
+  ↓ 机器人识别为网易云链接 → 解析 → 下载 → ffmpeg 截取中间片段
+  ↓ 发送语音 + 名片文本
+🎵 《XXX》
+👤 歌手
+💽 专辑
+🎤 已发送语音（第 80–160 秒 · 中间片段）
+
+# 小程序分享卡片（QQ 转发的网易云卡片）同样自动识别
+
+# 命令模式
+用户: /wyy https://music.163.com/song?id=1861173563
+  ↓ 同上
+```
+
+---
+
+## 教父.com 新站影视源（双源自动切换）
+
+影视搜索支持**两个源**，由是否配置教父.com 账号密码自动切换，**无需手动配置**：
+
+- **已配置 `muliy_username` / `muliy_password`** → 走**教父.com 新站**：
+  - 需登录（PoW 工作量证明 + 账号登录态，登录态缓存复用）
+  - 自动从挂了 `.com` 的候选域名中探测**最低延迟可用节点**
+  - 资源含**在线播放（多节点）** 与 **网盘资源（多网盘）** 双模式：选影视 → 选资源类型 → 选节点 / 网盘 → 合并转发（标题 + 封面 + 简介 + 链接）
+- **未配置账号密码** → 自动回退 **a123tv 旧站**（无需登录，仅在线播放切换线路）
+
+> 旧站（a123tv）只有在线播放一种资源类型、无网盘；新站额外提供网盘下载。想强制只用旧站可在配置里把 `movie_source` 显式填 `a123tv`。
+
+---
+
+## Cookie 刷新（纯 HTTP）
+
+xdgame.com Cookie 有效期约 30 天，过期后执行 `/game_cookie_refresh` 自动刷新：
+
+1. 机器人通过 HTTP 请求自动登录 xdgame（无需浏览器）
+2. 若有验证码，机器人将验证码图片发到群里
+3. 你在群里发送看到的字符，机器人自动提交
+4. 登录成功后 Cookie 自动保存到配置
+
+**技术实现**：
+
+- `POST /user/index_do.php` — dede 标准表单登录，服务器返回纯文本（`success` 或错误信息）
+- `GET /include/vdimgck.php` — 验证码图片（与登录表单共享 `server_session` 会话 Cookie）
+- 全程零浏览器，httpx / aiohttp 异步 HTTP，无 Playwright 依赖
+
+---
+
+## 技术架构
+
+```
+┌─────────────────────────────────────────────────┐
+│                  AstrBot Core                     │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────┐  │
+│  │filter.command│  │filter.llm_tool│  │Session │  │
+│  └──────┬──────┘  └──────┬───────┘  │Manager │  │
+│         │                │           └───┬────┘  │
+└─────────┼────────────────┼───────────────┼───────┘
+          │                │               │
+          ▼                ▼               ▼
+   ┌────────────┐   ┌─────────────────┐ ┌──────────┐
+   │ cmd_xxx    │   │ llm_search_xxx │ │session.py│
+   └─────┬──────┘   └────────┬────────┘ └──────────┘
+         │                  │
+         └────────┬─────────┘
+                  ▼
+         ┌───────────────────┐
+         │       core/         │
+         │  game.py  ← httpx / aiohttp   ← xdgame.com
+         │ software.py ← httpx            ← x6d.com
+         │ qr_login.py ← httpx / aiohttp ← xdgame.com
+         │ netease.py ← 网易云解析（自建 NeteaseCloudMusicApi 后端）
+         │ audio_clip.py ← ffmpeg 截取中间片段
+         │ constants.py ← 关键词清洗
+         └───────────────────┘
+```
+
+- **HTTP**：httpx（优先）/ aiohttp（AstrBot 内置）异步请求，双引擎自动切换
+- **会话管理**：`SessionManager` / `SearchSessionManager`（超时自动清理，默认 120s）
+- **调度**：APScheduler 定时推送软件日报
+- **图片生成**：Pillow 自定义排版（软件日报图片）
+
+---
+
+## 文件结构
+
+```
+astrbot_plugin_muliyresources/
+├── main.py                  # 命令处理器 / LLM 工具注册
+├── metadata.yaml            # 插件元数据
+├── README.md                # 本文档
+├── CHANGELOG.md             # 更新日志
+├── assets/                  # 图片资源
+│   ├── logo.png             # 暮黎 Logo
+│   ├── qq_group_qrcode.jpg  # 交流群二维码
+│   ├── petpet/              # 摸头杀模板（pet0~9.gif，128×128 10帧）
+│   ├── doutu/               # 按摩表情模板（template.gif）
+│   └── lickdog/             # 舔狗表情模板 + Noto Sans SC 字体（font.otf）
+├── core/                    # 核心模块
+│   ├── __init__.py
+│   ├── constants.py         # 常量 / 关键词清洗 / emoji 序号
+│   ├── session.py           # 会话管理器
+│   ├── game.py              # 游戏搜索 (xdgame.com)
+│   ├── software.py          # 软件搜索 (x6d.com)
+│   ├── muliy_site.py        # 教父.com 新站影视源客户端（自动探测节点）
+│   ├── qr_login.py          # Cookie 刷新（纯 HTTP）
+│   ├── netease.py           # 网易云解析（自建 NeteaseCloudMusicApi 后端）
+│   ├── audio_clip.py        # ffmpeg 截取中间片段
+│   ├── doutu_common.py      # 表情包通用引擎（字体/圆形头像/文字+头像叠加）
+│   ├── petpet.py            # 摸头杀生成
+│   ├── lickdog.py           # 舔狗（给你一脚）生成（薄包装）
+│   └── massage.py           # 按摩表情生成（薄包装）
+├── tools/                   # 工具脚本
+│   └── check_netease_api.py # 自建 NeteaseCloudMusicApi 后端可用性自测
+└── qr_debug_logs/           # 调试日志（自动生成）
+```
+
+---
+
+## 常见问题
+
+### 提示「Cookie 已失效」
+
+执行 `/game_cookie_refresh`，按提示输入验证码，Cookie 自动刷新。
+
+### 软件日报没推送
+
+1. 检查 `group_ids` 是否配置了正确的群号
+2. 确认 `schedule_hour` / `schedule_minute` 时区为 UTC+8
+3. 查看 AstrBot 主日志排查调度问题
+
+### LLM 不调用工具
+
+确认 AstrBot 已配置 LLM 提供商且已开启工具调用功能。
+
+### 刷新 Cookie 时报错
+
+- **「无法访问登录页」**：检查 AstrBot 网络能否访问 `www.xdgame.com`
+- **「验证码图异常」**：可能是网络波动，重试一次通常能解决
+- **「登录失败」**：检查 `xdgame_username` / `xdgame_password` 是否正确
+
+### 网易云语音名片没反应 / 解析失败
+
+1. **确认消息被识别**：发的是 `music.163.com` 链接或 QQ 转发的网易云小程序卡片；纯文字歌名不会触发。
+2. **确认开关**：`wyy_auto_parse=true` 才会自动解析；否则用 `/wyy <链接或ID>` 手动触发。
+3. **解析失败（返回「解析失败」）**：失败提示会**直接带出具体原因**（如 `custom /song/url 请求失败…实例地址不可达`、`custom /song/detail 请求失败…`），按提示排查即可。网易云语音名片仅依赖自建 NeteaseCloudMusicApi（`wyy_custom_url`），请确认该地址可达。
+   - 确认 `wyy_custom_url` 已填写且实例在线：`curl http://127.0.0.1:3000/song/url?id=28921655`（应返回 JSON）。
+   - 实例部署见下方「自建网易云解析后端」章节（docker compose 一键起）。
+4. **发的是完整歌曲而不是中间片段**：服务器没装 ffmpeg。安装 ffmpeg 后插件会自动截取中间片段；未装则退化为发送完整音频。
+5. **提示「不支持语音组件」**：当前 AstrBot / OneBot 实现不支持 `Record`，插件会自动改为发送文件。
+
+### 自建网易云解析后端（必须）
+
+网易云语音名片仅依赖你自建的 NeteaseCloudMusicApi 实例，插件通过「服务器直连」调用它，因此**必须自建 NeteaseCloudMusicApi**（公共解析站 wyapi / qzxdp 对服务器 IP 普遍返回 404 拦截，已于 v1.9.3 移除）：
+
+```bash
+# 1) 安装 Docker 后，进入插件目录执行：
+cd tools/netease-api
+docker compose up -d --build
+
+# 2) 确认在线（应返回 JSON）：
+curl http://127.0.0.1:3000/song/url?id=28921655
+
+# 3) 插件配置：
+wyy_custom_url = http://127.0.0.1:3000      # 同机；跨机/跨容器用 http://<局域网IP>:3000
+```
+
+自建实例始终使用网易云最新密钥，不受第三方 WAF 影响，且能完整返回歌名 / 歌手 / 专辑。
+
+---
+
+## 交流群
+
+<p align="center">
+  <img src="assets/qq_group_qrcode.jpg" width="280" alt="暮黎交流群二维码">
+</p>
+
+<p align="center">
+  <strong>QQ 群：1084453386</strong><br>
+  扫码或搜索群号加入，可体验完整功能，欢迎反馈问题与交流。
+</p>
+
+---
+
+## 更新日志
+
+详见 [CHANGELOG.md](./CHANGELOG.md)
+
+---
+
+## 许可证
+
+MIT License © 2026 暮黎 Muliy

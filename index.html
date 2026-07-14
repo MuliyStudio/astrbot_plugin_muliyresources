@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>暮黎资源聚合 · AstrBot 全能资源插件</title>
+<style>
+  :root{
+    --bg:#0b0f1a; --bg2:#0f1626; --card:rgba(255,255,255,.04);
+    --line:rgba(255,255,255,.08); --text:#e8edf7; --muted:#9aa6bf;
+    --brand:#5b8cff; --brand2:#22d3ee; --accent:#a855f7; --ok:#34d399;
+    --radius:18px; --maxw:1120px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    background:radial-gradient(1200px 600px at 15% -10%,rgba(91,140,255,.18),transparent 60%),
+               radial-gradient(1000px 500px at 100% 0%,rgba(168,85,247,.14),transparent 55%),
+               var(--bg);
+    color:var(--text); line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+  /* nav */
+  nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(12px);
+      background:rgba(11,15,26,.65);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+  .brand .dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--accent));box-shadow:0 0 16px var(--brand)}
+  .nav-links{display:flex;gap:22px;font-size:14px;color:var(--muted)}
+  .nav-links a:hover{color:var(--text)}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;
+       font-weight:600;font-size:14px;transition:.2s;border:1px solid var(--line)}
+  .btn.primary{background:linear-gradient(135deg,var(--brand),var(--accent));border:none;color:#fff;
+       box-shadow:0 8px 30px rgba(91,140,255,.35)}
+  .btn.primary:hover{transform:translateY(-1px);box-shadow:0 12px 36px rgba(91,140,255,.5)}
+  .btn.ghost:hover{background:var(--card)}
+  /* hero */
+  header{padding:84px 0 56px;text-align:center}
+  .badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:22px}
+  .badge{font-size:12px;padding:5px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);
+         background:var(--card)}
+  .badge b{color:var(--text)}
+  h1{font-size:clamp(34px,6vw,58px);line-height:1.1;font-weight:800;letter-spacing:-.5px}
+  h1 .grad{background:linear-gradient(120deg,var(--brand),var(--brand2) 45%,var(--accent));
+           -webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--muted);font-size:18px;max-width:680px;margin:18px auto 0}
+  .cta{display:flex;gap:14px;justify-content:center;margin-top:32px;flex-wrap:wrap}
+  /* section */
+  section{padding:54px 0}
+  .sec-head{text-align:center;margin-bottom:36px}
+  .sec-head h2{font-size:30px;font-weight:800}
+  .sec-head p{color:var(--muted);margin-top:8px}
+  /* bento */
+  .bento{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+        padding:22px;position:relative;overflow:hidden;transition:.2s}
+  .card:hover{border-color:rgba(91,140,255,.5);transform:translateY(-2px)}
+  .card .ico{font-size:26px;margin-bottom:10px}
+  .card h3{font-size:17px;margin-bottom:6px}
+  .card p{color:var(--muted);font-size:14px}
+  .col-3{grid-column:span 4}.col-4{grid-column:span 3}.col-6{grid-column:span 6}.col-12{grid-column:span 12}
+  .card.featured{background:linear-gradient(135deg,rgba(91,140,255,.16),rgba(168,85,247,.12));
+        border-color:rgba(91,140,255,.4)}
+  .tag{display:inline-block;font-size:11px;color:var(--brand2);border:1px solid rgba(34,211,238,.3);
+       padding:2px 8px;border-radius:999px;margin-top:10px}
+  /* expressions */
+  .expr{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .expr .card{text-align:center}
+  .expr .trig{margin-top:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+        font-size:13px;color:var(--brand2);background:rgba(34,211,238,.08);
+        border:1px solid rgba(34,211,238,.2);border-radius:10px;padding:8px}
+  /* install */
+  .install{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .code{background:#0a0e18;border:1px solid var(--line);border-radius:14px;padding:18px;
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+        color:#cdd6e8;overflow:auto}
+  .code .c{color:#5b6b8c}
+  /* footer */
+  footer{border-top:1px solid var(--line);padding:48px 0 60px;text-align:center;color:var(--muted);font-size:14px}
+  .qr{width:180px;border-radius:14px;margin:18px auto;display:block;border:1px solid var(--line)}
+  .disc{font-size:12px;color:#6b7691;max-width:620px;margin:18px auto 0}
+  @media(max-width:860px){
+    .col-3,.col-4{grid-column:span 6}.col-6{grid-column:span 12}
+    .expr,.install{grid-template-columns:1fr}
+    .nav-links{display:none}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <div class="brand"><span class="dot"></span> 暮黎资源聚合</div>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#expr">表情包</a>
+      <a href="#site">新站影视</a>
+      <a href="#install">安装</a>
+    </div>
+    <a class="btn primary" href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources" target="_blank" rel="noopener">GitHub ★</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="badges">
+      <span class="badge">版本 <b>v1.10.1</b></span>
+      <span class="badge">适配 <b>AstrBot v3.4+</b></span>
+      <span class="badge">协议 <b>MIT</b></span>
+      <span class="badge">支持 <b>QQ / TG / Discord</b></span>
+    </div>
+    <h1>暮黎资源聚合<br><span class="grad">AstrBot 全能资源插件</span></h1>
+    <p class="sub">影视（双源）· 游戏 · 软件搜索 · 软件日报 · 网易云语音名片 · VIP 视频解析 · 摸头 / 舔狗 / 按摩表情包 —— 一句话搞定群友要的资源。</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources" target="_blank" rel="noopener">⭐ 前往 GitHub</a>
+      <a class="btn ghost" href="#install">📦 安装插件</a>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>核心功能</h2>
+      <p>开箱即用的资源聚合能力，全部支持 LLM 自然语言触发</p>
+    </div>
+    <div class="bento">
+      <div class="card col-6 featured">
+        <div class="ico">🎬</div>
+        <h3>影视搜索（双源自动切换）</h3>
+        <p>配置了教父.com 新站账号即走新站（含在线播放 + 网盘双模式），未配置则回退 a123tv 旧站（免登录）。剧集自动选集数、电影直接选线路。</p>
+        <span class="tag">双源 · PoW 登录态缓存 · 自动探测最快节点</span>
+      </div>
+      <div class="card col-6">
+        <div class="ico">🌐</div>
+        <h3>教父.com 新站影视源</h3>
+        <p>配置 muliy_username / muliy_password 启用，自动从候选域名探测最低延迟节点，额外提供网盘下载资源。</p>
+        <span class="tag">需登录 · 网盘 + 在线播放</span>
+      </div>
+      <div class="card col-4">
+        <div class="ico">🎮</div>
+        <h3>游戏搜索</h3>
+        <p>xdgame.com 源，多网盘下载链接，交互式翻页选择。</p>
+      </div>
+      <div class="card col-4">
+        <div class="ico">💿</div>
+        <h3>软件搜索</h3>
+        <p>x6d.com 源，软件 / 应用 / 工具资源一站搜。</p>
+      </div>
+      <div class="card col-4">
+        <div class="ico">🔍</div>
+        <h3>统一搜索</h3>
+        <p>LLM 自动判断资源类型，游戏 / 软件跨库一次搜完。</p>
+      </div>
+      <div class="card col-3">
+        <div class="ico">📰</div>
+        <h3>软件日报</h3>
+        <p>每日定时推送最新软件到群聊，可生成图片 + ZIP。</p>
+      </div>
+      <div class="card col-3">
+        <div class="ico">🔐</div>
+        <h3>Cookie 刷新</h3>
+        <p>纯 HTTP 自动登录 xdgame，零浏览器依赖。</p>
+      </div>
+      <div class="card col-3">
+        <div class="ico">🎵</div>
+        <h3>网易云语音名片</h3>
+        <p>链接 / 小程序自动解析为 QQ 语音「中间三分之一」片段。</p>
+      </div>
+      <div class="card col-3">
+        <div class="ico">🎞️</div>
+        <h3>VIP 视频解析</h3>
+        <p>爱奇艺 / 腾讯 / 优酷 / 芒果等，交互式选接口 + 截图。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="expr" style="background:linear-gradient(180deg,transparent,rgba(91,140,255,.05),transparent)">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>表情包三连</h2>
+      <p>无需 @机器人，直接发消息即可触发，头像优先用成员圆形头像</p>
+    </div>
+    <div class="expr">
+      <div class="card">
+        <div class="ico">🤚</div>
+        <h3>摸头杀 PetPet</h3>
+        <p>摸 @到的人的头；无 @ 摸自己，多 @ 逐个生成。</p>
+        <div class="trig">摸摸 / 摸头 / 摸摸头 / pat / rua @某人</div>
+      </div>
+      <div class="card">
+        <div class="ico">🐴</div>
+        <h3>舔狗（给你一脚）</h3>
+        <p>生成「马踢舔狗」GIF，被 @ 为舔狗，发送者为踢人者。</p>
+        <div class="trig">给你一脚 / 一脚 / 踹 / 踢 / kick @某人</div>
+      </div>
+      <div class="card">
+        <div class="ico">💆</div>
+        <h3>按摩</h3>
+        <p>生成柴犬按摩 GIF，被 @ 为被按摩者，发送者为按摩者。</p>
+        <div class="trig">给我按摩 / 给我揉揉 @某人</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="site">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>教父.com 新站影视源</h2>
+      <p>双源自动切换，登录即享网盘资源</p>
+    </div>
+    <div class="bento">
+      <div class="card col-6">
+        <div class="ico">✅</div>
+        <h3>已配置账号密码</h3>
+        <p>走教父.com 新站：需登录（PoW + 登录态缓存），自动探测最低延迟节点；资源含在线播放（多节点）与网盘资源（多网盘）双模式。</p>
+      </div>
+      <div class="card col-6">
+        <div class="ico">↩️</div>
+        <h3>未配置账号密码</h3>
+        <p>自动回退 a123tv 旧站：无需登录，仅在线播放切换线路。想强制旧站可在配置里把 movie_source 显式填 a123tv。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>安装方式</h2>
+      <p>两种方式任选其一</p>
+    </div>
+    <div class="install">
+      <div class="card">
+        <h3>① 插件市场（推荐）</h3>
+        <p style="margin-bottom:14px">打开 AstrBot WebUI → 插件管理，搜索「暮黎资源聚合」点击安装，按需填写配置即可。</p>
+        <div class="code"><span class="c"># 需填写的配置</span>
+xdgame_username / xdgame_password   <span class="c"># 游戏 Cookie 刷新</span>
+muliy_username / muliy_password     <span class="c"># 教父.com 新站影视源（可选）</span>
+wyy_custom_url                      <span class="c"># 网易云解析后端（必填才可用）</span></div>
+      </div>
+      <div class="card">
+        <h3>② 手动安装</h3>
+        <p style="margin-bottom:14px">克隆到 AstrBot 插件目录后重启。</p>
+        <div class="code">cd &lt;astrbot&gt;/data/plugins/
+git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
+<span class="c"># 重启 AstrBot</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <img class="qr" src="assets/qq_group_qrcode.jpg" alt="暮黎交流群二维码">
+    <div><strong>QQ 交流群：1084453386</strong></div>
+    <p style="margin-top:6px">扫码或搜索群号加入，可体验完整功能，欢迎反馈问题与交流。</p>
+    <p class="disc">⚠️ 免责声明：本插件由各路 AI 制作，仅用于内部测试和学习交流，切勿用于商业用途。禁止盗卖、转载，侵权必删。</p>
+    <p style="margin-top:18px">MIT License © 2026 暮黎 Muliy · <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources" target="_blank" rel="noopener" style="color:var(--brand2)">GitHub</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
