@@ -103,7 +103,7 @@ from .core.netease import (
     normalize_api_base, qr_login_key, qr_login_create, qr_login_check,
     qrimg_to_bytes, extract_music_cookie, get_login_nickname,
 )
-from .core.audio_clip import ffmpeg_available, get_duration_seconds, compute_middle_third_range, cut_clip
+from .core.audio_clip import ffmpeg_available, get_duration_seconds, compute_clip_range, cut_clip
 from .core.vip_capture import (
     is_vip_video_url, analyze_vip_link, build_interface_link,
     verify_interface_playable, VIP_INTERFACES,
@@ -191,20 +191,28 @@ class MuliyResourcesPlugin(Star):
 
     async def initialize(self):
         logger.info("暮黎资源聚合插件初始化")
-        # issue4 兜底：本地配置文件恢复（防止 AstrBot 配置未落盘 / 重装覆盖导致 Cookie 丢失）
+        # issue4 兜底：本地配置文件恢复（防止 AstrBot 配置未落盘 / 卸载重装导致 Cookie 等数据丢失）
+        # 关键：本地兜底文件位于插件目录【之外】的 AStrBot data 目录，卸载/覆盖重装插件目录不会删它；
+        # 只要卸载时不勾选「同时删除插件配置文件」，这里就能把数据永久找回。
         try:
             saved = self._load_config_file()
             if saved and isinstance(saved, dict):
                 cfg = self._get_config()
                 if isinstance(cfg, dict):
-                    restored = False
-                    for k in ("cookie", "switch618_cookie"):
-                        if not cfg.get(k) and saved.get(k):
-                            cfg[k] = saved[k]
-                            restored = True
-                            logger.info(f"[暮黎资源] 已从本地文件恢复配置: {k}")
+                    restored = []
+                    # 通用兜底：兜底文件里「非空、但当前配置为空」的项全部回填，
+                    # 覆盖 cookie / switch618_cookie / wyy_cookie / wyy_custom_url /
+                    # muliy_username / muliy_password 等所有会因重装/卸载而丢失的项。
+                    # 仅当当前值为空（或该 key 不存在）才回填，避免覆盖用户在网页后台已修改过的值。
+                    for k, v in saved.items():
+                        if k in cfg and cfg.get(k):
+                            continue
+                        if v not in (None, "", [], {}):
+                            cfg[k] = v
+                            restored.append(k)
                     if restored:
                         self._plugin_config = cfg
+                        logger.info(f"[暮黎资源] 已从本地兜底文件恢复配置: {', '.join(restored)}")
                         # 恢复后回写 AstrBot 中央配置，避免下次再丢
                         try:
                             if hasattr(self.context, 'update_plugin_config'):
@@ -3622,7 +3630,12 @@ class MuliyResourcesPlugin(Star):
 
         img_bytes = qrimg_to_bytes(created.get("qrimg"))
         if img_bytes:
-            await event.send(MessageChain([Plain("📷 请使用网易云 App 扫码登录：\n"), ImageComponent(img_bytes)]))
+            import os as _os
+            import tempfile as _tempfile
+            _qr_path = _os.path.join(_tempfile.gettempdir(), f"muliy_wyy_qr_{abs(hash(key))}.png")
+            with open(_qr_path, "wb") as _f:
+                _f.write(img_bytes)
+            await event.send(MessageChain([Plain("📷 请使用网易云 App 扫码登录：\n"), ImageComponent(file=_qr_path)]))
         else:
             qrurl = created.get("qrurl") or ""
             await event.send(MessageChain([Plain(f"📷 请使用网易云 App 扫码登录（二维码链接）：\n{qrurl}")]))
@@ -3702,13 +3715,13 @@ class MuliyResourcesPlugin(Star):
                 await event.send(MessageChain([Plain(f"❌ 音频下载失败：{str(e)[:120]}")]))
                 return
 
-            # 剪辑为「歌曲中间三分之一」语音（QQ 语音 10 分钟内均可）
+            # 剪辑为「不超过最大时长的语音」（从开头取 min(歌曲时长, 上限)）
             duration = await get_duration_seconds(tmp_mp3)
             max_seconds = int(cfg.get("wyy_clip_seconds", 600))
             audio_fmt = (cfg.get("wyy_audio_format", "mp3") or "mp3").lower()
             seg_txt = ""
             if ffmpeg_available() and duration > 0:
-                start, length = compute_middle_third_range(duration, max_seconds)
+                start, length = compute_clip_range(duration, max_seconds)
                 if length <= 0:
                     # 探测不到时长，回退整首
                     clip_path = tmp_mp3
@@ -3717,7 +3730,10 @@ class MuliyResourcesPlugin(Star):
                     fd, clip_path = tempfile.mkstemp(suffix=f".{audio_fmt}", prefix="wyy_clip_")
                     os.close(fd)
                     await cut_clip(tmp_mp3, clip_path, start, length, audio_fmt)
-                    seg_txt = f"（第 {int(start)}–{int(start + length)} 秒 · 中间片段）"
+                    if abs(length - duration) < 1.0:
+                        seg_txt = "（整曲发送）"
+                    else:
+                        seg_txt = f"（前 {int(length)} 秒 · 上限 {max_seconds} 秒）"
             else:
                 clip_path = tmp_mp3
                 if not ffmpeg_available():
@@ -3732,7 +3748,17 @@ class MuliyResourcesPlugin(Star):
             if Record is not None and clip_path:
                 # 本地临时文件只传 file=，不要传 url=（url 应为 http(s) 直链，
                 # 传本地路径会被 OneBot 当成网址去拉取，导致语音发送为空/失败）
-                await event.send(MessageChain([Plain(card), Record(file=clip_path)]))
+                try:
+                    await event.send(MessageChain([Plain(card), Record(file=clip_path)]))
+                except Exception as se:
+                    # 常见于长音频：OneBot(napcat) 转码 silk + 上传耗时超过 WS 动作超时，
+                    # 抛「WebSocket API call timeout」。此时回退为发送音频文件，保证整曲仍送达。
+                    logger.warning(f"[网易云] 语音发送失败（可能超时），回退发送文件: {se}")
+                    await event.send(MessageChain([
+                        Plain(card + "\n⚠️ 语音发送超时（曲目较长），已改为发送音频文件。\n"
+                                     "💡 想稳定发语音可把「最大发送歌曲时长」调小（如 120 秒）。"),
+                        FileComponent(file=clip_path, name=f"{info['name']}.{audio_fmt}"),
+                    ]))
             else:
                 await event.send(MessageChain([Plain(card + "\n⚠️ 当前 AstrBot 版本不支持语音组件，已改为发送文件。")]))
                 await event.send(MessageChain([FileComponent(file=clip_path, name=f"{info['name']}.{audio_fmt}")]))

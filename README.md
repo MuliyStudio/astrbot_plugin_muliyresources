@@ -7,7 +7,7 @@
 <p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 影视(双源) / 游戏 / 软件搜索 · 软件日报 · 网易云语音名片 · VIP 解析 · 摸头/舔狗/按摩表情包</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.10.2-2B7FD8" alt="version 1.10.2">
+  <img src="https://img.shields.io/badge/version-1.10.3-2B7FD8" alt="version 1.10.3">
   <img src="https://img.shields.io/badge/AstrBot-v3.4%2B-F4D758" alt="AstrBot v4.20+">
   <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
 </p>
@@ -32,7 +32,7 @@
 | 🔍 | **统一搜索** | LLM 自动判断资源类型，跨库一次搜完 |
 | 📰 | **软件日报** | 每日定时推送最新软件到群聊（可生成图片 + ZIP） |
 | 🔐 | **Cookie 刷新** | 纯 HTTP 自动登录 xdgame，零浏览器依赖 |
-| 🎵 | **网易云语音名片** | 发送网易云链接 / 小程序分享，自动解析为 mp3 并以 QQ 语音发送「歌曲中间三分之一」片段 |
+| 🎵 | **网易云语音名片** | 发送网易云链接 / 小程序分享，自动解析为 mp3 并以 QQ 语音发送（时长 = min(歌曲时长, 最大发送歌曲时长)，不满上限则整曲） |
 | 🎵 | **网易云扫码登录** | 管理员发送 `/wyy_login` 获取登录二维码，网易云 App 扫码确认后自动提取会员 Cookie 写入 `wyy_cookie`（需 `wyy_custom_url` 后端在线） |
 | 🎞️ | **VIP 视频解析（交互式选接口）** | 支持爱奇艺/腾讯/优酷/芒果等 VIP 视频链接解析 |
 | 🤚 | **娱乐功能** | 发送 `摸摸 @某人`，自动生成并发送摸头 GIF 动图（圆形头像） <br> 发送 `给你一脚 @某人`，生成「马踢舔狗」GIF，被@成员为舔狗、发送者为踢人者（头像优先） <br> 发送 `给我按摩 @某人`，生成柴犬按摩 GIF，被@成员为被按摩者、发送者为按摩者（头像优先） |
@@ -77,8 +77,8 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `wyy_music_type` | string | `standard` | 解析音质（传递给自建 NeteaseCloudMusicApi 的 `/song/url?level=`）：`standard` / `exhigh` / `lossless` / `hires` / `jyeffect` / `sky` / `jymaster` |
 | `wyy_custom_url` | string | `""` | **网易云解析后端地址（自建 NeteaseCloudMusicApi 实例地址，唯一后端）**。推荐填基础地址如 `http://127.0.0.1:3000`（自动取歌名/歌手）；也可填 `{id}` 模板。留空则网易云语音名片功能不可用 |
 | `wyy_cookie` | string | `""` | 黑胶会员 Cookie（用于解析 **VIP/付费歌曲**）。留空仅能解析免费歌；填黑胶会员账号 Cookie 整串（含 `MUSIC_U` 与 `__csrf`）即可解析 VIP 歌曲（`standard`/`exhigh`/`lossless` 需黑胶会员，`sky`/`jymaster` 需超级会员）。⚠️ 敏感凭证，建议用专用会员小号，勿外泄 |
-| `wyy_clip_seconds` | int | `600` | 语音最大时长上限（秒，默认 600 = 10 分钟）。中间三分之一超过该值则截断到该时长 |
-| `wyy_clip_start_ratio` | float | `0.33` | **（已废弃，v1.9.4 起不再生效）** 原用于指定高潮片段起点，现固定取歌曲中间三分之一 |
+| `wyy_clip_seconds` | int | `600` | 最大发送歌曲时长（秒，默认 600 = 10 分钟）。实际发送语音时长 = min(歌曲时长, 该值)：设 120 则最长发前 120 秒；设 600 则不满 10 分钟的歌整曲发送 |
+| `wyy_clip_start_ratio` | float | `0.33` | **（已废弃，v1.9.4 起不再生效）** 原用于指定高潮片段起点，现固定从歌曲开头发送、时长不超过 `wyy_clip_seconds` 上限 |
 | `wyy_audio_format` | string | `mp3` | 语音格式：`mp3`（QQ 兼容性好）或 `wav` |
 | `video_vip_parse` | bool | `true` | VIP 视频解析：消息里出现受支持的 VIP 视频链接（爱奇艺/腾讯/优酷/芒果/bilibili 等，含爱奇艺分享卡片 `playShare.html?shareId=`）会被自动识别，提取影视信息并展示解析接口菜单 |
 | `video_vip_timeout` | int | `25000` | 单个解析接口超时（毫秒，建议 8000–60000） |
@@ -298,7 +298,13 @@ astrbot_plugin_muliyresources/
 │   ├── lickdog.py           # 舔狗（给你一脚）生成（薄包装）
 │   └── massage.py           # 按摩表情生成（薄包装）
 ├── tools/                   # 工具脚本
-│   └── check_netease_api.py # 自建 NeteaseCloudMusicApi 后端可用性自测
+│   ├── check_netease_api.py # 自建 NeteaseCloudMusicApi 后端自测（Python 旧版，跨平台）
+│   └── netease-api/         # NeteaseCloudMusicApi 部署与自检
+│       ├── README.md        # 手机 / 服务器 / 电脑 通用部署教程
+│       ├── setup_termux.sh  # 手机一键启动（Termux / Ubuntu proot）
+│       ├── test_netease_api.sh # 跨平台自检脚本（手机/服务器/电脑通用）
+│       ├── docker-compose.yml / Dockerfile # 服务器 Docker 部署
+│       └── 手机与多设备搭建指南.md
 └── qr_debug_logs/           # 调试日志（自动生成）
 ```
 

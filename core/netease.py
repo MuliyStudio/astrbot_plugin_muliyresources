@@ -266,6 +266,44 @@ def _dig(obj, keys):
 # HTTP 辅助（异步）
 # ---------------------------------------------------------------------------
 
+def _loads_robust(raw) -> dict:
+    """容错解析 JSON。
+
+    背景：NeteaseCloudMusicApi 某些版本会把多个 JSON 值拼接在响应体里返回，
+    直接 json.loads 会报 'Extra data: line 1 column N'。这里只读【第一个】
+    完整 JSON 值，并容忍 BOM / 前后空白 / JSONP 包裹（someFunc({...});）。
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        text = raw.decode("utf-8", errors="replace")
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        text = str(raw)
+    text = text.lstrip("\ufeff").strip()
+    # 剥离 JSONP 包裹：func({...}) 或 func([...]);
+    m = re.match(r"^[A-Za-z_$][\w$]*\s*\((.*)\)\s*;?\s*$", text, re.S)
+    if m:
+        text = m.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 先尝试取第一个完整 JSON 值（忽略尾部多余数据）
+        try:
+            return json.JSONDecoder().raw_decode(text)[0]
+        except Exception:
+            pass
+        # 再尝试从第一个 { 或 [ 开始截取
+        cand = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+        if cand:
+            idx = min(cand)
+            if idx > 0:
+                try:
+                    return json.JSONDecoder().raw_decode(text[idx:])[0]
+                except Exception:
+                    pass
+        raise
+
+
 async def _get_json(url: str, cookie: Optional[str] = None) -> dict:
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://music.163.com/"}
     if cookie:
@@ -274,13 +312,14 @@ async def _get_json(url: str, cookie: Optional[str] = None) -> dict:
     if aiohttp is not None:
         async with aiohttp.ClientSession(headers=headers) as s:
             async with s.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                return await r.json(content_type=None)
+                raw = await r.read()
+        return _loads_robust(raw)
     else:  # pragma: no cover
         import urllib.request
 
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode())
+            return _loads_robust(r.read())
 
 
 async def download_mp3(mp3_url: str, dest_path: Optional[str] = None) -> str:

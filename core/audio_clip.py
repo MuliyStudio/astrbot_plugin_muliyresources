@@ -3,7 +3,7 @@
 音频剪辑模块（暮黎资源聚合 v1.9.0 新增）
 
 依赖 ffmpeg（需在运行环境 PATH 中）。
-负责：探测 mp3 时长、截取「歌曲中间三分之一」片段作为语音发送。
+负责：探测 mp3 时长、截取「开头不超过最大时长的片段」作为语音发送。
 """
 
 import asyncio
@@ -38,28 +38,23 @@ async def get_duration_seconds(path: str) -> float:
     return 0.0
 
 
-def compute_middle_third_range(duration: float, max_seconds: int = 600):
-    """计算「歌曲中间三分之一」剪辑区间（秒）。
+def compute_clip_range(duration: float, max_seconds: int = 600):
+    """计算剪辑区间（秒）：从歌曲开头发送，时长取「歌曲时长」与「上限」的较小值。
 
-    需求：把整首歌时长分成三份，发送中间那一段（QQ 语音 10 分钟内均无限制）。
+    需求：用户通过 wyy_clip_seconds 设定「最大发送歌曲时长」，实际发送语音时长 =
+    min(歌曲实际时长, 上限)。不再取歌曲中间三分之一。
 
     规则：
       - duration <= 0：返回 (0, 0)，由调用方回退发送完整音频
-      - 否则：每段 = duration/3，取第 2 段（start=duration/3, length=duration/3）
-      - max_seconds 作为安全上限（默认 600=10 分钟，对应 QQ 语音常规上限）：
-        若中间段超过该上限，则从原起点截断到 max_seconds（仍落在中段附近）。
-    例：240s 歌曲 → 取 80s~160s（中间三分之一）；
-        2400s(40min) 歌曲 → 中间段 800s 超上限，截断为 800s~1400s（取前 600s）。
+      - 否则：length = min(duration, max_seconds)，start = 0（从开头发送）
+    例：歌曲 200s、上限 120 → 发前 120s；
+        歌曲 180s、上限 600 → 发整曲 180s（不满上限则整曲发送）。
     """
     if duration <= 0:
         return 0.0, 0.0
     max_seconds = max(1, int(max_seconds))
-    seg = duration / 3.0
-    start = seg
-    length = seg
-    if length > max_seconds:
-        length = float(max_seconds)
-    return float(start), float(length)
+    length = min(float(duration), float(max_seconds))
+    return 0.0, float(length)
 
 
 async def cut_clip(src: str, dst: str, start: float, clip_seconds: float, audio_format: str = "mp3") -> str:
@@ -71,8 +66,13 @@ async def cut_clip(src: str, dst: str, start: float, clip_seconds: float, audio_
         acodec = "pcm_s16le"
         extra = ["-ar", "16000", "-ac", "1"]
     else:  # mp3
+        # QQ 语音最终会被 OneBot(napcat) 转码为 silk 单声道 ~24kHz，
+        # 因此这里直接输出「单声道 / 24kHz / 48k」：
+        #   1) 体积约为原立体声 128k 的 1/4（600s ≈ 3.6MB），
+        #   2) napcat 转码/上传更快，显著降低「WebSocket API call timeout」概率，
+        #   3) 对 QQ 语音听感无损（反正会被降成 silk 单声道）。
         acodec = "libmp3lame"
-        extra = ["-ar", "44100", "-ac", "2", "-b:a", "128k"]
+        extra = ["-ar", "24000", "-ac", "1", "-b:a", "48k"]
     cmd = [
         "ffmpeg", "-y", "-ss", f"{start:.3f}", "-i", src,
         "-t", f"{clip_seconds:.3f}", "-vn", "-acodec", acodec,

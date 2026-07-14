@@ -1,5 +1,16 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.10.3 — 2026-07-15
+
+### 🐛 修复：网易云语音名片若干稳定性问题 + 配置防丢 + 部署自检
+
+- **/wyy_login 二维码发送崩溃修复**：原代码把 PNG 二进制字节直接传给 `Image.file`（期望路径），在 `0x89`（PNG 头）处抛 `UnicodeDecodeError`。改为先写临时文件再传路径（`main.py`）。
+- **发送时长逻辑改为「整曲截断」**：原「歌曲中间三分之一」改为「从开头取 `min(歌曲时长, 上限)`」。配置项 `发送语音最大时长（秒）` → **`最大发送歌曲时长（秒）`**（`_conf_schema.json` / `core/audio_clip.py` / `main.py`），语义不变（key `wyy_clip_seconds` 不变，已填配置不丢）。
+- **配置重装/卸载防丢失（xdgame 风格）**：`initialize()` 启动时从本地兜底文件恢复所有「当前为空」的配置项，含 `wyy_cookie` / `wyy_custom_url` / `cookie` / `switch618_cookie` / `muliy_username` / `muliy_password`。前提：卸载时不勾选「同时删除插件配置文件」。
+- **/song/detail 解析容错**：NeteaseCloudMusicApi 部分版本会把多个 JSON 拼接返回，原 `r.json()` 抛 `Extra data`。新增 `_loads_robust()` 去 BOM/空白/JSONP 包裹并取首个完整 JSON（`core/netease.py`）。
+- **长曲语音发送超时修复**：剪辑输出由 44100Hz 立体声 128k → **24000Hz 单声道 48k**（体积约 1/4，600s≈3.6MB），规避 OneBot 转码 silk 上传超时；仍失败时自动回退发音频文件而非报错（`core/audio_clip.py` / `main.py`）。
+- **新增跨平台自检脚本 + 统一部署教程**：`tools/netease-api/test_netease_api.sh`（手机 Termux/Ubuntu、服务器、电脑 Mac/Linux 通用，自动探测 curl/wget/python3，验证 在线/直链/详情/搜索 四项）；`tools/netease-api/README.md` 改写为「手机/服务器/电脑通用」教程。
+
 ## v1.10.2 — 2026-07-15
 
 ### ✨ 新增：按摩表情 + 舔狗/按摩头像优先渲染 + 网易云扫码登录恢复
