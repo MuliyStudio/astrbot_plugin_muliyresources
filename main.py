@@ -202,7 +202,7 @@ class MuliyResourcesPlugin(Star):
                     restored = []
                     # 通用兜底：兜底文件里「非空、但当前配置为空」的项全部回填，
                     # 覆盖 cookie / switch618_cookie / wyy_cookie / wyy_custom_url /
-                    # muliy_username / muliy_password 等所有会因重装/卸载而丢失的项。
+                    # cookie / wyy_cookie / muliy_cookie 等所有会因重装/卸载而丢失的项。
                     # 仅当当前值为空（或该 key 不存在）才回填，避免覆盖用户在网页后台已修改过的值。
                     for k, v in saved.items():
                         if k in cfg and cfg.get(k):
@@ -222,36 +222,32 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.warning(f"[暮黎资源] 本地配置恢复失败: {e}")
         await self._start_sw_scheduler()
-        # 影视源 / 游戏源：按账号是否配置自动决定（替代手动 movie_source 切换）
+        # 影视源 / 游戏源：按 cookie 是否配置自动决定（替代手动 movie_source 切换）
         try:
             cfg = self._get_config()
-            # 影视源：教父.com 新站需登录；未配置账号密码则回退 a123tv 旧站
-            u = (cfg.get("muliy_username") or "").strip()
-            p = (cfg.get("muliy_password") or "").strip()
-            d = ""  # muliy_domain 配置已移除，统一走自动探测最快节点
+            # 影视源：cookie 登录模式（绕过 PoW+验证码），否则回退 a123tv 旧站
+            cookies = (cfg.get("muliy_cookie") or "").strip()
             ttl = int(cfg.get("muliy_cache_ttl") or 3600)
-            if u and p:
-                self._muliy_client = MuliySiteClient(u, p, base_url=d, cache_ttl=ttl)
-                logger.info(f"[暮黎资源] 影视源=教父.com新站 (domain={'自动探测' if not d else d})")
+            if cookies:
+                self._muliy_client = MuliySiteClient(base_url="", cache_ttl=ttl, cookies=cookies)
+                logger.info("[暮黎资源] 影视源=教父.com新站 (cookie登录模式)")
             else:
-                logger.warning("[暮黎资源] 未配置教父.com账号密码，影视搜索回退 a123tv 旧站")
+                logger.warning("[暮黎资源] 未配置教父.com Cookie，影视搜索回退 a123tv 旧站")
                 self._muliy_client = None
         except Exception as e:
             logger.warning(f"[暮黎资源] 客户端初始化失败: {e}")
             self._muliy_client = None
 
     def _get_muliy_client(self) -> MuliySiteClient | None:
-        """获取新站客户端；若配置变更则重建。"""
+        """获取新站客户端；cookie 配置变更则重建。"""
         try:
             cfg = self._get_config()
-            u = (cfg.get("muliy_username") or "").strip()
-            p = (cfg.get("muliy_password") or "").strip()
-            if not u or not p:
+            cookies = (cfg.get("muliy_cookie") or "").strip()
+            if not cookies:
                 return None
-            if self._muliy_client is None or self._muliy_client.username != u or self._muliy_client.password != p:
-                d = ""  # muliy_domain 配置已移除，统一走自动探测最快节点
+            if self._muliy_client is None or self._muliy_client._cookie_str != cookies:
                 ttl = int(cfg.get("muliy_cache_ttl") or 3600)
-                self._muliy_client = MuliySiteClient(u, p, base_url=d, cache_ttl=ttl)
+                self._muliy_client = MuliySiteClient(base_url="", cache_ttl=ttl, cookies=cookies)
         except Exception:
             return None
         return self._muliy_client

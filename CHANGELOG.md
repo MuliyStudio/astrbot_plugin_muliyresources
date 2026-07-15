@@ -1,12 +1,33 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.10.5 — 2026-07-16
+
+### 🗑️ 移除：书山聚合小说搜索功能
+
+- **原因**：小说搜索依赖书山聚合源（v1.vossc.com）的逆向接口，稳定性与维护成本不可控，且非核心需求，按用户要求移除。
+- **改动**：
+  - 删除 `core/novel.py` 整个模块（书山聚合小说搜索：`NovelSearcher` 等）
+  - 简化 `main.py`：移除 `NovelSearcher` 导入、`_novel_sessions` 小说会话管理器、小说意图拦截（"找小说/搜小说/看小说"等关键词）、`resource_kw` 中的小说关键词、`llm_search_novel` LLM 工具、`/找小说` 命令、翻页（`paginate_results`）与选择（`select_search_result`）处理中的小说分支、`on_any_message` 小说会话块、`_format_novel_page` / `_format_novel_detail` 格式化方法
+  - 移除 `_conf_schema.json` 的 `novel_source` / `novel_key` 配置项
+  - 更新 `metadata.yaml`：移除小说功能说明，版本号 → 1.10.5
+  - 同步更新 README（移除小说相关文档）
+- 插件现仅保留：影视（双源）/ 游戏 / 软件搜索、软件日报、网易云语音名片、VIP 视频解析、摸头/舔狗/按摩表情等原有功能
+
+## v1.10.4 — 2026-07-15
+
+### ♻️ 调整：教父.com 影视源改为纯 Cookie 登录
+
+- **移除账号密码登录**：删除 `muliy_username` / `muliy_password` 配置项与对应 PoW+账号登录代码，影视源仅支持 `muliy_cookie`（浏览器登录态 Cookie）一种登录方式，绕过 PoW 与验证码。
+- **`muliy_cookie` 提示完善**：说明必填字段（`app_auth` / `browser_verifie` / `PHPSESSID` 等）与获取方式「登陆后按F12，在应用程式页面复制各个带字段名cookie粘贴进来，用 ; 隔开」。
+- **`MuliySiteClient` 重构为 cookie-only**：`ensure_session` / `_relogin_on_fail` 仅做 Cookie 注入与重灌；`parse_vip_url` 同步改为接收 `cookies`。
+
 ## v1.10.3 — 2026-07-15
 
 ### 🐛 修复：网易云语音名片若干稳定性问题 + 配置防丢 + 部署自检
 
 - **/wyy_login 二维码发送崩溃修复**：原代码把 PNG 二进制字节直接传给 `Image.file`（期望路径），在 `0x89`（PNG 头）处抛 `UnicodeDecodeError`。改为先写临时文件再传路径（`main.py`）。
 - **发送时长逻辑改为「整曲截断」**：原「歌曲中间三分之一」改为「从开头取 `min(歌曲时长, 上限)`」。配置项 `发送语音最大时长（秒）` → **`最大发送歌曲时长（秒）`**（`_conf_schema.json` / `core/audio_clip.py` / `main.py`），语义不变（key `wyy_clip_seconds` 不变，已填配置不丢）。
-- **配置重装/卸载防丢失（xdgame 风格）**：`initialize()` 启动时从本地兜底文件恢复所有「当前为空」的配置项，含 `wyy_cookie` / `wyy_custom_url` / `cookie` / `switch618_cookie` / `muliy_username` / `muliy_password`。前提：卸载时不勾选「同时删除插件配置文件」。
+- **配置重装/卸载防丢失（xdgame 风格）**：`initialize()` 启动时从本地兜底文件恢复所有「当前为空」的配置项，含 `wyy_cookie` / `wyy_custom_url` / `cookie` / `switch618_cookie` / `muliy_cookie`。前提：卸载时不勾选「同时删除插件配置文件」。
 - **/song/detail 解析容错**：NeteaseCloudMusicApi 部分版本会把多个 JSON 拼接返回，原 `r.json()` 抛 `Extra data`。新增 `_loads_robust()` 去 BOM/空白/JSONP 包裹并取首个完整 JSON（`core/netease.py`）。
 - **长曲语音发送超时修复**：剪辑输出由 44100Hz 立体声 128k → **24000Hz 单声道 48k**（体积约 1/4，600s≈3.6MB），规避 OneBot 转码 silk 上传超时；仍失败时自动回退发音频文件而非报错（`core/audio_clip.py` / `main.py`）。
 - **新增跨平台自检脚本 + 统一部署教程**：`tools/netease-api/test_netease_api.sh`（手机 Termux/Ubuntu、服务器、电脑 Mac/Linux 通用，自动探测 curl/wget/python3，验证 在线/直链/详情/搜索 四项）；`tools/netease-api/README.md` 改写为「手机/服务器/电脑通用」教程。

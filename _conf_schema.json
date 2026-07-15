@@ -60,19 +60,13 @@
     "type": "string",
     "description": "影视搜索源（留空=按教父.com账号自动切换）",
     "default": "",
-    "hint": "留空或默认=自动模式：配置了下方教父.com账号密码则走新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。也可显式填 a123tv 强制旧站。注意：现已由账号自动切换，无需手动切换源。"
+    "hint": "留空或默认=自动模式：配置了下方教父.com 的 Cookie 则走新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。也可显式填 a123tv 强制旧站。注意：现已由 Cookie 自动切换，无需手动切换源。"
   },
-  "muliy_username": {
+  "muliy_cookie": {
     "type": "string",
-    "description": "新站账号",
+    "description": "教父.com 登录态 Cookie（cookie 登录模式，绕过 PoW+验证码）",
     "default": "",
-    "hint": "用户名或邮箱，用于新站影视登录，留空则回退旧站，可自行注册，地址：https://www.xn--ykq321c.com/"
-  },
-  "muliy_password": {
-    "type": "string",
-    "description": "新站密码",
-    "default": "",
-    "hint": "用于新站影视登录"
+    "hint": "必填（想用教父.com新站影视时）。教父.com 登录态 Cookie，直接以浏览器登录态访问影视源（跳过 PoW 与验证码）。\n需包含字段（至少）：app_auth、browser_verifie、PHPSESSID（复制该域名下全部 Cookie 更稳妥），各字段以英文分号 ; 隔开整串粘贴。\n获取方式：登陆后按F12，在应用程式页面复制各个带字段名cookie粘贴进来，用 ; 隔开。\n⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新；留空则影视搜索回退 a123tv 旧站（仅在线播放）。"
   },
   "muliy_cache_ttl": {
     "type": "int",

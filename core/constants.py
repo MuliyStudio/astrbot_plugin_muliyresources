@@ -94,7 +94,7 @@ def parse_cookie_string(raw: str) -> dict:
 # 去掉常见的统称后缀，保留具体名称
 # 例如："赛车游戏" → "赛车"，"微信软件" → "微信"
 _SEARCH_SUFFIX_RE = __import__("re").compile(
-    r"(?:游戏|游戏软件|电脑游戏|pc游戏|端游|手游|软件|应用|工具|程序|app|APP)?$",
+    r"(?:游戏|游戏软件|电脑游戏|pc游戏|端游|手游|软件|应用|工具|程序|app|APP|小说)?$",
     __import__("re").IGNORECASE
 )
 

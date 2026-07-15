@@ -7,7 +7,7 @@
 <p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 影视(双源) / 游戏 / 软件搜索 · 软件日报 · 网易云语音名片 · VIP 解析 · 摸头/舔狗/按摩表情包</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.10.3-2B7FD8" alt="version 1.10.3">
+  <img src="https://img.shields.io/badge/version-1.10.5-2B7FD8" alt="version 1.10.5">
   <img src="https://img.shields.io/badge/AstrBot-v3.4%2B-F4D758" alt="AstrBot v4.20+">
   <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
 </p>
@@ -25,8 +25,8 @@
 
 | 模块 | 功能 | 说明 |
 |------|------|------|
-| 🎬 | **影视搜索（双源）** | a123tv 旧站（免登录）与教父.com 新站（需登录，含在线播放 + 网盘双模式）按账号自动切换；剧集自动选集数、电影直接选播放线路 |
-| 🌐 | **教父.com 新站影视源** | 配置 `muliy_username` / `muliy_password` 即启用；自动探测最低延迟节点（PoW + 登录态缓存），含网盘资源多网盘下载；未配置则回退 a123tv 旧站 |
+| 🎬 | **影视搜索（双源）** | a123tv 旧站（免登录）与教父.com 新站（需登录态 Cookie，含在线播放 + 网盘双模式）按 Cookie 自动切换；剧集自动选集数、电影直接选播放线路 |
+| 🌐 | **教父.com 新站影视源** | 配置 `muliy_cookie`（浏览器登录态 Cookie）即启用；自动探测最低延迟节点（跳过 PoW + 验证码），含网盘资源多网盘下载；未配置则回退 a123tv 旧站 |
 | 🎮 | **游戏搜索** | 在 xdgame.com 搜索游戏，支持多网盘下载链接 |
 | 💿 | **软件搜索** | 在 x6d.com 搜索软件 / 应用 / 工具资源 |
 | 🔍 | **统一搜索** | LLM 自动判断资源类型，跨库一次搜完 |
@@ -83,9 +83,8 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `video_vip_parse` | bool | `true` | VIP 视频解析：消息里出现受支持的 VIP 视频链接（爱奇艺/腾讯/优酷/芒果/bilibili 等，含爱奇艺分享卡片 `playShare.html?shareId=`）会被自动识别，提取影视信息并展示解析接口菜单 |
 | `video_vip_timeout` | int | `25000` | 单个解析接口超时（毫秒，建议 8000–60000） |
 | `video_vip_browser_channel` | string | `""` | Playwright 浏览器 channel（如 `chrome`）；留空用插件自带 Chromium |
-| `muliy_username` | string | `""` | **教父.com 新站**账号（启用新站影视源必需）。配置了账号密码 → 影视搜索走新站（含网盘资源）；否则回退 a123tv 旧站 |
-| `muliy_password` | string | `""` | **教父.com 新站**密码 |
-| `muliy_cache_ttl` | int | `3600` | 新站登录态 / 域名探测结果缓存秒数（默认 1 小时） |
+| `muliy_cookie` | string | `""` | **教父.com 新站**登录态 Cookie（启用新站影视源）。填此值 → 影视搜索走新站（含网盘资源，跳过 PoW + 验证码）；留空则回退 a123tv 旧站。需含 `app_auth` / `browser_verifie` / `PHPSESSID` 等字段，用英文分号 `;` 隔开 |
+| `muliy_cache_ttl` | int | `3600` | 新站 Cookie 登录态 / 域名探测结果缓存秒数（默认 1 小时） |
 
 ---
 
@@ -204,13 +203,13 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 ## 教父.com 新站影视源（双源自动切换）
 
-影视搜索支持**两个源**，由是否配置教父.com 账号密码自动切换，**无需手动配置**：
+影视搜索支持**两个源**，由是否配置教父.com 登录态 Cookie 自动切换，**无需手动配置**：
 
-- **已配置 `muliy_username` / `muliy_password`** → 走**教父.com 新站**：
-  - 需登录（PoW 工作量证明 + 账号登录态，登录态缓存复用）
+- **已配置 `muliy_cookie`** → 走**教父.com 新站**：
+  - 以浏览器登录态 Cookie 访问（跳过 PoW + 验证码），登录态缓存复用
   - 自动从挂了 `.com` 的候选域名中探测**最低延迟可用节点**
   - 资源含**在线播放（多节点）** 与 **网盘资源（多网盘）** 双模式：选影视 → 选资源类型 → 选节点 / 网盘 → 合并转发（标题 + 封面 + 简介 + 链接）
-- **未配置账号密码** → 自动回退 **a123tv 旧站**（无需登录，仅在线播放切换线路）
+- **未配置 Cookie** → 自动回退 **a123tv 旧站**（无需登录，仅在线播放切换线路）
 
 > 旧站（a123tv）只有在线播放一种资源类型、无网盘；新站额外提供网盘下载。想强制只用旧站可在配置里把 `movie_source` 显式填 `a123tv`。
 

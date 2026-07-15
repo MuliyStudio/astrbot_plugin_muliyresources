@@ -272,10 +272,7 @@ class MuliySiteClient:
     session 缓存复用 cookie，避免每次都等 PoW(~3s)+登录。
     """
 
-    def __init__(self, username: str, password: str,
-                 base_url: str = "", cache_ttl: int = 3600):
-        self.username = username
-        self.password = password
+    def __init__(self, base_url: str = "", cache_ttl: int = 3600, cookies: str = ""):
         self.base_url = _punycode_url(base_url or "").rstrip("/")
         self.cache_ttl = cache_ttl
         self._session = requests.Session()
@@ -284,6 +281,15 @@ class MuliySiteClient:
         self._login_ts = 0.0
         self._lock = threading.Lock()
         self._session_searched = False  # 当前 session 是否已搜过（搜索限流追踪）
+        # cookie 模式：直接注入浏览器登录态，跳过 PoW + 验证码
+        self._cookie_str = cookies or ""
+        if self._cookie_str:
+            if not self.base_url:
+                # cookie 模式固定教父.com，避免自动探测到不匹配的节点导致 cookie 失效
+                self.base_url = MULIY_DEFAULT_DOMAIN
+            self._apply_cookies(self._cookie_str)
+            self._logged_in = True
+            self._login_ts = time.time()
 
     # ---------- 会话管理 ----------
     def _get_base(self) -> str:
@@ -291,50 +297,44 @@ class MuliySiteClient:
             self.base_url = discover_best_domain().rstrip("/")
         return self.base_url
 
-    def _do_login(self) -> bool:
-        """PoW + 登录。"""
-        base = self._get_base()
-        # PoW（已验证则内部跳过；失败也尝试登录，cookie 可能仍有效）
-        solve_pow(self._session, base)
-        try:
-            self._session.headers.update({
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": base + "/user/login",
-                "Origin": base,
-            })
-            lr = self._session.post(
-                base + "/user/login",
-                data={
-                    "code": "", "siteid": "1", "dosubmit": "1",
-                    "username": self.username, "password": self.password,
-                    "cookietime": "1",
-                },
-                timeout=15, verify=False,
-            )
-            rj = lr.json()
-            if rj.get("code") == 200:
-                self._logged_in = True
-                self._login_ts = time.time()
-                self._session_searched = False  # 新 session 重置搜索标记
-                logger.info("[muliy_site] 登录成功")
-                return True
-            logger.error(f"[muliy_site] 登录失败: {rj}")
-            return False
-        except Exception as e:
-            logger.error(f"[muliy_site] 登录异常: {e}")
-            return False
-
     def ensure_session(self) -> bool:
-        """确保已登录，过期则重新登录。线程安全。"""
+        """确保已注入有效 cookie。线程安全。cookie 过期则重灌。"""
         with self._lock:
             if self._logged_in and (time.time() - self._login_ts < self.cache_ttl):
                 return True
-            return self._do_login()
+            if self._apply_cookies(self._cookie_str):
+                self._logged_in = True
+                self._login_ts = time.time()
+                return True
+            return False
 
     def _relogin_on_fail(self) -> bool:
-        """失效后重新登录一次。"""
+        """失效后重灌 cookie 一次。"""
         self._logged_in = False
-        return self._do_login()
+        return self.ensure_session()
+
+    def _apply_cookies(self, cookie_str: str) -> bool:
+        """把 'k1=v1; k2=v2' 形式的 cookie 字符串注入 session。
+
+        使用 base_url 的 host（带点前缀以匹配 www 子域）作为 domain。
+        返回是否成功注入至少一个 cookie。
+        """
+        if not cookie_str:
+            return False
+        host = urlsplit(self.base_url).hostname or "www.xn--wcv59z.com"
+        domain = ("." + host) if not host.startswith(".") else host
+        ok = False
+        for part in re.split(r"[;\n]", cookie_str):
+            part = part.strip()
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if not k:
+                continue
+            self._session.cookies.set(k, v, domain=domain)
+            ok = True
+        return ok
 
     def _api_get(self, path: str, referer: str = "", as_json: bool = True,
                  retry: bool = True):
@@ -460,7 +460,7 @@ class MuliySiteClient:
         return results
 
     def get_detail(self, dir_: str, id_: str) -> dict:
-        """获取详情（解析详情页内联 _obj.d）。带 nologin 重登重试。"""
+        """获取详情（解析详情页内联 _obj.d）。带安全验证(PoW)补跑 / nologin 重登重试。"""
         base = self._get_base()
         empty = {"name": "获取失败", "desc": "登录失败", "cover": "",
                  "year": "", "dir": dir_, "id": id_, "status": "",
@@ -468,7 +468,7 @@ class MuliySiteClient:
                  "score_db": "", "score_im": ""}
         if not self.ensure_session():
             return empty
-        for attempt in range(2):  # 最多重试一次（重登）
+        for attempt in range(3):  # 最多重试：PoW 补验证 + 重登
             try:
                 r = self._session.get(
                     base + f"/{dir_}/{id_}",
@@ -484,8 +484,17 @@ class MuliySiteClient:
                     blocked = ("未登录" in txt or "nologin" in txt.lower()
                                or "powSolve" in txt or "安全验证" in txt
                                or "访问受限" in txt or "pow" in txt.lower())
-                    logger.warning(f"[muliy_site] 详情页非有效页(attempt={attempt}) "
-                                   f"blocked={blocked} len={len(txt)}")
+                    if blocked:
+                        # 详情页被「浏览器安全验证」(PoW) 拦截：补跑 PoW 获取
+                        # browser_verified 后重试。cookie/账号模式均适用（无需账号密码）。
+                        logger.warning(f"[muliy_site] 详情页被安全验证拦截(attempt={attempt})，补跑 PoW")
+                        try:
+                            solve_pow(self._session, base)
+                        except Exception as e:
+                            logger.warning(f"[muliy_site] PoW 补跑失败: {e}")
+                        if attempt < 2:
+                            continue
+                    # 非 PoW 拦截（如登录失效）→ 重登重试
                     if self._relogin_on_fail():
                         continue
                     return empty
@@ -663,25 +672,25 @@ def _extract_vip_media_urls(html: str) -> list:
     return out
 
 
-def parse_vip_url(video_url: str, username: str = "", password: str = "",
+def parse_vip_url(video_url: str, cookies: str = "",
                  client: "MuliySiteClient" = None, base_url: str = "") -> dict:
     """把外部视频链接提交到教父.com 的 /zjx VIP 解析页，解析出可播放直链。
 
     参数：
       - video_url：待解析的视频分享链接（爱奇艺/腾讯/优酷/芒果TV/乐视/搜狐）
       - client：    已登录的 MuliySiteClient（优先复用其会话/域名）；为空则临时新建
-      - username/password/base_url：新建 client 时使用（与影视搜索共用账号）
+      - cookies/base_url：新建 client 时使用（与影视搜索共用浏览器登录态 Cookie）
     返回 {"ok", "url", "platform_page", "candidates", "error", "raw"}。
       - ok=True 时 url 为真实可播放直链；ok=False 时 url 为空，error 说明原因，
         raw 附带解析页 HTML 前若干字符便于排障。
     """
     own = False
     if client is None:
-        client = MuliySiteClient(username or "", password or "", base_url=base_url)
+        client = MuliySiteClient(base_url=base_url, cookies=cookies)
         own = True
     if not client.ensure_session():
         return {"ok": False, "url": "", "platform_page": "", "candidates": [],
-                "error": "影视站登录失败（请检查 muliy_username/muliy_password 配置）", "raw": ""}
+                "error": "影视站登录失败（请检查 muliy_cookie 配置或 Cookie 是否已过期）", "raw": ""}
     base = client._get_base()
     page = base + "/zjx"
     encoded = quote(video_url, safe="")

@@ -130,13 +130,13 @@
       <div class="card col-6 featured">
         <div class="ico">🎬</div>
         <h3>影视搜索（双源自动切换）</h3>
-        <p>配置了教父.com 新站账号即走新站（含在线播放 + 网盘双模式），未配置则回退 a123tv 旧站（免登录）。剧集自动选集数、电影直接选线路。</p>
+        <p>配置了教父.com 的 Cookie 即走新站（含在线播放 + 网盘双模式），未配置则回退 a123tv 旧站（免登录）。剧集自动选集数、电影直接选线路。</p>
         <span class="tag">双源 · PoW 登录态缓存 · 自动探测最快节点</span>
       </div>
       <div class="card col-6">
         <div class="ico">🌐</div>
         <h3>教父.com 新站影视源</h3>
-        <p>配置 muliy_username / muliy_password 启用，自动从候选域名探测最低延迟节点，额外提供网盘下载资源。</p>
+        <p>配置教父.com 的 Cookie 启用，自动从候选域名探测最低延迟节点，额外提供网盘下载资源。</p>
         <span class="tag">需登录 · 网盘 + 在线播放</span>
       </div>
       <div class="card col-4">
@@ -216,12 +216,12 @@
     <div class="bento">
       <div class="card col-6">
         <div class="ico">✅</div>
-        <h3>已配置账号密码</h3>
-        <p>走教父.com 新站：需登录（PoW + 登录态缓存），自动探测最低延迟节点；资源含在线播放（多节点）与网盘资源（多网盘）双模式。</p>
+        <h3>已配置 Cookie</h3>
+        <p>走教父.com 新站：以浏览器登录态访问（跳过 PoW + 验证码），自动探测最低延迟节点；资源含在线播放（多节点）与网盘资源（多网盘）双模式。</p>
       </div>
       <div class="card col-6">
         <div class="ico">↩️</div>
-        <h3>未配置账号密码</h3>
+        <h3>未配置 Cookie</h3>
         <p>自动回退 a123tv 旧站：无需登录，仅在线播放切换线路。想强制旧站可在配置里把 movie_source 显式填 a123tv。</p>
       </div>
     </div>
@@ -240,7 +240,7 @@
         <p style="margin-bottom:14px">打开 AstrBot WebUI → 插件管理，搜索「暮黎资源聚合」点击安装，按需填写配置即可。</p>
         <div class="code"><span class="c"># 需填写的配置</span>
 xdgame_username / xdgame_password   <span class="c"># 游戏 Cookie 刷新</span>
-muliy_username / muliy_password     <span class="c"># 教父.com 新站影视源（可选）</span>
+muliy_cookie                        <span class="c"># 教父.com 新站影视源（可选，填则启用）</span>
 wyy_custom_url                      <span class="c"># 网易云解析后端（必填才可用）</span></div>
       </div>
       <div class="card">
