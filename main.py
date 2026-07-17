@@ -137,6 +137,36 @@ logger = logging.getLogger("astrbot_plugin_muliyresources")
 # 强制 INFO 级别并向上传播，确保调度注册/触发日志一定出现在 AstrBot 控制台
 logger.setLevel(logging.INFO)
 logger.propagate = True
+# 兜底：宿主(AstrBot)日志配置可能把 INFO 过滤掉，这里额外挂 stderr + 独立调试文件，
+# 确保调度注册/触发/失败过程一定可观测（之前的"日志完全不出现"就是被吞了）。
+try:
+    _sh = logging.StreamHandler(sys.stderr)
+    _sh.setLevel(logging.INFO)
+    _sh.setFormatter(logging.Formatter("[暮黎资源] %(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_sh)
+except Exception:
+    pass
+try:
+    _fh = logging.FileHandler(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_logs", "scheduler_debug.log"),
+        encoding="utf-8")
+    _fh.setLevel(logging.INFO)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_fh)
+except Exception:
+    pass
+
+def _slog(msg: str, level: int = logging.INFO):
+    """调度关键事件：同时走 logger(含 stderr/文件 handler) 与独立调试文件直写。"""
+    logger.log(level, msg)
+    try:
+        _dp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_logs", "scheduler_debug.log")
+        os.makedirs(os.path.dirname(_dp), exist_ok=True)
+        with open(_dp, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().isoformat()} {logging.getLevelName(level)} {msg}\n")
+    except Exception:
+        pass
+logger.propagate = True
 
 
 def _format_size(size_bytes: int) -> str:
@@ -330,6 +360,7 @@ class MuliyResourcesPlugin(Star):
         确保优先使用官方调度器，提高定时触发的可靠性。"""
         try:
             logger.info("[暮黎资源] 平台已加载，重新注册定时日报任务")
+            _slog("[暮黎资源] on_platform_loaded 触发，开始(重新)注册定时日报任务")
             await self._start_sw_scheduler()
         except BaseException as e:
             # 兜底：包括 CancelledError 在内的任何异常都不得冒泡到 platform_manager，
@@ -4933,6 +4964,17 @@ class MuliyResourcesPlugin(Star):
             if self._heartbeat_task: self._heartbeat_task.cancel()
             self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
             logger.info(f"[暮黎资源] 自建定时调度已就绪（{len(self._scheduled_job_ids)} 个任务）")
+        # 启动兜底守护：机器人恰好在定时点附近/之后重启、错过 cron 时，
+        # 在当天目标时间已过且今日未发过的情况下补发（见 _sw_fallback）。
+        if self._fallback_task:
+            self._fallback_task.cancel()
+        self._fallback_task = asyncio.create_task(self._sw_fallback(), name="sw_fallback")
+        _slog(f"[暮黎资源] 兜底守护任务已启动(机器人恢复上线后补发今日日报)")
+        mode = "官方(cron_manager)" if self._using_framework_scheduler else "自建(apscheduler)"
+        _slog(f"[暮黎资源] 调度初始化完成 mode={mode} jobs={self._scheduled_job_ids} "
+              f"软件={self._schedule_hour:02d}:{self._schedule_minute:02d} "
+              f"游戏={self._game_schedule_hour:02d}:{self._game_schedule_minute:02d} "
+              f"影视={self._movie_schedule_hour:02d}:{self._movie_schedule_minute:02d}")
         try:
             d = os.path.join(os.path.dirname(__file__),"debug_logs"); os.makedirs(d,exist_ok=True)
             self._debug_log_path = os.path.join(d,"scheduler_debug.log")
@@ -5059,28 +5101,25 @@ class MuliyResourcesPlugin(Star):
                 ts = n.strftime("%Y%m%d")
                 # 软件日报时间窗（独立）
                 tgt = n.replace(hour=self._schedule_hour,minute=self._schedule_minute,second=0,microsecond=0)
-                if n >= tgt:
+                if n >= tgt and self._last_run_date != ts:
                     sp = (n - tgt).total_seconds()
-                    if 0 <= sp <= 300 and self._last_run_date != ts:
-                        logger.warning(f"🛡️ 软件日报兜底触发 (延迟{sp:.0f}s)")
-                        try: await self._sw_daily_job()
-                        except: pass
+                    _slog(f"[暮黎资源] 软件日报兜底触发 (机器人恢复, 距目标{sp:.0f}s)")
+                    try: await self._sw_daily_job()
+                    except Exception as e: _slog(f"[暮黎资源] 软件日报兜底执行失败: {e!r}", logging.ERROR)
                 # 游戏日报时间窗（独立）
                 gtgt = n.replace(hour=self._game_schedule_hour,minute=self._game_schedule_minute,second=0,microsecond=0)
-                if n >= gtgt:
+                if n >= gtgt and self._game_last_run_date != ts:
                     gsp = (n - gtgt).total_seconds()
-                    if 0 <= gsp <= 300 and self._game_last_run_date != ts:
-                        logger.warning(f"🛡️ 游戏日报兜底触发 (延迟{gsp:.0f}s)")
-                        try: await self._game_daily_job()
-                        except: pass
+                    _slog(f"[暮黎资源] 游戏日报兜底触发 (机器人恢复, 距目标{gsp:.0f}s)")
+                    try: await self._game_daily_job()
+                    except Exception as e: _slog(f"[暮黎资源] 游戏日报兜底执行失败: {e!r}", logging.ERROR)
                 # 影视日报时间窗（独立）
                 mtgt = n.replace(hour=self._movie_schedule_hour,minute=self._movie_schedule_minute,second=0,microsecond=0)
-                if n >= mtgt:
+                if n >= mtgt and self._movie_last_run_date != ts:
                     msp = (n - mtgt).total_seconds()
-                    if 0 <= msp <= 300 and self._movie_last_run_date != ts:
-                        logger.warning(f"🛡️ 影视日报兜底触发 (延迟{msp:.0f}s)")
-                        try: await self._movie_daily_job()
-                        except: pass
+                    _slog(f"[暮黎资源] 影视日报兜底触发 (机器人恢复, 距目标{msp:.0f}s)")
+                    try: await self._movie_daily_job()
+                    except Exception as e: _slog(f"[暮黎资源] 影视日报兜底执行失败: {e!r}", logging.ERROR)
             except asyncio.CancelledError: return
             except: pass
 
@@ -5123,7 +5162,9 @@ class MuliyResourcesPlugin(Star):
             try:
                 if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
                 elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
-            except Exception as e: logger.error(f"发送影视日报到群{gid}失败: {e}")
+            except Exception as e:
+                logger.error(f"发送影视日报到群{gid}失败: {e}")
+                _slog(f"[暮黎资源] 影视日报 → 群{gid} 发送失败: {e!r}", logging.ERROR)
 
     async def _movie_build_and_send(self, items: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -5240,17 +5281,26 @@ class MuliyResourcesPlugin(Star):
         gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
         if not gs:
             logger.warning("[暮黎资源] 软件日报已触发，但未配置 group_ids，跳过发送")
+            _slog("[暮黎资源] 软件日报已触发但未配置 group_ids，跳过", logging.WARNING)
             return
+        _slog(f"[暮黎资源] ⏰ 软件日报定时触发 @ {datetime.datetime.now()} 目标群={gs}")
         mx = 24  # max_softwares 配置已移除，固定默认 24
         result = await asyncio.to_thread(sync_scrape, mx)
-        if not result["success"]: return
+        _slog(f"[暮黎资源] 软件抓取结果: success={result.get('success')} count={len(result.get('softwares',[]))}")
+        if not result["success"]:
+            _slog(f"[暮黎资源] 软件抓取失败，终止本次日报: {str(result)[:200]}", logging.ERROR)
+            return
         sws = result.get("softwares",[])
-        if not sws: return
+        if not sws:
+            _slog("[暮黎资源] 抓取到的软件列表为空，终止本次日报", logging.WARNING)
+            return
         # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
         img_bytes = await self._sw_render_image(sws)
+        _slog(f"[暮黎资源] 软件日报图片渲染: {'成功' if img_bytes else '失败'}")
         zp = await asyncio.to_thread(gen_report_zip, sws, io.BytesIO(img_bytes) if img_bytes else None)
         # 仅发送图片，不再向群发送自包含 zip 文件
         await self._sw_send_report(img_bytes, None)
+        _slog(f"[暮黎资源] 软件日报发送流程结束 (img={'有' if img_bytes else '无'})")
         # 缓存 zip 仅供面板本地回看（不会发送给用户/群）
         if zp:
             try:
@@ -5308,12 +5358,19 @@ class MuliyResourcesPlugin(Star):
         client = self._get_best_client()
         apid = self._resolve_report_platform()
         logger.info(f"[暮黎资源] 软件日报推送目标平台: {apid}")
+        _slog(f"[暮黎资源] 软件日报推送目标平台: {apid} 群数={len(gids)}")
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
             try:
-                if img_c: await self.context.send_message(umo,MessageChain(img_c)); await asyncio.sleep(0.5)
+                if img_c:
+                    await self.context.send_message(umo,MessageChain(img_c)); await asyncio.sleep(0.5)
+                    _slog(f"[暮黎资源] 软件日报 → 群{gid} 发送成功")
+                else:
+                    _slog(f"[暮黎资源] 软件日报 → 群{gid} 跳过(无图片)", logging.WARNING)
             # 按需求：日报只发送图片，不再向群发送自包含 zip 文件（zp 仅用于本地缓存回看）
-            except Exception as e: logger.error(f"发送日报到群{gid}失败: {e}")
+            except Exception as e:
+                logger.error(f"发送日报到群{gid}失败: {e}")
+                _slog(f"[暮黎资源] 软件日报 → 群{gid} 发送失败: {e!r}", logging.ERROR)
 
     async def _upload_zip(self, zp, zn, event=None, gid=None, uid=None):
         if not zp or not os.path.exists(zp): return False
@@ -5355,7 +5412,9 @@ class MuliyResourcesPlugin(Star):
             try:
                 if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
                 elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
-            except Exception as e: logger.error(f"发送游戏日报到群{gid}失败: {e}")
+            except Exception as e:
+                logger.error(f"发送游戏日报到群{gid}失败: {e}")
+                _slog(f"[暮黎资源] 游戏日报 → 群{gid} 发送失败: {e!r}", logging.ERROR)
 
     async def _game_build_and_send(self, games: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -5383,6 +5442,7 @@ class MuliyResourcesPlugin(Star):
             return
         self._game_last_run_date = ts
         logger.info(f"[暮黎资源] ⏰ 游戏日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
+        _slog(f"[暮黎资源] ⏰ 游戏日报定时触发 @ {datetime.datetime.now()}")
         config = self._get_config()
         if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
             logger.warning("[暮黎资源] 游戏日报已触发，但 game_report_enabled 关闭，跳过")
