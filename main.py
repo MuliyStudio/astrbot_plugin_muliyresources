@@ -5095,7 +5095,6 @@ class MuliyResourcesPlugin(Star):
 
     async def _movie_send_report(self, img_bytes, ts, text: str = ""):
         config = self._get_config()
-        pid = "aiocqhttp"  # 平台 ID 由 platform_manager 自动识别，无需配置
         gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
         if not gs: return
         gids = [g.strip() for g in gs.split(",") if g.strip()]
@@ -5106,11 +5105,8 @@ class MuliyResourcesPlugin(Star):
                 with open(img_path, "wb") as f: f.write(img_bytes)
                 img_c.append(ImageComponent(file=img_path))
             except Exception as e: logger.warning(f"[影视日报] 写图片失败: {e}")
-        apid = pid
-        try:
-            for p in self.context.platform_manager.get_insts():
-                if "webchat" not in p.meta().id: apid = p.meta().id; break
-        except: pass
+        apid = self._resolve_report_platform()
+        logger.info(f"[暮黎资源] 影视日报推送目标平台: {apid}")
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
             try:
@@ -5253,9 +5249,41 @@ class MuliyResourcesPlugin(Star):
             except: pass
         self._schedule_sw_next()
 
+    def _resolve_report_platform(self) -> str:
+        """解析日报推送应使用的平台 ID（unified_msg_origin 的平台前缀）。
+
+        历史 bug：原先取「第一个非 webchat 平台」，若 AstrBot 同时挂了
+        飞书(Lark) 且排在 QQ 之前，会把 group_ids 里的 QQ 群号当作飞书
+        receive_id 推送，导致 [Lark] 发送失败(invalid receive_id)。
+
+        修复策略：优先选择 QQ 类平台（cqhttp/onebot/qq），其次才回退到
+        任意非 webchat 平台；亦可通过配置 report_platform 显式指定。
+        """
+        try:
+            config = self._get_config()
+            explicit = (config.get("report_platform", "") or "").strip() if isinstance(config, dict) else ""
+            if explicit:
+                return explicit
+        except Exception:
+            pass
+        try:
+            for p in self.context.platform_manager.get_insts():
+                pid = p.meta().id.lower()
+                if "webchat" in pid:
+                    continue
+                if any(k in pid for k in ("cqhttp", "onebot", "qq")):
+                    return p.meta().id
+            for p in self.context.platform_manager.get_insts():
+                pid = p.meta().id.lower()
+                if "webchat" in pid:
+                    continue
+                return p.meta().id
+        except Exception:
+            pass
+        return "aiocqhttp"
+
     async def _sw_send_report(self, img_bytes, zp):
         config = self._get_config()
-        pid = "aiocqhttp"  # 平台 ID 由下方 platform_manager 自动识别，无需配置
         gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
         if not gs: return
         gids = [g.strip() for g in gs.split(",") if g.strip()]
@@ -5267,11 +5295,8 @@ class MuliyResourcesPlugin(Star):
                 with open(img_path,"wb") as f: f.write(img_bytes); img_c.append(ImageComponent(file=img_path))
             except: pass
         client = self._get_best_client()
-        apid = pid
-        try:
-            for p in self.context.platform_manager.get_insts():
-                if "webchat" not in p.meta().id: apid = p.meta().id; break
-        except: pass
+        apid = self._resolve_report_platform()
+        logger.info(f"[暮黎资源] 软件日报推送目标平台: {apid}")
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
             try:
@@ -5302,7 +5327,6 @@ class MuliyResourcesPlugin(Star):
 
     async def _game_send_report(self, img_bytes, ts, text: str = ""):
         config = self._get_config()
-        pid = "aiocqhttp"  # 平台 ID 由下方 platform_manager 自动识别，无需配置
         gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
         if not gs: return
         gids = [g.strip() for g in gs.split(",") if g.strip()]
@@ -5313,11 +5337,8 @@ class MuliyResourcesPlugin(Star):
                 with open(img_path, "wb") as f: f.write(img_bytes)
                 img_c.append(ImageComponent(file=img_path))
             except Exception as e: logger.warning(f"[游戏日报] 写图片失败: {e}")
-        apid = pid
-        try:
-            for p in self.context.platform_manager.get_insts():
-                if "webchat" not in p.meta().id: apid = p.meta().id; break
-        except: pass
+        apid = self._resolve_report_platform()
+        logger.info(f"[暮黎资源] 游戏日报推送目标平台: {apid}")
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
             try:
