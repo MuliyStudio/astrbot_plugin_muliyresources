@@ -51,6 +51,7 @@ try:
 except ImportError: BeautifulSoup = None
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api.message_components import Plain, Image as ImageComponent, File as FileComponent
@@ -240,6 +241,10 @@ class MuliyResourcesPlugin(Star):
         self._movie_schedule_minute: int = 0
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._fallback_task: Optional[asyncio.Task] = None
+        # 定时调度模式：优先用 AstrBot 官方 context.cron_manager.scheduler（可靠），
+        # 不可用时回退到自建 AsyncIOScheduler（旧逻辑）
+        self._using_framework_scheduler: bool = False
+        self._scheduled_job_ids: list[str] = []
         # VIP 解析：等待用户「选接口」的待处理会话 {unified_msg_origin: {...}}
         self._vip_pending: dict = {}
         self._last_run_date: str = ""
@@ -315,6 +320,16 @@ class MuliyResourcesPlugin(Star):
     async def terminate(self):
         logger.info("暮黎资源聚合插件终止")
         await self._stop_sw_scheduler()
+
+    @filter.on_platform_loaded()
+    async def _on_platform_loaded(self):
+        """平台加载完成后（官方 cron_manager 已就绪）再注册一次定时任务，
+        确保优先使用官方调度器，提高定时触发的可靠性。"""
+        try:
+            logger.info("[暮黎资源] 平台已加载，重新注册定时日报任务")
+            await self._start_sw_scheduler()
+        except Exception as e:
+            logger.warning(f"[暮黎资源] 平台加载后注册定时任务失败: {e}")
 
     # ==================== LLM 请求拦截（强制工具调用） ====================
 
@@ -2300,22 +2315,26 @@ class MuliyResourcesPlugin(Star):
         gs = config.get("group_ids","").strip(); groups = [g.strip() for g in gs.split(",") if g.strip()]
         ggs = config.get("game_group_ids","").strip(); ggroups = [g.strip() for g in ggs.split(",") if g.strip()]
         ei = True; mx = 24
-        sk = self._apscheduler and self._apscheduler.running
-        nxt = "未知"
-        if self._apscheduler:
+        def _nxt(jid):
             try:
-                j = self._apscheduler.get_job(self._scheduler_job_id)
-                if j and j.next_run_time: nxt = j.next_run_time.strftime("%Y-%m-%d %H:%M")
-            except: pass
+                if self._using_framework_scheduler:
+                    sch = self._framework_scheduler()
+                    if sch:
+                        j = sch.get_job(jid)
+                        if j and j.next_run_time: return j.next_run_time.strftime("%Y-%m-%d %H:%M")
+                elif self._apscheduler:
+                    j = self._apscheduler.get_job(jid)
+                    if j and j.next_run_time: return j.next_run_time.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+            return "未知"
+        mode = "官方(cron_manager)" if self._using_framework_scheduler else "自建(apscheduler)"
+        sk = self._using_framework_scheduler or (self._apscheduler and self._apscheduler.running)
+        nxt = _nxt(self._scheduler_job_id)
         tz = self._timezone.key if self._timezone else "系统本地"
         lr = self._last_run_date or "从未执行"
         gen = config.get("game_report_enabled", True) if isinstance(config, dict) else True
-        gnxt = "未知"; glr = self._game_last_run_date or "从未执行"
-        if self._apscheduler:
-            try:
-                jg = self._apscheduler.get_job(self._game_scheduler_job_id)
-                if jg and jg.next_run_time: gnxt = jg.next_run_time.strftime("%Y-%m-%d %H:%M")
-            except: pass
+        gnxt = _nxt(self._game_scheduler_job_id); glr = self._game_last_run_date or "从未执行"
         gmx = int(config.get("game_report_max", 24) or 24) if isinstance(config, dict) else 8
         # 影视日报状态
         men = config.get("movie_report_enabled", True) if isinstance(config, dict) else True
@@ -2323,15 +2342,10 @@ class MuliyResourcesPlugin(Star):
         mgs = config.get("movie_group_ids","").strip(); mgroups = [g.strip() for g in mgs.split(",") if g.strip()]
         msec = config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac"
         mmx = int(config.get("movie_report_max", 24) or 24) if isinstance(config, dict) else 24
-        mnxt = "未知"; mlr = self._movie_last_run_date or "从未执行"
-        if self._apscheduler:
-            try:
-                jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
-                if jm and jm.next_run_time: mnxt = jm.next_run_time.strftime("%Y-%m-%d %H:%M")
-            except: pass
+        mnxt = _nxt(self._movie_scheduler_job_id); mlr = self._movie_last_run_date or "从未执行"
         yield event.plain_result(
             f"📊 暮黎资源聚合\n{'='*30}\n"
-            f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'}\n"
+            f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'} | 模式: {mode}\n"
             f"📦 软件日报: 每日 {h:02d}:{m:02d} | 群{len(groups)}个 | 上次:{lr} | 下次:{nxt}\n"
             f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{len(ggroups)}个 | 上限{gmx}\n"
             f"   上次:{glr} | 下次:{gnxt}\n"
@@ -4828,58 +4842,126 @@ class MuliyResourcesPlugin(Star):
 
         # ── 无活跃 session → 正常退出，不 stop_event，让 LLM 接 ──
 
+    def _framework_scheduler(self):
+        """获取 AstrBot 官方调度器（context.cron_manager.scheduler）。不可用返回 None。"""
+        try:
+            cm = getattr(self.context, "cron_manager", None)
+            if cm is not None:
+                sch = getattr(cm, "scheduler", None)
+                if sch is not None:
+                    return sch
+        except Exception:
+            pass
+        return None
+
     async def _start_sw_scheduler(self):
+        """注册三个独立日报的每日定时任务。
+
+        优先使用 AstrBot 官方 context.cron_manager.scheduler + CronTrigger(hour,minute)
+        （与 AstrBot 主事件循环绑定，可靠触发）；不可用时回退自建 AsyncIOScheduler。
+        """
         await self._stop_sw_scheduler()
         try: self._timezone = zoneinfo.ZoneInfo("Asia/Shanghai")
-        except: self._timezone = None
+        except Exception:
+            try: self._timezone = zoneinfo.ZoneInfo("local")
+            except Exception: self._timezone = None
         config = self._get_config()
         try:
             h = int(config.get("schedule_hour",10) if isinstance(config,dict) else 10)
             m = int(config.get("schedule_minute",0) if isinstance(config,dict) else 0)
-        except: h,m = 10,0
+        except Exception: h,m = 10,0
         self._schedule_hour = max(0,min(23,h)); self._schedule_minute = max(0,min(59,m))
         # 游戏日报独立调度（与软件日报分开）
         try:
             gh = int(config.get("game_schedule_hour",18) if isinstance(config,dict) else 18)
             gm = int(config.get("game_schedule_minute",0) if isinstance(config,dict) else 0)
-        except: gh,gm = 18,0
+        except Exception: gh,gm = 18,0
         self._game_schedule_hour = max(0,min(23,gh)); self._game_schedule_minute = max(0,min(59,gm))
         # 影视日报独立调度（与软件/游戏日报分开）
         try:
             mh = int(config.get("movie_schedule_hour",20) if isinstance(config,dict) else 20)
             mm = int(config.get("movie_schedule_minute",0) if isinstance(config,dict) else 0)
-        except: mh,mm = 20,0
+        except Exception: mh,mm = 20,0
         self._movie_schedule_hour = max(0,min(23,mh)); self._movie_schedule_minute = max(0,min(59,mm))
-        tz_kw = {"timezone":self._timezone} if self._timezone else {}
-        self._apscheduler = AsyncIOScheduler(**tz_kw); self._apscheduler.start()
-        self._schedule_sw_next()
-        self._schedule_game_next()
-        self._schedule_movie_next()
-        if self._heartbeat_task: self._heartbeat_task.cancel()
-        self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
-        if self._fallback_task: self._fallback_task.cancel()
-        self._fallback_task = asyncio.create_task(self._sw_fallback(), name="sw_fallback")
+        self._scheduled_job_ids = []
+        sch = self._framework_scheduler()
+        if sch is not None:
+            # ===== 官方调度器：CronTrigger 每日重复，无需手动重排 =====
+            self._using_framework_scheduler = True
+            tz_kw = {"timezone": self._timezone} if self._timezone else {}
+            jobs = [
+                (self._scheduler_job_id, self._schedule_hour, self._schedule_minute, self._sw_daily_job, "软件日报"),
+                (self._game_scheduler_job_id, self._game_schedule_hour, self._game_schedule_minute, self._game_daily_job, "游戏日报"),
+                (self._movie_scheduler_job_id, self._movie_schedule_hour, self._movie_schedule_minute, self._movie_daily_job, "影视日报"),
+            ]
+            for job_id, jh, jm, func, name in jobs:
+                try:
+                    sch.add_job(func, CronTrigger(hour=int(jh), minute=int(jm), **tz_kw),
+                                id=job_id, replace_existing=True, misfire_grace_time=600)
+                    self._scheduled_job_ids.append(job_id)
+                    logger.info(f"[暮黎资源] 已注册官方定时任务: {name} @ {int(jh):02d}:{int(jm):02d} (Asia/Shanghai)")
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 注册官方定时任务失败 ({name}): {e}")
+            # 配置热更新守护：每 600s 检测时间配置变更并重新注册
+            if self._heartbeat_task: self._heartbeat_task.cancel()
+            self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
+            logger.info(f"[暮黎资源] 官方定时调度已就绪（{len(self._scheduled_job_ids)} 个任务）")
+        else:
+            # ===== 回退：自建 AsyncIOScheduler + CronTrigger 每日重复（不依赖手动重排）=====
+            self._using_framework_scheduler = False
+            logger.warning("[暮黎资源] 未找到官方 context.cron_manager.scheduler，回退自建 AsyncIOScheduler(CronTrigger)")
+            tz_kw = {"timezone": self._timezone} if self._timezone else {}
+            jobs = [
+                (self._scheduler_job_id, self._schedule_hour, self._schedule_minute, self._sw_daily_job, "软件日报"),
+                (self._game_scheduler_job_id, self._game_schedule_hour, self._game_schedule_minute, self._game_daily_job, "游戏日报"),
+                (self._movie_scheduler_job_id, self._movie_schedule_hour, self._movie_schedule_minute, self._movie_daily_job, "影视日报"),
+            ]
+            self._apscheduler = AsyncIOScheduler(**tz_kw); self._apscheduler.start()
+            for job_id, jh, jm, func, name in jobs:
+                try:
+                    self._apscheduler.add_job(func, CronTrigger(hour=int(jh), minute=int(jm), **tz_kw),
+                                id=job_id, replace_existing=True, misfire_grace_time=600)
+                    self._scheduled_job_ids.append(job_id)
+                    logger.info(f"[暮黎资源] 已注册自建定时任务: {name} @ {int(jh):02d}:{int(jm):02d}")
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 注册自建定时任务失败 ({name}): {e}")
+            if self._heartbeat_task: self._heartbeat_task.cancel()
+            self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
+            logger.info(f"[暮黎资源] 自建定时调度已就绪（{len(self._scheduled_job_ids)} 个任务）")
         try:
             d = os.path.join(os.path.dirname(__file__),"debug_logs"); os.makedirs(d,exist_ok=True)
             self._debug_log_path = os.path.join(d,"scheduler_debug.log")
-        except: pass
+        except Exception: pass
         try:
             self._reports_dir = os.path.join(os.path.dirname(__file__),"reports"); os.makedirs(self._reports_dir,exist_ok=True)
             self._sw_cleanup_reports()
-        except: pass
+        except Exception: pass
 
     async def _stop_sw_scheduler(self):
+        # 1. 取消后台守护任务
         if self._fallback_task:
             self._fallback_task.cancel()
             try: await self._fallback_task
-            except: pass; self._fallback_task = None
+            except Exception: pass; self._fallback_task = None
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             try: await self._heartbeat_task
-            except: pass; self._heartbeat_task = None
+            except Exception: pass; self._heartbeat_task = None
+        # 2. 移除官方调度器上的定时任务
+        if self._using_framework_scheduler:
+            sch = self._framework_scheduler()
+            if sch is not None:
+                for jid in self._scheduled_job_ids:
+                    try:
+                        if sch.get_job(jid): sch.remove_job(jid)
+                    except Exception: pass
+            self._scheduled_job_ids = []
+            self._using_framework_scheduler = False
+        # 3. 关闭自建调度器
         if self._apscheduler and self._apscheduler.running:
             try: self._apscheduler.shutdown(wait=True)
-            except: pass; self._apscheduler = None
+            except Exception: pass
+            self._apscheduler = None
 
     def _sw_next_run(self):
         n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
@@ -4894,12 +4976,12 @@ class MuliyResourcesPlugin(Star):
         return nr
 
     def _schedule_sw_next(self):
-        nr = self._sw_next_run()
-        self._apscheduler.add_job(self._sw_daily_job,"date",run_date=nr,id=self._scheduler_job_id,name="软件日报",replace_existing=True,misfire_grace_time=600)
+        # 已统一改用 CronTrigger 每日重复，无需手动重排下一次
+        return
 
     def _schedule_game_next(self):
-        nr = self._game_next_run()
-        self._apscheduler.add_job(self._game_daily_job,"date",run_date=nr,id=self._game_scheduler_job_id,name="游戏日报",replace_existing=True,misfire_grace_time=600)
+        # 已统一改用 CronTrigger 每日重复，无需手动重排下一次
+        return
 
     def _movie_next_run(self):
         n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
@@ -4908,22 +4990,52 @@ class MuliyResourcesPlugin(Star):
         return nr
 
     def _schedule_movie_next(self):
-        nr = self._movie_next_run()
-        self._apscheduler.add_job(self._movie_daily_job,"date",run_date=nr,id=self._movie_scheduler_job_id,name="影视日报",replace_existing=True,misfire_grace_time=600)
+        # 已统一改用 CronTrigger 每日重复，无需手动重排下一次
+        return
 
     async def _sw_heartbeat(self):
+        """每 600s 守护一次：
+        - 官方模式下检测日报时间配置是否变更，变更则重新注册（配置热更新）；
+        - 兜底：若任务丢失则重注册。自建模式下保留原重排逻辑。
+        """
         while True:
             try:
                 await asyncio.sleep(600)
-                if not self._apscheduler or not self._apscheduler.running: await self._start_sw_scheduler(); continue
-                j = self._apscheduler.get_job(self._scheduler_job_id)
-                if not j or not j.next_run_time: self._schedule_sw_next()
-                jg = self._apscheduler.get_job(self._game_scheduler_job_id)
-                if not jg or not jg.next_run_time: self._schedule_game_next()
-                jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
-                if not jm or not jm.next_run_time: self._schedule_movie_next()
+                config = self._get_config()
+                try:
+                    nh = int(config.get("schedule_hour",10) if isinstance(config,dict) else 10)
+                    nm = int(config.get("schedule_minute",0) if isinstance(config,dict) else 0)
+                    ngh = int(config.get("game_schedule_hour",18) if isinstance(config,dict) else 18)
+                    ngm = int(config.get("game_schedule_minute",0) if isinstance(config,dict) else 0)
+                    nmh = int(config.get("movie_schedule_hour",20) if isinstance(config,dict) else 20)
+                    nmm = int(config.get("movie_schedule_minute",0) if isinstance(config,dict) else 0)
+                except Exception:
+                    nh,nm,ngh,ngm,nmh,nmm = 10,0,18,0,20,0
+                changed = (nh != self._schedule_hour or nm != self._schedule_minute or
+                           ngh != self._game_schedule_hour or ngm != self._game_schedule_minute or
+                           nmh != self._movie_schedule_hour or nmm != self._movie_schedule_minute)
+                if changed:
+                    logger.info("[暮黎资源] 检测到日报时间配置变更，重新注册定时任务")
+                    await self._start_sw_scheduler(); continue
+                if self._using_framework_scheduler:
+                    sch = self._framework_scheduler()
+                    if sch is None:
+                        logger.warning("[暮黎资源] 官方调度器不可用，尝试回退自建"); await self._start_sw_scheduler(); continue
+                    for jid in self._scheduled_job_ids:
+                        try:
+                            if not sch.get_job(jid): raise RuntimeError("missing")
+                        except Exception:
+                            logger.warning("[暮黎资源] 官方定时任务丢失，重新注册"); await self._start_sw_scheduler(); break
+                else:
+                    if not self._apscheduler or not self._apscheduler.running: await self._start_sw_scheduler(); continue
+                    j = self._apscheduler.get_job(self._scheduler_job_id)
+                    if not j or not j.next_run_time: self._schedule_sw_next()
+                    jg = self._apscheduler.get_job(self._game_scheduler_job_id)
+                    if not jg or not jg.next_run_time: self._schedule_game_next()
+                    jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
+                    if not jm or not jm.next_run_time: self._schedule_movie_next()
             except asyncio.CancelledError: return
-            except: pass
+            except Exception: pass
 
     async def _sw_fallback(self):
         while True:
