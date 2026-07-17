@@ -134,6 +134,9 @@ from .core.massage import (
 )
 
 logger = logging.getLogger("astrbot_plugin_muliyresources")
+# 强制 INFO 级别并向上传播，确保调度注册/触发日志一定出现在 AstrBot 控制台
+logger.setLevel(logging.INFO)
+logger.propagate = True
 
 
 def _format_size(size_bytes: int) -> str:
@@ -5136,14 +5139,19 @@ class MuliyResourcesPlugin(Star):
 
     async def _movie_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
-        if self._movie_last_run_date == ts: return
+        if self._movie_last_run_date == ts:
+            logger.info(f"[暮黎资源] 影视日报定时触发，但今日({ts})已运行过，跳过")
+            return
         self._movie_last_run_date = ts
+        logger.info(f"[暮黎资源] ⏰ 影视日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
-            self._schedule_movie_next(); return
+            logger.warning("[暮黎资源] 影视日报已触发，但 movie_report_enabled 关闭，跳过")
+            return
         gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
         if not gs:
-            self._schedule_movie_next(); return
+            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
+            return
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
         forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
@@ -5216,11 +5224,16 @@ class MuliyResourcesPlugin(Star):
 
     async def _sw_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
-        if self._last_run_date == ts: return
+        if self._last_run_date == ts:
+            logger.info(f"[暮黎资源] 软件日报定时触发，但今日({ts})已运行过，跳过")
+            return
         self._last_run_date = ts
+        logger.info(f"[暮黎资源] ⏰ 软件日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
-        if not gs: return
+        if not gs:
+            logger.warning("[暮黎资源] 软件日报已触发，但未配置 group_ids，跳过发送")
+            return
         mx = 24  # max_softwares 配置已移除，固定默认 24
         result = await asyncio.to_thread(sync_scrape, mx)
         if not result["success"]: return
@@ -5333,14 +5346,19 @@ class MuliyResourcesPlugin(Star):
 
     async def _game_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
-        if self._game_last_run_date == ts: return
+        if self._game_last_run_date == ts:
+            logger.info(f"[暮黎资源] 游戏日报定时触发，但今日({ts})已运行过，跳过")
+            return
         self._game_last_run_date = ts
+        logger.info(f"[暮黎资源] ⏰ 游戏日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
-            self._schedule_game_next(); return
+            logger.warning("[暮黎资源] 游戏日报已触发，但 game_report_enabled 关闭，跳过")
+            return
         gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
         if not gs:
-            self._schedule_game_next(); return
+            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids，跳过发送")
+            return
         mx = int(config.get("game_report_max", 24) or 24)
         if self._game_source() == "switch618":
             cookie = self._g_cookie()
