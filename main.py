@@ -553,21 +553,15 @@ class MuliyResourcesPlugin(Star):
         return flat
 
     def _resolve_group_ids(self, specific_key: str):
-        """解析某日报的目标群。
+        """解析某日报的目标群（各自独立配置，不共享软件群）。
 
-        - 优先用各自专属键（game_group_ids / movie_group_ids）；
-        - 若专属群为空，则回退到软件日报共享群 group_ids（避免用户重复配置、也规避
-          配置页只改了软件群而游戏/影视群留空导致永不发送的问题）；
-        - 返回 (群列表, 是否走了回退)。
+        - 仅读取各自专属键（game_group_ids / movie_group_ids）；
+        - 不回退软件群 group_ids（用户要求三日报群号分开）；
+        - 返回 (群列表, 是否走了回退) —— 当前不共享，fb 恒为 False。
         """
         config = self._get_config()
         gs = (config.get(specific_key, "") or "").strip() if isinstance(config, dict) else ""
-        if gs:
-            return [g.strip() for g in gs.split(",") if g.strip()], False
-        fallback = (config.get("group_ids", "") or "").strip() if isinstance(config, dict) else ""
-        if fallback:
-            return [g.strip() for g in fallback.split(",") if g.strip()], True
-        return [], False
+        return [g.strip() for g in gs.split(",") if g.strip()], False
 
     def _get_cookie(self) -> str:
         return self._get_config().get("cookie", "").strip()
@@ -5192,10 +5186,8 @@ class MuliyResourcesPlugin(Star):
             return
         gs_list, fb = self._resolve_group_ids("movie_group_ids")
         if not gs_list:
-            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids 且无软件共享群 group_ids，跳过发送")
+            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
             return
-        if fb:
-            logger.warning(f"[暮黎资源] 影视日报：movie_group_ids 为空，已回退使用软件共享群 group_ids（{len(gs_list)}个）")
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
         forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
@@ -5432,10 +5424,8 @@ class MuliyResourcesPlugin(Star):
             return
         gs_list, fb = self._resolve_group_ids("game_group_ids")
         if not gs_list:
-            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids 且无软件共享群 group_ids，跳过发送")
+            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids，跳过发送")
             return
-        if fb:
-            logger.warning(f"[暮黎资源] 游戏日报：game_group_ids 为空，已回退使用软件共享群 group_ids（{len(gs_list)}个）")
         mx = int(config.get("game_report_max", 24) or 24)
         if self._game_source() == "switch618":
             cookie = self._g_cookie()
