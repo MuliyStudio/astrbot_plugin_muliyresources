@@ -331,8 +331,10 @@ class MuliyResourcesPlugin(Star):
         try:
             logger.info("[暮黎资源] 平台已加载，重新注册定时日报任务")
             await self._start_sw_scheduler()
-        except Exception as e:
-            logger.warning(f"[暮黎资源] 平台加载后注册定时任务失败: {e}")
+        except BaseException as e:
+            # 兜底：包括 CancelledError 在内的任何异常都不得冒泡到 platform_manager，
+            # 否则会导致整个 AstrBot 启动崩溃（插件问题绝不能拖垮机器人）。
+            logger.warning(f"[暮黎资源] 平台加载后注册定时任务失败(已忽略，不影响机器人启动): {e!r}")
 
     # ==================== LLM 请求拦截（强制工具调用） ====================
 
@@ -4942,14 +4944,23 @@ class MuliyResourcesPlugin(Star):
 
     async def _stop_sw_scheduler(self):
         # 1. 取消后台守护任务
+        #    注意：await 一个被 cancel() 的任务会抛 asyncio.CancelledError，
+        #    而它在 Python 3.8+ 继承自 BaseException，普通 except Exception 抓不到，
+        #    若不显式捕获会一路冒泡到 platform_manager 导致整个机器人启动崩溃。
         if self._fallback_task:
             self._fallback_task.cancel()
-            try: await self._fallback_task
-            except Exception: pass; self._fallback_task = None
+            try:
+                await self._fallback_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._fallback_task = None
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
-            try: await self._heartbeat_task
-            except Exception: pass; self._heartbeat_task = None
+            try:
+                await self._heartbeat_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._heartbeat_task = None
         # 2. 移除官方调度器上的定时任务
         if self._using_framework_scheduler:
             sch = self._framework_scheduler()
