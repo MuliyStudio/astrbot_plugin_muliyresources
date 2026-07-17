@@ -36,13 +36,13 @@ _VIDEO_UA = (
 )
 
 # 平台注册表：key -> {name, domains}
+# ⚠️ 仅四大平台（芒果TV / 腾讯视频 / 优酷 / 爱奇艺）参与触发识别与解析，
+# 乐视/搜狐等其它站点已被移除，其分享链接不会被识别为可解析视频。
 PLATFORMS = {
     "iqiyi": {"name": "爱奇艺", "domains": ("iqiyi.com",)},
     "qq": {"name": "腾讯视频", "domains": ("v.qq.com", "qq.com")},
     "youku": {"name": "优酷", "domains": ("youku.com",)},
     "mgtv": {"name": "芒果TV", "domains": ("mgtv.com",)},
-    "le": {"name": "乐视视频", "domains": ("le.com", "letv.com")},
-    "sohu": {"name": "搜狐视频", "domains": ("sohu.com", "tv.sohu.com", "my.tv.sohu.com")},
 }
 
 
@@ -288,8 +288,6 @@ _HOME_BOILER = {
     "qq": ("腾讯视频",),
     "youku": ("优酷",),
     "mgtv": ("芒果tv", "芒果TV"),
-    "le": ("乐视",),
-    "sohu": ("搜狐",),
 }
 
 

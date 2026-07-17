@@ -1,143 +1,293 @@
 {
-  "xdgame_username": {
-    "type": "string",
-    "description": "xdgame.com 账号",
-    "default": "",
-    "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。游戏搜索仅支持 xdgame.com 源，需配置账号密码并获取有效 Cookie 后使用"
+  "account": {
+    "description": "账号与凭据",
+    "hint": "各平台登录账号、Cookie 等敏感凭证（影视/游戏/音乐），按需填写对应源。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "xdgame_username": {
+        "type": "string",
+        "description": "xdgame.com 账号",
+        "default": "",
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。游戏搜索仅支持 xdgame.com 源，需配置账号密码并获取有效 Cookie 后使用"
+      },
+      "xdgame_password": {
+        "type": "string",
+        "description": "xdgame.com 密码",
+        "default": "",
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie"
+      },
+      "cookie": {
+        "type": "text",
+        "description": "xdgame.com Cookie",
+        "default": "",
+        "hint": "Cookie 长度通常在 200-600 字符之间，自动登录后会自动更新此字段"
+      },
+      "switch618_cookie": {
+        "type": "text",
+        "description": "switch618.com 登录 Cookie（wordpress_logged_in_*）",
+        "default": "",
+        "hint": "由 /game_cookie_refresh 在 switch618 模式下扫码登录后自动写入。未配置 xdgame 账号密码时，游戏搜索自动切换到 switch618 源，需此 Cookie 才能获取下载链接。"
+      },
+      "muliy_cookie": {
+        "type": "string",
+        "description": "教父.com 登录态 Cookie（cookie 登录模式，绕过 PoW+验证码）",
+        "default": "",
+        "hint": "选填（想用教父.com新站影视时）。教父.com 登录态 Cookie，直接以浏览器登录态访问影视源（跳过 PoW 与验证码），新站额外提供网盘下载资源。\n需包含字段（至少）：app_auth、browser_verifie、PHPSESSID（复制该域名下全部 Cookie 更稳妥），各字段以英文分号 ; 隔开整串粘贴。\n获取方式：登陆后按F12，在应用程式页面复制各个带字段名cookie粘贴进来，用 ; 隔开。\n⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新。\n💡 留空也没关系：影视日报与影视搜索都会自动回退 a123tv 旧站（免登录，仅在线播放），照常出日报。"
+      },
+      "wyy_cookie": {
+        "type": "string",
+        "description": "黑胶会员 Cookie（用于解析 VIP/付费歌曲）",
+        "default": "",
+        "hint": "留空则只能解析免费歌曲。\n填黑胶会员账号的 Cookie 即可解析 VIP 歌曲（standard/exhigh/lossless 需黑胶会员，hires 部分需会员，sky/jymaster 需超级会员）。\n获取：网易云网页版登录会员号 → F12 → Network → 复制任意请求的 Cookie 整串（需含 MUSIC_U 与 __csrf）。\n⚠️ 属敏感凭证，建议使用小号/专用会员号，请勿外泄；主号有被风控风险。"
+      }
+    }
   },
-  "xdgame_password": {
-    "type": "string",
-    "description": "xdgame.com 密码",
-    "default": "",
-    "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie"
+  "game_search": {
+    "description": "游戏搜索",
+    "hint": "控制 /找游戏 等游戏资源搜索行为。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "game_source": {
+        "type": "string",
+        "description": "游戏搜索源（auto=有xdgame账密用xdgame，否则自动切换switch618）",
+        "default": "auto",
+        "hint": "auto（默认）：配置了 xdgame_username/xdgame_password 走 xdgame.com，未配置则自动走 switch618.com 源。也可显式填 xdgame 或 switch618 强制指定源。"
+      },
+      "max_search_results": {
+        "type": "int",
+        "description": "最大搜索结果数",
+        "default": 32,
+        "min": 1,
+        "max": 48,
+        "hint": "默认 32，最大 48"
+      }
+    }
   },
-  "cookie": {
-    "type": "text",
-    "description": "xdgame.com Cookie",
-    "default": "",
-    "hint": "Cookie 长度通常在 200-600 字符之间，自动登录后会自动更新此字段"
+  "game_report": {
+    "description": "游戏日报",
+    "hint": "XDGAME 每日新游抓取 → 卡通图片推送到群（需先 playwright install chromium）。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "game_report_enabled": {
+        "type": "bool",
+        "description": "游戏日报总开关",
+        "default": true,
+        "hint": "开启后，按下方「软件日报与推送」里的 schedule_hour/minute 与 group_ids 每天自动抓取 xdgame.com 当日更新的游戏，渲染成卡通图片推送到群。"
+      },
+      "game_report_max": {
+        "type": "int",
+        "description": "游戏日报每期最多游戏数",
+        "default": 24,
+        "min": 1,
+        "max": 50,
+        "hint": "默认 24，最大 50。过多会导致图片过长。此上限对 xdgame 与 switch618 两种源均生效（不再抓全）。"
+      },
+      "game_schedule_hour": {
+        "type": "int",
+        "description": "游戏日报推送小时（0-23，与软件日报独立）",
+        "default": 18,
+        "min": 0,
+        "max": 23,
+        "hint": "游戏日报独立定时小时，与软件日报分开设置。"
+      },
+      "game_schedule_minute": {
+        "type": "int",
+        "description": "游戏日报推送分钟（0-59，与软件日报独立）",
+        "default": 0,
+        "min": 0,
+        "max": 59,
+        "hint": "游戏日报独立定时分钟，与软件日报分开设置。"
+      },
+      "game_group_ids": {
+        "type": "string",
+        "description": "游戏日报推送群 ID（与软件日报独立）",
+        "default": "",
+        "hint": "多个用英文逗号分隔，例如：123456789,987654321。留空则游戏日报不推送。"
+      }
+    }
   },
-  "switch618_cookie": {
-    "type": "text",
-    "description": "switch618.com 登录 Cookie（wordpress_logged_in_*）",
-    "default": "",
-    "hint": "由 /game_cookie_refresh 在 switch618 模式下扫码登录后自动写入。未配置 xdgame 账号密码时，游戏搜索自动切换到 switch618 源，需此 Cookie 才能获取下载链接。"
+  "software_report": {
+    "description": "软件日报与推送",
+    "hint": "软件日报独立定时推送设置（与游戏日报分开）。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "schedule_hour": {
+        "type": "int",
+        "description": "软件日报推送小时（0-23，仅软件日报）",
+        "default": 10,
+        "min": 0,
+        "max": 23
+      },
+      "schedule_minute": {
+        "type": "int",
+        "description": "软件日报推送分钟（0-59，仅软件日报）",
+        "default": 0,
+        "min": 0,
+        "max": 59
+      },
+      "group_ids": {
+        "type": "string",
+        "description": "软件日报推送群 ID（仅软件日报）",
+        "default": "",
+        "hint": "多个用英文逗号分隔，例如：123456789,987654321"
+      }
+    }
   },
-  "max_search_results": {
-    "type": "int",
-    "description": "最大搜索结果数",
-    "default": 32,
-    "min": 1,
-    "max": 48,
-    "hint": "默认 32，最大 48"
+  "movie_report": {
+    "description": "影视日报",
+    "hint": "教父.com 主页「最近更新」的电影/剧集/动漫，毛玻璃风格图片推送到群（需 playwright install chromium）。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "movie_report_enabled": {
+        "type": "bool",
+        "description": "影视日报总开关",
+        "default": true,
+        "hint": "开启后，按下方时间每天自动抓取影视站主页「最近更新」的影视（电影/剧集/动漫），渲染成毛玻璃图片推送到群。\n影视源自动切换：配置了上方 account.muliy_cookie 则走教父.com 新站；未配置则自动回退 a123tv 旧站（免登录），无需任何 Cookie 也能正常出日报。"
+      },
+      "movie_report_max": {
+        "type": "int",
+        "description": "影视日报每个区块最多部数",
+        "default": 24,
+        "min": 1,
+        "max": 50,
+        "hint": "默认 24，最大 50。电影/剧集/动漫每个区块各取前 N 部（按主页顺序），过多图片过长。"
+      },
+      "movie_schedule_hour": {
+        "type": "int",
+        "description": "影视日报推送小时（0-23，独立）",
+        "default": 20,
+        "min": 0,
+        "max": 23,
+        "hint": "与软件/游戏日报独立设置。"
+      },
+      "movie_schedule_minute": {
+        "type": "int",
+        "description": "影视日报推送分钟（0-59，独立）",
+        "default": 0,
+        "min": 0,
+        "max": 59
+      },
+      "movie_group_ids": {
+        "type": "string",
+        "description": "影视日报推送群 ID（独立）",
+        "default": "",
+        "hint": "多个用英文逗号分隔，例如：123456789,987654321。留空则影视日报不推送。"
+      },
+      "movie_sections": {
+        "type": "string",
+        "description": "影视日报包含的区块（mv,tv,ac）",
+        "default": "mv,tv,ac",
+        "hint": "逗号分隔：mv=电影, tv=剧集, ac=动漫。默认全部。例：只推剧集填 tv。"
+      }
+    }
   },
-  "platform_id": {
-    "type": "string",
-    "description": "QQ 机器人平台 ID（默认 aiocqhttp）",
-    "default": "aiocqhttp"
+  "movie_search": {
+    "description": "影视搜索",
+    "hint": "教父.com 新站 / a123tv 旧站影视搜索源设置。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "movie_source": {
+        "type": "string",
+        "description": "影视搜索源（留空=按教父.com账号自动切换）",
+        "default": "",
+        "hint": "留空或默认=自动模式：配置了上方教父.com 的 Cookie 则走新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。也可显式填 a123tv 强制旧站。注意：现已由 Cookie 自动切换，无需手动切换源。"
+      },
+      "muliy_cache_ttl": {
+        "type": "int",
+        "description": "新站登录态缓存秒数",
+        "default": 3600,
+        "min": 300,
+        "max": 86400,
+        "hint": "默认3600秒，到期自动重登"
+      }
+    }
   },
-  "group_ids": {
-    "type": "string",
-    "description": "软件日报推送群 ID",
-    "default": "",
-    "hint": "多个用英文逗号分隔，例如：123456789,987654321"
+  "netease_music": {
+    "description": "网易云音乐",
+    "hint": "网易云语音名片 / 歌曲解析相关设置。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "wyy_auto_parse": {
+        "type": "bool",
+        "description": "网易云语音名片",
+        "default": true,
+        "hint": "自动识别消息中的网易云链接/小程序分享并发送语音（默认开）"
+      },
+      "wyy_music_type": {
+        "type": "string",
+        "description": "解析音质",
+        "default": "standard",
+        "hint": "传递给自建 NeteaseCloudMusicApi 的音质类型如下\nstandard/exhigh/lossless/hires/jyeffect/sky/jymaster部分音质需 VIP\n普通语音片段用 standard 即可"
+      },
+      "wyy_custom_url": {
+        "type": "string",
+        "description": "网易云解析后端地址",
+        "default": "",
+        "hint": "自建 NeteaseCloudMusicApi 实例地址，唯一后端。\n推荐填「基础地址」如 http://127.0.0.1:3000（插件自动调用 /song/url + /song/detail，名片信息完整）；也可填含 {id} 的直链模板如 http://127.0.0.1:3000/song/url?id={id}（仅直链，歌名可能缺失）。\n部署见 tools/netease-api/docker-compose.yml。\n若插件与 API 同机，用 http://127.0.0.1:3000；跨容器/跨机用 http://<局域网IP>:3000。留空则网易云语音名片功能不可用。"
+      },
+      "wyy_clip_seconds": {
+        "type": "int",
+        "description": "最大发送歌曲时长（秒）",
+        "default": 600,
+        "min": 10,
+        "max": 600,
+        "hint": "实际发送语音时长 = min(歌曲实际时长, 该值)\n例：设 120 → 歌曲最长只发前 120 秒；设 600（10 分钟）→ 不满 10 分钟的歌整曲发送。最大 600。**PS：**建议180秒，不超过400秒"
+      },
+      "wyy_audio_format": {
+        "type": "string",
+        "description": "语音音频格式",
+        "default": "mp3",
+        "hint": "mp3（QQ 兼容性好，推荐）/ wav（部分 OneBot 实现要求）"
+      }
+    }
   },
-  "schedule_hour": {
-    "type": "int",
-    "description": "软件日报推送小时（0-23）",
-    "default": 10,
-    "min": 0,
-    "max": 23
+  "vip_video": {
+    "description": "VIP 视频解析",
+    "hint": "爱奇艺/腾讯/优酷/芒果等 VIP 视频链接自动解析设置。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "video_vip_parse": {
+        "type": "bool",
+        "description": "VIP 视频解析（爱奇艺/腾讯/优酷/芒果等）",
+        "default": true,
+        "hint": "开启后，消息里出现受支持的 VIP 视频链接会被自动解析为「可在浏览器/播放器打开的解析播放直链」。关闭则忽略。"
+      },
+      "video_vip_timeout": {
+        "type": "int",
+        "description": "单个解析站超时（毫秒）",
+        "default": 25000,
+        "min": 8000,
+        "max": 60000,
+        "hint": "默认 25000ms。站点多/网速慢可适当调大。"
+      }
+    }
   },
-  "schedule_minute": {
-    "type": "int",
-    "description": "软件日报推送分钟（0-59）",
-    "default": 0,
-    "min": 0,
-    "max": 59
-  },
-  "movie_source": {
-    "type": "string",
-    "description": "影视搜索源（留空=按教父.com账号自动切换）",
-    "default": "",
-    "hint": "留空或默认=自动模式：配置了下方教父.com 的 Cookie 则走新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。也可显式填 a123tv 强制旧站。注意：现已由 Cookie 自动切换，无需手动切换源。"
-  },
-  "muliy_cookie": {
-    "type": "string",
-    "description": "教父.com 登录态 Cookie（cookie 登录模式，绕过 PoW+验证码）",
-    "default": "",
-    "hint": "必填（想用教父.com新站影视时）。教父.com 登录态 Cookie，直接以浏览器登录态访问影视源（跳过 PoW 与验证码）。\n需包含字段（至少）：app_auth、browser_verifie、PHPSESSID（复制该域名下全部 Cookie 更稳妥），各字段以英文分号 ; 隔开整串粘贴。\n获取方式：登陆后按F12，在应用程式页面复制各个带字段名cookie粘贴进来，用 ; 隔开。\n⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新；留空则影视搜索回退 a123tv 旧站（仅在线播放）。"
-  },
-  "muliy_cache_ttl": {
-    "type": "int",
-    "description": "新站登录态缓存秒数",
-    "default": 3600,
-    "min": 300,
-    "max": 86400,
-    "hint": "默认3600秒，到期自动重登"
-  },
-  "wyy_auto_parse": {
-    "type": "bool",
-    "description": "网易云语音名片",
-    "default": true,
-    "hint": "自动识别消息中的网易云链接/小程序分享并发送语音（默认开）"
-  },
-  "wyy_music_type": {
-    "type": "string",
-    "description": "解析音质",
-    "default": "standard",
-    "hint": "传递给自建 NeteaseCloudMusicApi 的音质类型如下\nstandard/exhigh/lossless/hires/jyeffect/sky/jymaster部分音质需 VIP\n普通语音片段用 standard 即可"
-  },
-  "wyy_custom_url": {
-    "type": "string",
-    "description": "网易云解析后端地址",
-    "default": "",
-    "hint": "自建 NeteaseCloudMusicApi 实例地址，唯一后端。\n推荐填「基础地址」如 http://127.0.0.1:3000（插件自动调用 /song/url + /song/detail，名片信息完整）；也可填含 {id} 的直链模板如 http://127.0.0.1:3000/song/url?id={id}（仅直链，歌名可能缺失）。\n部署见 tools/netease-api/docker-compose.yml。\n若插件与 API 同机，用 http://127.0.0.1:3000；跨容器/跨机用 http://<局域网IP>:3000。留空则网易云语音名片功能不可用。"
-  },
-  "wyy_cookie": {
-    "type": "string",
-    "description": "黑胶会员 Cookie（用于解析 VIP/付费歌曲）",
-    "default": "",
-    "hint": "留空则只能解析免费歌曲。\n填黑胶会员账号的 Cookie 即可解析 VIP 歌曲（standard/exhigh/lossless 需黑胶会员，hires 部分需会员，sky/jymaster 需超级会员）。\n获取：网易云网页版登录会员号 → F12 → Network → 复制任意请求的 Cookie 整串（需含 MUSIC_U 与 __csrf）。\n⚠️ 属敏感凭证，建议使用小号/专用会员号，请勿外泄；主号有被风控风险。"
-  },
-  "wyy_clip_seconds": {
-    "type": "int",
-    "description": "最大发送歌曲时长（秒）",
-    "default": 600,
-    "min": 10,
-    "max": 600,
-    "hint": "实际发送语音时长 = min(歌曲实际时长, 该值)\n例：设 120 → 歌曲最长只发前 120 秒；设 600（10 分钟）→ 不满 10 分钟的歌整曲发送。最大 600。**PS：**建议180秒，不超过400秒"
-  },
-  "wyy_audio_format": {
-    "type": "string",
-    "description": "语音音频格式",
-    "default": "mp3",
-    "hint": "mp3（QQ 兼容性好，推荐）/ wav（部分 OneBot 实现要求）"
-  },
-  "video_vip_parse": {
-    "type": "bool",
-    "description": "VIP 视频解析（爱奇艺/腾讯/优酷/芒果等）",
-    "default": true,
-    "hint": "开启后，消息里出现受支持的 VIP 视频链接会被自动解析为「可在浏览器/播放器打开的解析播放直链」。关闭则忽略。"
-  },
-  "video_vip_timeout": {
-    "type": "int",
-    "description": "单个解析站超时（毫秒）",
-    "default": 25000,
-    "min": 8000,
-    "max": 60000,
-    "hint": "默认 25000ms。站点多/网速慢可适当调大。"
-  },
-  "video_vip_browser_channel": {
-    "type": "string",
-    "description": "Playwright 浏览器 channel（留空=用自带 Chromium）",
-    "default": "",
-    "hint": "如需用本机已装 Chrome 可填 chrome；留空则使用插件自带的 Chromium（需联网首次下载）。"
-  },
-  "game_source": {
-    "type": "string",
-    "description": "游戏搜索源（auto=有xdgame账密用xdgame，否则自动切换switch618）",
-    "default": "auto",
-    "hint": "auto（默认）：配置了 xdgame_username/xdgame_password 走 xdgame.com，未配置则自动走 switch618.com 源。也可显式填 xdgame 或 switch618 强制指定源。"
+  "browser": {
+    "description": "浏览器（游戏日报 / VIP视频解析共用）",
+    "hint": "Playwright 渲染所用的浏览器设置，游戏日报与 VIP 视频解析共用。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "browser_channel": {
+        "type": "string",
+        "description": "Playwright 浏览器 channel（留空=用自带 Chromium）",
+        "default": "",
+        "hint": "如需用本机已装 Chrome 可填 chrome；留空则使用插件自带的 Chromium（需联网首次下载）。游戏日报与 VIP 视频解析共用。"
+      },
+      "browser_exe": {
+        "type": "string",
+        "description": "Playwright 浏览器可执行路径（留空=自动）",
+        "default": "",
+        "hint": "指定 Chromium/Chrome 可执行文件路径。留空则自动选择。游戏日报与 VIP 视频解析共用。"
+      }
+    }
   }
 }

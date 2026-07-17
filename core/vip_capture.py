@@ -57,10 +57,10 @@ VIP_INTERFACES: list[tuple[str, str]] = [
 
 
 # 常见 VIP / 付费视频平台域名（用于识别消息中的视频链接）
+# ⚠️ 仅触发四大平台（芒果TV / 腾讯视频 / 优酷 / 爱奇艺），其余站点（乐视/搜狐/bilibili/
+# PPTV/1905/央视等）一律不识别、不解析，避免误接无关链接。
 VIP_HOST_KEYWORDS = (
-    "iqiyi.com", "v.qq.com", "youku.com", "tudou.com", "mgtv.com",
-    "tv.sohu.com", "le.com", "letv.com", "bilibili.com", "pptv.com",
-    "wasu.com", "1905.com", "cntv.cn", "cctv.com", "qy.net",
+    "iqiyi.com", "v.qq.com", "qq.com", "youku.com", "mgtv.com",
 )
 
 
@@ -199,8 +199,8 @@ def follow_iqiyi_redirect(url: str, proxy: str = "") -> str:
 # ───────────────────────────────────────────────────────────────────────────
 # 多平台 URL 规范化（芒果TV / 优酷 / 腾讯视频 / 爱奇艺）
 # ───────────────────────────────────────────────────────────────────────────
-_VIDEO_HOSTS = ("iqiyi.com", "mgtv.com", "youku.com", "v.qq.com", "qq.com",
-                "le.com", "letv.com", "sohu.com", "bilibili.com")
+# 仅四大平台（爱奇艺/芒果TV/优酷/腾讯视频）做重定向跟随/规范化，其余链接原样返回。
+_VIDEO_HOSTS = ("iqiyi.com", "mgtv.com", "youku.com", "v.qq.com", "qq.com")
 
 
 def follow_video_redirect(url: str, proxy: str = "") -> str:

@@ -23,7 +23,11 @@
   5. status=1 成功 → 提取 wordpress_logged_in_xxx Cookie
 """
 import re
-from urllib.parse import unquote
+import time
+import datetime
+import io
+import base64
+from urllib.parse import unquote, urlparse
 from .constants import logger, parse_cookie_string, extract_game_description
 
 try:
@@ -34,6 +38,10 @@ try:
     from bs4 import BeautifulSoup
 except ImportError:
     BeautifulSoup = None
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 S618_BASE = "https://www.switch618.com/"
 S618_AJAX = S618_BASE + "wp-admin/admin-ajax.php"
@@ -480,3 +488,297 @@ def _extract_logged_in(session) -> str:
         if name.startswith("wordpress_logged_in_"):
             return f"{name}={value}"
     return ""
+
+
+# ====================================================================
+#  游戏日报（每日新增抓取，与 xdgame 日报模板共用卡通 HTML）
+#  列表页 https://www.switch618.com/pcgames/page/N/ 每页 15 款，通常前三页为今日新增。
+#  判定今日：取首款游戏 span.post-sign 文本，含「新游」或今日日期(月日) 即视为今日新增。
+#  简介：优先取详情页「玩法深度解析」区块。
+# ====================================================================
+
+S618_PCGAMES_TPL = S618_BASE + "pcgames/page/{}/"
+
+
+def fetch_618(url: str, cookie_str: str = "", retries: int = 3):
+    """带 Cookie 反爬挑战的 GET（switch618 首次请求 403 并返回 window.location 重定向，
+    带 Set-Cookie 再请求一次即返回真页）。返回 HTML 文本或 None。
+
+    说明：列表页/详情页的简介与截图均为公开内容，无需登录 Cookie；
+    传入的 cookie_str 仅用于详情页若要求登录时透传（不影响日报基本抓取）。
+    """
+    for _ in range(retries):
+        try:
+            s = _session(cookie_str)
+            r1 = s.get(url, timeout=30)
+            r1.encoding = "utf-8"
+            if r1.status_code == 403 and "window.location" in r1.text:
+                # 挑战：带服务器下发的 Set-Cookie 重新请求
+                r2 = s.get(url, timeout=30)
+                r2.encoding = "utf-8"
+                if len(r2.text) > 500:
+                    return r2.text
+                r3 = s.get(url, timeout=30)  # 极少数情况需第三次（cookie 未落稳）
+                r3.encoding = "utf-8"
+                if len(r3.text) > 500:
+                    return r3.text
+            elif len(r1.text) > 500:
+                return r1.text
+        except Exception as e:
+            logger.debug(f"[switch618日报] 请求失败: {e}")
+            time.sleep(2)
+    return None
+
+
+def parse_618_list(html: str) -> list:
+    """解析 switch618 pcgames 列表页，返回每款游戏基础信息（含 span 标记用于今日判定）。"""
+    soup = BeautifulSoup(html, "html.parser")
+    posts = soup.select("#posts > div")
+    games = []
+    for div in posts:
+        a = div.select_one("h3 > a") or div.select_one("a[href*='.html']")
+        if not a:
+            continue
+        href = (a.get("href") or "").strip()
+        if not href or not re.search(r"/\d+\.html", href):
+            continue
+        detail_url = (href if href.startswith("http")
+                      else (S618_BASE + href if href.startswith("/") else S618_BASE + "/" + href))
+        # span.post-sign：如「新游」或日期标记，移除后再清洗标题
+        span = a.select_one("span.post-sign")
+        span_text = span.get_text(strip=True) if span else ""
+        raw_title = a.get_text(" ", strip=True)
+        if span_text and span_text in raw_title:
+            raw_title = raw_title.replace(span_text, "")
+        title = clean_game_title(raw_title)
+        # 封面：优先 data-lazy-src（<noscript> 兜底 src 是直链，但 data-lazy-src 更稳）
+        img = div.select_one("div.img img.thumb") or div.select_one("div.img img")
+        cover = ""
+        if img:
+            cover = (img.get("data-lazy-src") or img.get("data-src")
+                     or img.get("src", "")).strip()
+            if cover.startswith("data:image"):
+                cover = ""
+            if cover and not cover.startswith("http"):
+                cover = S618_BASE + cover if cover.startswith("/") else S618_BASE + "/" + cover
+        cat = div.select_one("div.cat a")
+        category = cat.get_text(strip=True) if cat else ""
+        time_el = div.select_one("div.grid-meta span.time")
+        time_text = time_el.get_text(strip=True) if time_el else ""
+        if title and detail_url:
+            games.append({
+                "title": title, "detail_url": detail_url, "cover": cover,
+                "category": category, "time_text": time_text, "span_text": span_text,
+                "intro": "", "cover_b64": "", "shots_b64": [],
+            })
+    return games
+
+
+def _is_today_618(span_text: str) -> bool:
+    """依据首款游戏 span 标记判断本页是否为今日新增。
+
+    命中条件：含「新游」或含今日日期（支持 07-16 / 7-16 / 2026-07-16 等写法）。
+    """
+    if not span_text:
+        return False
+    t = span_text.strip()
+    if "新游" in t:
+        return True
+    today = datetime.date.today()
+    candidates = {
+        today.strftime("%m%d"),            # 0716
+        f"{today.month}{today.day}",        # 716
+        today.strftime("%m-%d"),           # 07-16
+        f"{today.month}-{today.day}",      # 7-16
+        today.strftime("%Y-%m-%d"),        # 2026-07-16
+        today.strftime("%Y年%m月%d日"),
+    }
+    return any(c in t for c in candidates)
+
+
+def extract_wanfa(soup) -> str:
+    """从详情页提取「玩法深度解析」区块正文（连续 <p> 直到下一个标题）。"""
+    for h in soup.find_all(["h2", "h3", "h4"]):
+        if "玩法深度解析" in h.get_text(strip=True):
+            parts = []
+            nxt = h.find_next_sibling()
+            while nxt and nxt.name not in ("h2", "h3", "h4"):
+                if nxt.name == "p":
+                    t = nxt.get_text(" ", strip=True)
+                    if t:
+                        parts.append(t)
+                nxt = nxt.find_next_sibling()
+            if parts:
+                from .constants import _clean_game_desc
+                return _clean_game_desc("\n".join(parts))
+            break
+    return ""
+
+
+# 图床熔断：同一 host 连续下载失败达到阈值后，跳过该 host 后续所有图片。
+# 常见于 Steam CDN（shared.cdn.queniuqe.com 等）在部分服务器网络被墙/极慢，
+# 若不加熔断，每款游戏 3 张图 × 15s 超时会导致整条日报卡死数分钟。
+_IMG_FAIL_THRESHOLD = 3
+
+
+def _dl_and_b64_618(url: str, fail_tracker: dict = None) -> str:
+    """下载 switch618 图片并压缩为 base64 data URI（离线渲染用）。失败返回空串。
+
+    fail_tracker: 可选 {host: 连续失败次数} 字典，用于跨图片共享熔断状态；
+    某 host 连续失败达到 _IMG_FAIL_THRESHOLD 后，直接跳过该 host 余下图以节省时间。
+    """
+    if not url or not url.startswith("http") or Image is None:
+        return ""
+    host = ""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        pass
+    if fail_tracker is not None and host in fail_tracker and fail_tracker[host] >= _IMG_FAIL_THRESHOLD:
+        logger.info(f"[switch618日报] 跳过图片（{host} 已连续失败 {fail_tracker[host]} 次，疑似被墙/超时）: {str(url)[:50]}")
+        return ""
+    try:
+        r = requests.get(url, headers={**HEADERS, "Referer": S618_BASE,
+                                       "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"},
+                         timeout=10)
+        if r.status_code != 200 or not r.content:
+            raise ValueError(f"status={r.status_code}")
+        img = Image.open(io.BytesIO(r.content))
+        if img.mode in ("RGBA", "P"):
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            mask = img.split()[-1] if img.mode == "RGBA" else None
+            bg.paste(img, mask=mask)
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        w = img.width
+        if w > 360:
+            img = img.resize((360, int(img.height * 360 / w)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=72, optimize=True)
+        b = base64.b64encode(buf.getvalue()).decode("ascii")
+        if fail_tracker is not None and host:
+            fail_tracker[host] = 0  # 成功，重置该 host 失败计数
+        return f"data:image/jpeg;base64,{b}"
+    except Exception as e:
+        if fail_tracker is not None and host:
+            fail_tracker[host] = fail_tracker.get(host, 0) + 1
+        logger.debug(f"[switch618日报] 图片下载失败 {str(url)[:50]}: {e}")
+        return ""
+
+
+def _has_meaningful_title(title: str) -> bool:
+    """判断清洗后的标题是否含真实游戏名，排除只有《》壳或纯元数据的脏数据。
+
+    例如站点上某游戏名为空，清洗后变成「《》 (Build 24184901 | 中文 | 免安装硬盘版)」，
+    其主名（《》内）为空，应被过滤掉避免日报出现空标题卡片。
+    """
+    if not title or not title.strip():
+        return False
+    m = re.search(r'《([^》]*)》', title)
+    name = m.group(1).strip() if m else re.split(r'[（(]', title)[0].strip()
+    # 主名至少含一个非空白/非括号/非纯标点的字符才算有效
+    return bool(re.search(r'[^\s《》（）()|｜+\-—·.、,，:：]', name))
+
+
+def get_today_games_618(max_games: int = None, cookie: str = "", progress_cb=None) -> dict:
+    """抓取 switch618.com 今日新增游戏（含简介 + 截图 base64）。
+
+    判定逻辑（逐款，非仅首款）：游戏自身 span 文本含「新游」或今日日期
+    （MMDD 如 0716 / M-D 如 07-16 / 2026-07-16 等）即视为今日更新。
+    同一列表页是混合排序（新游/0716 与 0715/0714 同页），故逐款过滤，
+    并持续翻页直到连续 2 页没有任何今日游戏才停止（避免漏抓）。
+
+    max_games=None 表示抓全（内部安全上限 HARD_CAP=80）；传入正整数则只取前 N 款。
+    progress_cb: 可选回调，用于在抓取过程中回报进度，签名 progress_cb(msg:str)。
+
+    返回 {"success":bool,"games":[...],"error":""}
+    - success=True 且 games=[] 表示今日暂无更新（error="今日暂无更新"）
+    游戏卡字典结构与 xdgame 日报兼容（title/cover/cover_b64/intro/category/shots_b64），
+    因此可直接复用 build_cartoon_html / render_html_to_png。
+    """
+    res = {"success": False, "games": [], "error": ""}
+    HARD_CAP = 80
+    fail_tracker = {}  # host -> 连续失败次数（图床熔断，跨多款游戏共享）
+    def _prog(msg):
+        logger.info(f"[switch618日报] {msg}")
+        if callable(progress_cb):
+            try: progress_cb(msg)
+            except Exception: pass
+    try:
+        collected = []
+        empty_streak = 0
+        for page in range(1, 15):
+            url = S618_PCGAMES_TPL.format(page)
+            _prog(f"📄 正在获取新游列表第 {page} 页...")
+            html = fetch_618(url, cookie)
+            if not html:
+                if not collected:
+                    res["error"] = "列表页获取失败（被反爬拦截或网络异常）"
+                break
+            games = parse_618_list(html)
+            if not games:
+                break
+            # 逐款过滤：仅保留 span 命中今日的游戏（span 在每款上，不只看首款），并剔除空标题脏数据
+            page_today = [g for g in games
+                          if g.get("title") and _has_meaningful_title(g["title"])
+                          and g["title"] not in ("《》", "()", "")
+                          and _is_today_618(g.get("span_text", ""))]
+            if page_today:
+                collected.extend(page_today)
+                empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+            if max_games and len(collected) >= max_games:
+                collected = collected[:max_games]
+                break
+            if len(collected) >= HARD_CAP:
+                collected = collected[:HARD_CAP]
+                break
+        if not collected:
+            res["success"] = True
+            if not res["error"]:
+                res["error"] = "今日暂无更新"
+            _prog("未找到今日更新的游戏")
+            return res
+        total = len(collected)
+        _prog(f"📋 共找到 {total} 款今日新游，开始抓取封面/截图与简介...")
+        # 逐个抓取详情（封面/截图/简介）
+        for idx, g in enumerate(collected, 1):
+            try:
+                _prog(f"⏳ 抓取详情 ({idx}/{total})：{g.get('title','?')[:24]}")
+                dhtml = fetch_618(g["detail_url"], cookie)
+                if not dhtml:
+                    g["intro"] = g.get("intro") or "暂无简介"
+                    continue
+                soup = BeautifulSoup(dhtml, "html.parser")
+                cover, shots = extract_detail_images(soup, g["detail_url"])
+                if not g.get("cover") and cover:
+                    g["cover"] = cover
+                intro = extract_wanfa(soup) or extract_game_description(soup)
+                if not intro:
+                    md = soup.find("meta", attrs={"name": "description"})
+                    intro = md.get("content", "") if md else ""
+                g["intro"] = intro or "暂无简介"
+                g["cover_b64"] = _dl_and_b64_618(g.get("cover", ""), fail_tracker) if g.get("cover") else ""
+                g["shots_b64"] = []
+                for u in shots[:2]:
+                    b = _dl_and_b64_618(u, fail_tracker)
+                    if b:
+                        g["shots_b64"].append(b)
+            except Exception as e:
+                logger.warning(f"[switch618日报] 详情失败 [{g.get('title','?')[:30]}]: {e}")
+                g["intro"] = g.get("intro") or "暂无简介"
+                g["cover_b64"] = ""
+                g["shots_b64"] = []
+            time.sleep(0.3)
+        res["success"] = True
+        res["games"] = collected
+        _prog(f"✅ 抓取完成，共 {total} 款（含封面 {sum(1 for g in collected if g.get('cover_b64'))} 款）")
+    except Exception as e:
+        logger.error(f"[switch618日报] 抓取失败: {e}")
+        res["error"] = str(e)[:200]
+    return res
+

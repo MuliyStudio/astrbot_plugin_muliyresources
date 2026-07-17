@@ -1,5 +1,131 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.10.12 — 2026-07-17
+
+### 🛡️ 新增：搜索关键词大模型审核（涉黄/违禁判定 + 搜索意图判断）
+
+- **背景**：各类资源搜索在清洗出关键词后直接发起抓取，未做内容安全审核，存在用户搜涉黄/违禁内容的风险。
+- **改动**（`main.py`）：
+  - 新增模块级 `_parse_audit_json()` 与实例方法 `_audit_search_keyword(event, keyword)`：
+    - 先做**本地硬屏蔽词**快速过滤（零延迟、省 LLM 额度）；
+    - 再调用大模型（复用影视百科同款 `llm_generate` / `text_chat` 入口）审核关键词是否涉黄/违禁，并返回简短搜索意图；
+    - **fail-open**：大模型异常/不可用时放行正常搜索，仅记日志，不阻断功能。
+  - 在全部 7 个搜索入口（4 个 LLM 工具 `search_resource`/`search_game`/`search_software`/`search_movie` + 3 个命令 `/找游戏`/`/找软件`/`/找影视`）清洗关键词后、执行搜索前调用审核，命中违禁即拦截并提示。
+- **文档**：README 功能一览与 LLM 工具链章节同步补充「搜索关键词审核」说明。
+
+### 📰 调整：日报只发送图片、不再发送自包含文件
+
+- **软件日报**：`cmd_sw_report` 移除缓存 ZIP 发送与 ZIP 上传，只发送渲染图片（失败给提示）；`_sw_daily_job` / `_sw_send_report` 定时推送只发图片，ZIP 改为仅本地缓存供面板回看、不再上传；`gen_report_zip` 仍用于本地缓存。
+- **游戏日报**：`cmd_game_report` 移除 HTML 自包含文件兜底，图片渲染/发送失败仅降级为文字版。
+- **影视日报**：原本就只发图片，无需改动。
+- **文档**：README 软件日报与 VIP 解析相关文案同步收敛为「只发图片/四大平台」。
+
+### 🎞️ 调整：VIP 视频解析仅触发四大平台
+
+- **背景**：此前解析触发识别了乐视、搜狐、bilibili、PPTV 等大量平台，现按用户要求只识别芒果TV / 腾讯视频 / 优酷 / 爱奇艺。
+- **改动**：
+  - `core/vip_capture.py`：将实际触发解析网关的 `VIP_HOST_KEYWORDS` 与 `_VIDEO_HOSTS` 收敛为 `iqiyi.com` / `v.qq.com` / `qq.com` / `youku.com` / `mgtv.com`。
+  - `core/video_parse.py`：从 `PLATFORMS` 移除 `le`/`sohu`，并清理 `_HOME_BOILER` 对应死代码。
+  - `main.py`：`_PLATFORM_NAMES` 收敛为四大平台，与解析范围一致。
+- **文档**：README 功能一览、配置项 `video_vip_parse`、VIP 解析说明段落均收敛为「四大平台，其余链接不再识别」。
+
+## v1.10.11 — 2026-07-16
+
+### ✨ 新增：影视日报（教父.com 主页「最近更新」→ 毛玻璃图片）
+
+- **新增 `core/movie_daily.py`**：
+  - `fetch_movie_daily()`：带 PoW 预处理（`_clean_cookie` 剔除 `browser_verified`/`browser_pow` 等 PoW 字段，由 `solve_pow` 现场重新求解，避免同名重复 Cookie 被服务端拒绝）抓取教父.com 主页 `_obj.inlist`，解析三个区块——`最近更新的电影(mv)` / `最近更新的剧集(tv)` / `最近更新的动漫(ac)`；每部取标题、状态（`更新至第4集`/`全12集`）、豆瓣/IMDb 评分、画质标签（`4K` 等）、ID，再逐个详情页 `/{ty}/{id}` 抓 `_obj.d.summary` 简介，封面用 `{MULIY_IMG_HOST}/img/{ty}/{id}/256.webp` 下载并内联 base64。
+  - `build_glass_html()`：毛玻璃简约风格排版（深紫渐变背景 + 半透明磨砂卡片 + 状态徽标 + 评分/画质小标签 + 简介），图片已内联 base64，离线可渲染。
+  - `render_glass_to_png()`：复用 `game_daily.render_html_to_png` 的 Playwright 渲染（注入自带 `SourceHanSansCN-Heavy.otf` 保证中文显示）。
+  - `gen_report_zip()`：打包 HTML 供面板回看。
+- **`main.py` 接入独立调度**：与软件/游戏日报完全独立的三套调度——新增 `movie_report` 配置分组（`movie_report_enabled` / `movie_schedule_hour` / `movie_schedule_minute` / `movie_group_ids` / `movie_report_max` / `movie_sections`）与 `_movie_scheduler_job_id` / `_movie_next_run` / `_schedule_movie_next` / `_movie_daily_job` / `_movie_build_and_send` / `_movie_send_report` / `cmd_movie_report`；`_sw_fallback` 兜底时间窗、`_sw_heartbeat` 心跳、`_sw_cleanup_reports` 清理均覆盖影视日报；`/software_report_status` 增加影视日报状态展示。
+- **命令**：`/movie_report` 手动触发当日影视日报（需先配置 `muliy_cookie`）。
+- **配置**：`movie_sections` 默认 `mv,tv,ac`（电影+剧集+动漫全推）；只推剧集填 `tv`。
+
+### 🐛 修复：影视日报整页截图下方露白 + 调用参数错位
+
+- **白屏根因**：`build_glass_html` 的背景用了 `background-attachment:fixed`，整页截图（`full_page=True`）时渐变只铺首屏，超出首屏的内容区域露出白色默认背景（用户反馈"第三个下面的页面背景全白、看不清字"）。改为去掉 `fixed`，渐变直接铺在 `body` 上覆盖整页内容高度，并新增 `background-color:#160a33` 兜底 + 绝对定位的 `.bg` 装饰光斑层（`position:absolute;inset:0` 相对 `position:relative` 的 body 铺满整页）。
+- **视觉美化**：深紫→靛蓝多重径向光晕渐变背景；装饰光斑层（紫/青/粉/绿模糊圆）；顶部卡片加 LOGO🎬 + 渐变高光描边 + 顶部渐变光带；区块标题加图标（🎬电影/📺剧集/🌸动漫）+ 渐变分隔线；卡片增加序号徽标（01/02…）+ 更强毛玻璃质感（内高光）+ 评分/画质小标签配色（豆瓣金、IMDb 青、画质红）。
+- **参数错位 bug**：`fetch_movie_daily` 签名为 `(cookie, base_url, max_per_section, sections_filter, fetch_synopsis)`，但 `main.py` 调用写成 `(cookie, mx, sections_filter, True)`，把 `mx` 当成了 `base_url`（int），导致 `_punycode_url(int)` 报错"int object has no attribute rstrip"、影视日报始终抓取失败。已修正为 `fetch_movie_daily(cookie, "", mx, sections_filter, True)`。
+
+### ✨ 优化：影视日报接入 a123tv 源 + 无 Cookie 自动回退
+
+- **新增 `fetch_movie_daily_a123tv()`**：爬取 a123tv.com 首页 `w4-main` 区块（`电影`/`连续剧`/`动漫`，跳过 综艺/福利），解析每条 `w4-item` 的封面（`img[data-src]` 懒加载真实地址）、标题、画质（`div.r` 如 1080p/4K）、信息行（`div.i` 类别·年份）。返回结构与教父源完全一致（`success`/`items`/`error`），每条含 `cover`/`detail_url`，并复用 `movie.get_movie_detail` 抓简介 + `_dl_and_b64` 内联封面 base64。
+- **新增 `fetch_movie_daily_auto()` 调度器**：影视源自动选择——
+  - 配置了 `muliy_cookie` → 优先教父.com 新站（登录态）；若教父抓取失败/空数据 → **自动回退 a123tv**。
+  - 未配置 Cookie（或 `movie_source` 显式设为 `a123tv`）→ 直接走 a123tv 旧站（**免登录**）。
+  - 返回 dict 额外带 `source` 字段（`"教父.com"` / `"a123tv"`），供 `build_glass_html` 动态标注数据来源（页脚 `数据来源 <b>{source}</b>`）。
+- **`main.py` 改造**：`_movie_daily_job` 与 `cmd_movie_report` 不再因"未配置 muliy_cookie"而跳过日报，改为调用 `fetch_movie_daily_auto`；`movie_source="a123tv"` 可强制旧站（与影视搜索行为一致）。`source_label` 由 `result["source"]` 动态决定（教父.com / a123tv）。
+- **效果**：`account.muliy_cookie` 现在**完全选填**——留空也能照常出影视日报（a123tv 旧站），只是没有网盘资源、且更新列表来自 a123tv 首页（非教父主页）。
+
+### 🔧 调整：游戏日报上限改为 24 且对 switch618 源生效
+
+- `game_report_max` 默认值 `8` → `24`，上限 `20` → `50`。
+- 之前 switch618 源「抓全今日更新」（`get_today_games_618(None, …)`）导致上限对它无效；现改为统一传 `mx`（配置的 `game_report_max`），**xdgame 与 switch618 两种源都受上限约束**（`/game_report` 与每日定时推送同步）。
+- `_conf_schema.json` / `_config_groups` / `cmd_sw_status` 同步更新。
+
+## v1.10.10 — 2026-07-16
+
+### 🔧 调整：软件日报 / 游戏日报调度彻底分离 + 移除多余 platform_id
+
+- **调度分离**：原先软件日报与游戏日报共用 `schedule_hour`/`schedule_minute`/`group_ids`/`platform_id`。现改为：
+  - 软件日报：`software_report` 分组下独立的 `schedule_hour` / `schedule_minute` / `group_ids`（默认 10:00）。
+  - 游戏日报：`game_report` 分组下新增独立的 `game_schedule_hour` / `game_schedule_minute` / `game_group_ids`（默认 18:00）。
+  - 两者各自的「下次运行」计算（`_sw_next_run` / `_game_next_run`）、APScheduler 任务、`_sw_fallback` 兜底时间窗均按各自时间独立触发，互不干扰。
+- **移除 `platform_id` 配置项**：发送目标平台实际由 `platform_manager` 自动识别（代码中已有按 `aiocqhttp`/`qq`/`onebot` 匹配并回退任意非 webchat 平台的逻辑），配置里的 `platform_id`（默认 aiocqhttp）从未真正生效。已从 `_conf_schema.json`、`_config_groups` 以及 `_sw_send_report` / `_game_send_report` / `_get_best_client` 中移除该参数，`/software_report_status` 状态输出也不再展示它。
+- **游戏源路由保持不变**：未配置 xdgame 账密时 `_game_source()` 自动返回 `switch618`，游戏搜索与游戏日报（含每日定时推送）均走 switch618 源。
+
+## v1.10.9 — 2026-07-16
+
+### ✨ 新增：switch618.com 游戏日报支持
+
+- **复用同一套卡通日报模板**：游戏日报现在跟随 `game_source` 配置（auto / xdgame / switch618）自动切换数据源，switch618 源与 xdgame 源共用 `build_cartoon_html` / `render_html_to_png`，模板风格、视觉完全一致（仅页脚「数据来源」标签不同）。
+- **列表抓取对抗反爬**：switch618 列表页 `https://www.switch618.com/pcgames/page/N/` 首次请求返回 403 + `window.location` 重定向（带 Set-Cookie 校验），新增 `fetch_618()` 做「二次带 Cookie 重请求」挑战，成功拿到真页。
+- **今日判定逻辑（逐款，非仅首款）**：switch618 列表页**同一页是混合排序**（新游/0716 与 0715/0714 等同页），因此改为**对每款游戏单独判断** `span.post-sign` 文本（即 `#posts > div:nth-child(N) > h3 > a > span`）：含「新游」或今日日期即视为今日新增。日期兼容 `0716`（MMDD，无分隔符）/`716`/`07-16`/`7-16`/`2026-07-16`/`2026年07月16日`。翻页持续进行，直到**连续 2 页没有任何今日游戏**才停止，避免漏抓。
+- **抓全今日更新（去掉 8 上限）**：原先写死只取 8 款会漏掉大量新游。现已改为按用户要求**抓全当天所有更新**（内部安全上限 80 款）；`/game_report` 与每日定时推送对 switch618 源均传 `max_games=None` 抓全，xdgame 源仍沿用 `game_report_max` 配置上限。实测今日共 **45 款**（40 个「新游」+ 5 个「0716」）。
+- **脏数据过滤**：剔除站点录入缺失的空标题条目（如 `《》`）。
+- **简介专门提取「玩法深度解析」**：详情页简介优先抓取「玩法深度解析」区块正文（连续 `<p>` 到下一个标题），取不到时回退通用简介提取；封面/截图复用 `extract_detail_images` 并已内联 base64。
+- **命令与定时任务同步路由**：`/game_report` 命令与每日定时推送均按当前游戏源调用 `get_today_games_618`（switch618）或 `get_today_games`（xdgame），提示文案与页脚来源随之变化。
+- **渲染巨页降级**：`render_html_to_png` 默认 2× 高清，但在 45 卡巨页（高度 ~27000px）上会超出 Chromium 截图尺寸上限而静默失败；现改为 **2× 失败自动降级 1×**，确保超长日报也能成功出图。
+
+## v1.10.8 — 2026-07-16
+
+### 🔧 修复：配置页真正的分类分组（之前 tab 字段无效）
+
+- **根因**：AstrBot 的 `_conf_schema.json` 并不支持 `tab` 字段，之前加的 `tab` 只是改了顺序、没有任何分组视觉效果；旧版扁平 `config.json` 残留键还会被当作孤儿项显示成「重复选项」。
+- **改用 `object` 分组（AstrBot 真实支持的可折叠分组）**：`_conf_schema.json` 全部配置项按功能归入 8 个 `object` 分组（账号与凭据 / 游戏搜索 / 游戏日报 / 软件日报与推送 / 影视搜索 / 网易云音乐 / VIP视频解析 / 浏览器），管理面板中每个分组是可展开的独立区块，配置页不再一长串平铺。
+- **浏览器设置去重合并**：原 `game_report_browser_channel`/`game_report_browser_exe` 与 `video_vip_browser_channel` 合并为共享的 `browser_channel` / `browser_exe`（游戏日报与 VIP 视频解析共用），配置项由 26 项降到 25 项。
+- **代码零改动读取**：`main.py` 新增分组映射 `_CONF_GROUPS`/`_KEY_TO_GROUP`；`_get_config()` 返回「把分组内叶子键提升到顶层的扁平视图」，26 处 `config.get("leaf")` 读取代码完全不用改；`_update_config()` 把回写值放回到正确的嵌套分组；`_migrate_config()` 在 `__init__` 自动把旧版扁平配置归组，避免升级后读取 KeyError。
+- **升级注意**：因配置结构从扁平变为嵌套，重新上传插件后，请到 AstrBot 面板对该插件点一次「重置配置 / 重新生成默认配置」（或删掉其 `config.json` 重新生成），以清除旧的扁平孤儿项，分组显示才会干净无重复。
+
+## v1.10.7 — 2026-07-16
+
+### 🔧 调整：游戏日报改为只发图片 + 配置整理
+
+- **游戏日报不再发送 ZIP**：`_game_send_report` / `_game_build_and_send` / `cmd_game_report` 均改为「只发送渲染好的卡通图片」（渲染失败降级文字版），移除了 HTML ZIP 打包与群文件上传；`gen_report_zip` 调用已移除（函数保留但不再使用）。
+- **日报副标题更新**：卡通 HTML 副标题由 `XDGAME · 今日新鲜上架` 改为 `游戏日报新鲜出炉，@机器人搜索游戏名称即可`。
+- **配置页整理**：分组方式见 v1.10.8（已改为 `object` 分组，修复 `tab` 无效问题）。
+
+## v1.10.6 — 2026-07-16
+
+### ✨ 新增：游戏日报（XDGAME 当日新游 → 卡通图片）
+
+- **功能**：每天定时抓取 [XDGAME 列表页](https://www.xdgame.com/list/1/)，按每个游戏 `<time>` 元素的时间关键词（如 `2026-07-16` / `今天` / `X分钟前`）筛选「今日更新」的游戏，取**标题 / 简介 / 封面 / 截图**（不取下载链接），排版成**卡通风格 HTML** 后用 Playwright(Chromium) 渲染为图片推送到群聊；同时把 HTML 打包成 ZIP 上传群文件，方便本地高清查看。
+- **新增 `core/game_daily.py`**：
+  - `parse_game_list()`：解析列表页 `div.fl.soft.list.force-grid > ul > li`，取标题(`a.tit`)、详情链接、封面(`a.grid-cover img[data-original]`)、分类(`span.type`)、大小(`span.size`)、评分(`span.rank`)、时间(`time.news`)。
+  - `_is_today()`：时间关键词判断是否为今日（支持绝对日期 / 今天 / X分钟前 / X小时前 / 刚刚，排除昨天/前天）。
+  - `get_today_games()`：过滤今日游戏 → 逐游戏调 `get_game_detail()` 取简介+截图 → 下载并压缩为 base64 内联（避免防盗链，离线可渲染）。
+  - `build_cartoon_html()`：卡通风格排版（圆角贴纸卡片、飘带气泡简介、波点渐变背景、NEW 角标、彩色边框循环），图片已内联 base64。
+  - `render_html_to_png()`：Playwright 把 HTML 整页渲染为 JPEG（注入自带 `SourceHanSansCN-Heavy.otf` 保证服务器中文显示），失败返回 None。
+  - `gen_report_zip()`：打包卡通 HTML 为 zip。
+- **`main.py`**：
+  - 新增命令 `/game_report`（手动触发，带缓存复用与图片/文字双模式）。
+  - 新增定时任务 `_game_daily_job` / `_schedule_game_next` / `_game_send_report` / `_game_build_and_send`，复用软件日报的 APScheduler 与 `schedule_hour`/`schedule_minute`/`group_ids`；心跳与兜底逻辑同步覆盖游戏日报；缓存与清理支持 `game_report_*.zip`。
+  - `/software_report_status` 增加游戏日报状态展示。
+- **`_conf_schema.json`**：新增 `game_report_enabled`(默认 true) / `game_report_max`(默认 8) / `game_report_browser_channel` / `game_report_browser_exe`。
+- **容错**：渲染失败（未 `playwright install chromium`）自动降级为文字版推送 + 仍上传 HTML ZIP。
+- **部署提醒**：服务器需执行 `playwright install chromium`；中文字体由插件自带 OTF 自动注入，无需额外安装。
+
 ## v1.10.5 — 2026-07-16
 
 ### 🗑️ 移除：书山聚合小说搜索功能

@@ -6,6 +6,7 @@ from .constants import (
     GAME_BASE_URL, GAME_SEARCH_URL, GAME_PAN_ICONS, GAME_PAN_COLORS, GAME_PAN_DOMAINS,
     parse_cookie_string, logger, extract_game_description
 )
+from .mdi_icons import svg as _svg
 
 
 def _game_session(cookie_str: str = "") -> requests.Session:
@@ -110,12 +111,23 @@ def get_game_detail(game_url: str, cookie_str: str = "") -> dict:
     soup = BeautifulSoup(resp.text, "html.parser")
     title_tag = soup.find("title")
     name = re.sub(r"\s*[-–|]\s*.*$", "", title_tag.get_text(strip=True)).strip() if title_tag else ""
-    # ── 封面 + 截图：优先 steam 资源，兜底扫描全页游戏图 ──
+    # 截图/封面需排除的站点元素（logo/图标/头像/二维码/广告等）
+    _EXCLUDE = ("logo", "icon", "avatar", "static/images", "defaultpic", "/uploads/emoji",
+                "qrcode", "qr", "weixin", "loading", "spinner", "1x1", "blank",
+                "ad.", "banner", "button", "arrow", "bg.", "background")
+
+    # ── 封面 + 截图：优先 steam 资源，兜底扫描全页游戏图（同时排除 logo 等）──
     raw_imgs, seen = [], set()
     for img in soup.find_all("img"):
         src = img.get("data-original") or img.get("data-src") or img.get("src", "")
-        if src:
-            raw_imgs.append(src if src.startswith("http") else GAME_BASE_URL + src)
+        if not src:
+            continue
+        low = src.lower()
+        if any(k in low for k in _EXCLUDE):
+            continue
+        u = src if src.startswith("http") else GAME_BASE_URL + src
+        if u not in seen:
+            seen.add(u); raw_imgs.append(u)
     steam_caps = [u for u in raw_imgs if "steamcommunity/public/images/apps/" in u]
     steam_shots = [u for u in raw_imgs if "store_item_assets" in u and "steam/apps" in u]
     cover = (steam_caps or steam_shots or [""])[0]
@@ -123,12 +135,12 @@ def get_game_detail(game_url: str, cookie_str: str = "") -> dict:
         ci = soup.select_one(".game-info img, .pic img, .cover img, .info-img img, .post-thumb img, .entry-content img")
         if ci:
             src = ci.get("data-original") or ci.get("data-src") or ci.get("src", "")
-            if src: cover = GAME_BASE_URL + src if not src.startswith("http") else src
+            if src:
+                low = src.lower()
+                if not any(k in low for k in _EXCLUDE):
+                    cover = GAME_BASE_URL + src if not src.startswith("http") else src
 
-    # 截图：扫描正文中所有游戏截图（排除 logo/图标/头像/静态/二维码等）
-    _EXCLUDE = ("logo", "icon", "avatar", "static/images", "defaultpic", "/uploads/emoji",
-                "qrcode", "qr", "weixin", "loading", "spinner", "1x1", "blank",
-                "ad.", "banner", "button", "arrow", "bg.", "background")
+    # 截图：扫描正文中所有游戏截图（已排除 logo/图标/头像/静态/二维码等）
     cont = soup.select_one(".content, .game-info, .entry-content, .post-content, .single-content, article")
     pools = [cont, soup] if cont else [soup]
     for pool in pools:
@@ -213,7 +225,7 @@ def generate_game_html(name: str, desc: str, cover: str, screenshots: list, link
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     bg = f'style="background-image: url(\'{cover}\')"' if cover else 'style="background: linear-gradient(135deg, #1a1a2e, #16213e)"'
     pan = link.get("pan", "下载链接"); ru = link.get("real_url", ""); cd = link.get("code", "")
-    icon = GAME_PAN_ICONS.get(pan, "📥"); color = GAME_PAN_COLORS.get(pan, "#6b7280")
+    icon = _svg("download", 48, "currentColor"); color = GAME_PAN_COLORS.get(pan, "#6b7280")
     ok = ru.startswith("http")
     shots = "".join(f'<div class="shot-item"><img src="{s}" alt="截图" loading="lazy" onclick="openLightbox(this.src)"></div>\n' for s in screenshots[:6]) if screenshots else '<div class="no-shots">暂无截图</div>'
     dp = desc.replace("\n", "</p><p>")
@@ -256,12 +268,12 @@ def generate_game_html(name: str, desc: str, cover: str, screenshots: list, link
 <body><div class="lightbox" id="lightbox" onclick="this.classList.remove('active')"><div class="lightbox-close">&times;</div><img id="lightbox-img" src="" alt="preview"></div>
 <div class="hero"><div class="hero-bg {bg}"></div><div class="hero-overlay"></div><div class="hero-content"><img class="hero-cover" src="{cover}" alt="{name}" onerror="this.style.display='none'"><h1>{name}</h1><div class="subtitle">暮黎资源聚合 · 游戏搜索</div></div></div>
 <div class="container">
-<div class="card desc-card"><div class="card-title">📖 游戏简介<span class="line"></span></div>{dp}</div>
-<div class="card"><div class="card-title">🎮 游戏截图<span class="line"></span></div><div class="shots-grid">{shots}</div></div>
-<div class="card"><div class="card-title">📥 网盘下载<span class="line"></span></div>
+<div class="card desc-card"><div class="card-title">{_svg("book", 20, "currentColor")} 游戏简介<span class="line"></span></div>{dp}</div>
+<div class="card"><div class="card-title">{_svg("gamepad", 20, "currentColor")} 游戏截图<span class="line"></span></div><div class="shots-grid">{shots}</div></div>
+<div class="card"><div class="card-title">{_svg("download", 20, "currentColor")} 网盘下载<span class="line"></span></div>
 <div class="download-box"><div class="download-icon">{icon}</div><div class="download-pan">{pan}</div>''' + (
-    f'<a class="download-link" href="{ru}" target="_blank" rel="noopener">📥 点击下载</a>' + (f'<div class="download-code">🔑 {cd_str}</div>' if cd_str else "") if ok else
-    f'<div class="download-fail">⚠️ 链接获取失败</div>'
+    f'<a class="download-link" href="{ru}" target="_blank" rel="noopener">{_svg("download", 14, "currentColor")} 点击下载</a>' + (f'<div class="download-code">{_svg("key", 14, "currentColor")} {cd_str}</div>' if cd_str else "") if ok else
+    f'<div class="download-fail">{_svg("warning", 14, "currentColor")} 链接获取失败</div>'
 ) + f'''</div></div>
 <div class="source-info"><p>数据来源：<a href="https://www.xdgame.com" target="_blank">XDGAME</a></p><p style="margin-top:4px;">搜索关键词：{keyword} ｜ 生成时间：{now}</p></div>
 </div>

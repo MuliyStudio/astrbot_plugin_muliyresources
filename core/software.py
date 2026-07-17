@@ -5,6 +5,7 @@ from bs4 import BeautifulSoup
 from .constants import (
     SW_BASE_URL, SW_LIST_URL, SW_SEARCH_URL, SW_DISK_ICONS, SW_PAN_COLORS, SW_HEADERS, logger
 )
+from .mdi_icons import svg as _svg
 
 # ==================== 通用工具 ====================
 
@@ -243,9 +244,9 @@ def _build_report_html(t, softwares, img_map, hdi):
 .download-icon{{font-size:18px;margin-right:10px}}
 .download-name{{font-size:14px;font-weight:500;flex:1}}
 .footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:13px;color:#666;border-top:1px solid #e9ecef}}
-</style></head><body><div class="container"><div class="header"><h1>📦 暮黎软件日报</h1><div class="date">{t}</div></div><div class="content">'''
+</style></head><body><div class="container"><div class="header"><h1>{_svg("package", 22, "currentColor")} 暮黎软件日报</h1><div class="date">{t}</div></div><div class="content">'''
     for i,sw in enumerate(softwares,1):
-        html+=f'<div class="software-card"><div class="software-title">📦 {i}. {sw["title"]}</div><div class="software-meta"><span>📅 {sw["update_time"]}</span><span>📷 {len(sw["images"])}张截图</span><span>🔗 {len(sw["downloads"])}个下载</span></div>'
+        html+=f'<div class="software-card"><div class="software-title">{_svg("package", 16, "currentColor")} {i}. {sw["title"]}</div><div class="software-meta"><span>{_svg("event", 13, "currentColor")} {sw["update_time"]}</span><span>{_svg("camera", 13, "currentColor")} {len(sw["images"])}张截图</span><span>{_svg("link", 13, "currentColor")} {len(sw["downloads"])}个下载</span></div>'
         if sw.get('sections'):
             html+='<div class="software-description">\n'
             for sec in sw['sections']: html+=f'<div class="section-title">### {sec["title"]}</div>\n<div class="section-content">{sec["content"].replace(chr(10),"<br>")}</div>\n'
@@ -258,14 +259,233 @@ def _build_report_html(t, softwares, img_map, hdi):
                 if entry: html+=f'<div class="screenshot-item"><img src="{entry}" alt="截图"></div>\n'
             html+='</div>\n'
         if sw.get('downloads'):
-            html+='<div class="downloads"><div class="downloads-title">🔗 下载地址</div><div class="download-list">\n'
+            html+=f'<div class="downloads"><div class="downloads-title">{_svg("link", 14, "currentColor")} 下载地址</div><div class="download-list">\n'
             for dl in sw['downloads']:
-                icon=hdi.get(dl['name'],'📥')
+                icon=_svg("download", 18, "currentColor")
                 html+=f'<a class="download-item" href="{dl["url"]}" target="_blank"><span class="download-icon">{icon}</span><span class="download-name">{dl["name"]}</span></a>\n'
             html+='</div></div>\n'
         html+='</div>\n'
     html+=f'</div><div class="footer"><p>共 {len(softwares)} 款资源 | 暮黎社群:1084453386</p></div></div></body></html>'
     return html
+
+# ====================================================================
+#  软件日报分享图（HTML → 图片，橙色青年 / 橘子味汽水 / 夏日风情）
+#  弃用 Pillow 手绘，改用与游戏/影视日报一致的 HTML 排版 + Playwright 渲染。
+#  图标统一使用 Material Design Icons（google/material-design-icons）内联 SVG，
+#  避免服务器缺 emoji 字体导致图标乱码。
+# ====================================================================
+
+# 图标统一使用 Material Design Icons：core/mdi_icons 模块，已随顶部 `from .mdi_icons import svg as _svg` 引入。
+
+# 卡片配色（橙/橘/柠系，循环使用）——橘子味汽水、夏日风情
+_SUMMER_PALETTE = ["#ff7a00", "#ff9500", "#ffb300", "#ff6f3c", "#ff8f00", "#f4511e"]
+
+
+def _dl_b64_sw(url: str, max_w: int = 360, fail_tracker: dict = None) -> str:
+    """下载软件日报图片并压缩为 base64 data URI（离线内联渲染）。失败返回空串。
+
+    带图床 host 熔断（同一 host 连续失败 3 次后跳过），避免个别慢/被墙图床拖垮整条日报。
+    """
+    if not url or not url.startswith("http"):
+        return ""
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        pass
+    if fail_tracker is not None and host in fail_tracker and fail_tracker[host] >= 3:
+        return ""
+    try:
+        from PIL import Image
+        r = requests.get(url, headers={**SW_HEADERS, "Referer": SW_BASE_URL + "/"}, timeout=10)
+        if r.status_code != 200 or not r.content:
+            raise ValueError(f"status={r.status_code}")
+        img = Image.open(io.BytesIO(r.content))
+        if img.mode in ("RGBA", "P"):
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            mask = img.split()[-1] if img.mode == "RGBA" else None
+            bg.paste(img, mask=mask)
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        if img.width > max_w:
+            img = img.resize((max_w, int(img.height * max_w / img.width)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=72, optimize=True)
+        b = base64.b64encode(buf.getvalue()).decode("ascii")
+        if fail_tracker is not None and host:
+            fail_tracker[host] = 0
+        return f"data:image/jpeg;base64,{b}"
+    except Exception as e:
+        if fail_tracker is not None and host:
+            fail_tracker[host] = fail_tracker.get(host, 0) + 1
+        logger.debug(f"[软件日报] 图片下载失败 {str(url)[:50]}: {e}")
+        return ""
+
+
+def download_summer_assets(softwares: list) -> None:
+    """为每款软件下载封面 + 最多 2 张截图并内联为 base64，写入 sw['cover_b64']/sw['shots_b64']。
+
+    就地修改 softwares；带图床熔断，控制整体耗时与图片体积。
+    """
+    fail_tracker = {}
+    for sw in softwares:
+        imgs = sw.get("images", []) or []
+        cover_src = imgs[0] if imgs else sw.get("cover_img", "")
+        sw["cover_b64"] = _dl_b64_sw(cover_src, 360, fail_tracker) if cover_src else ""
+        shots = []
+        for u in imgs[1:3]:
+            b = _dl_b64_sw(u, 480, fail_tracker)
+            if b:
+                shots.append(b)
+        sw["shots_b64"] = shots
+
+
+def _sw_intro(sw: dict, limit: int = 160) -> str:
+    """从 description/sections 提取一段简介摘要（纯文本，截断）。"""
+    txt = (sw.get("description", "") or "").strip()
+    if not txt and sw.get("sections"):
+        txt = " ".join(s.get("content", "") for s in sw["sections"])
+    txt = re.sub(r"\s+", " ", txt).strip()
+    if len(txt) > limit:
+        txt = txt[:limit] + "…"
+    return txt
+
+
+def build_summer_html(softwares: list, date_label: str, source_label: str = "小刀娱乐网") -> str:
+    """把软件日报排版成【橙色青年 / 橘子味汽水 / 夏日风情】HTML（封面已内联 base64）。
+
+    需先调用 download_summer_assets 填充 cover_b64/shots_b64；随后交给
+    game_daily.render_html_to_png 渲染为图片。图标全部使用 Material Design Icons 内联 SVG。
+    """
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    cards = []
+    for i, sw in enumerate(softwares, 1):
+        color = _SUMMER_PALETTE[(i - 1) % len(_SUMMER_PALETTE)]
+        cover = sw.get("cover_b64") or ""
+        cover_html = (
+            f'<img class="cover" src="{cover}" alt="封面">'
+            if cover else
+            f'<div class="cover noimg" style="color:{color}">{_svg("apps", 40, color)}</div>'
+        )
+        chips = []
+        ut = (sw.get("update_time", "") or "").replace("时间：", "").strip()
+        if ut:
+            chips.append(f'<span class="chip">{_svg("event", 13)} {esc(ut)}</span>')
+        if sw.get("images"):
+            chips.append(f'<span class="chip">{_svg("camera", 13)} {len(sw["images"])}图</span>')
+        if sw.get("downloads"):
+            chips.append(f'<span class="chip">{_svg("download", 13)} {len(sw["downloads"])}源</span>')
+        chips_html = "".join(chips)
+
+        intro = esc(_sw_intro(sw))
+        intro_html = f'<div class="intro">{intro}</div>' if intro else ""
+
+        shots = sw.get("shots_b64", []) or []
+        shots_html = ""
+        if shots:
+            shots_html = '<div class="shots">' + "".join(
+                f'<div class="shot"><img src="{s}" alt="截图"></div>' for s in shots) + "</div>"
+
+        pans = []
+        for dl in (sw.get("downloads", []) or [])[:6]:
+            name = esc(dl.get("name", "下载"))
+            pan_color = SW_PAN_COLORS.get(dl.get("name", ""), color)
+            pans.append(f'<span class="pan" style="background:{pan_color}">{_svg("download", 12, "#fff")} {name}</span>')
+        pans_html = f'<div class="pans">{"".join(pans)}</div>' if pans else ""
+
+        cards.append(f'''
+<div class="card" style="border-color:{color}">
+  <div class="idx" style="background:{color}">{i:02d}</div>
+  <div class="card-head">
+    <div class="cover-wrap">{cover_html}</div>
+    <div class="head-right">
+      <div class="title">{esc(sw.get("title", ""))}</div>
+      <div class="chips">{chips_html}</div>
+      {pans_html}
+    </div>
+  </div>
+  {intro_html}
+  {shots_html}
+</div>''')
+
+    cards_html = "\n".join(cards)
+    n = len(softwares)
+    return f'''<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>暮黎软件日报 - {date_label}</title>
+<style>
+@font-face{{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}}
+*{{margin:0;padding:0;box-sizing:border-box}}
+.mdi{{vertical-align:middle;margin-right:2px}}
+body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif;
+  color:#4a2c00;line-height:1.6;padding:24px 14px 34px;
+  background:
+    radial-gradient(circle at 15% 20%, rgba(255,255,255,0.45) 0 7px, transparent 8px),
+    radial-gradient(circle at 78% 42%, rgba(255,255,255,0.35) 0 5px, transparent 6px),
+    radial-gradient(circle at 40% 78%, rgba(255,255,255,0.30) 0 6px, transparent 7px),
+    linear-gradient(160deg,#ffd452 0%,#ff9a3c 46%,#ff6f3c 100%);
+  background-size:52px 52px,60px 60px,48px 48px,100% 100%}}
+.wrap{{max-width:720px;margin:0 auto}}
+.header{{position:relative;background:linear-gradient(135deg,#ff8f00,#ff6f3c);border-radius:30px;
+  padding:30px 24px;text-align:center;color:#fff;overflow:hidden;
+  box-shadow:0 14px 34px rgba(255,111,60,0.45), inset 0 1px 0 rgba(255,255,255,0.4)}}
+.header::before{{content:"";position:absolute;left:-40px;top:-40px;width:140px;height:140px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)}}
+.header::after{{content:"";position:absolute;right:-30px;bottom:-50px;width:160px;height:160px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,0.28),transparent 70%)}}
+.header .logo{{position:relative;z-index:1;margin-bottom:6px}}
+.header h1{{position:relative;z-index:1;font-size:32px;font-weight:800;letter-spacing:3px;
+  text-shadow:0 3px 0 rgba(180,70,0,0.25)}}
+.header .date{{position:relative;z-index:1;margin-top:10px;display:inline-block;background:rgba(255,255,255,0.28);
+  padding:6px 20px;border-radius:22px;font-size:16px;font-weight:700}}
+.header .sub{{position:relative;z-index:1;margin-top:9px;font-size:13px;opacity:0.95;letter-spacing:1px}}
+.count{{text-align:center;margin:20px 0 8px;font-size:16px;font-weight:800;color:#e2570b;
+  text-shadow:0 2px 6px rgba(255,255,255,0.6)}}
+.card{{position:relative;background:#fffdf8;border:3px solid #ff9500;border-radius:24px;
+  padding:18px 18px 16px;margin-bottom:20px;
+  box-shadow:0 10px 24px rgba(220,110,40,0.20)}}
+.idx{{position:absolute;left:-8px;top:-12px;min-width:34px;height:34px;padding:0 8px;border-radius:17px;
+  display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#fff;
+  box-shadow:0 5px 12px rgba(0,0,0,0.18)}}
+.card-head{{display:flex;gap:16px;align-items:flex-start}}
+.cover-wrap{{flex:0 0 96px}}
+.cover{{width:96px;height:96px;object-fit:cover;border-radius:18px;
+  border:3px solid #ffe0a3;box-shadow:0 6px 14px rgba(0,0,0,0.12);background:#fff}}
+.cover.noimg{{width:96px;height:96px;display:flex;align-items:center;justify-content:center;
+  background:#fff6e6;border:3px dashed #ffc470;border-radius:18px}}
+.head-right{{flex:1;min-width:0}}
+.title{{font-size:20px;font-weight:800;color:#3a2400;line-height:1.35;word-break:break-word}}
+.chips{{margin-top:9px;display:flex;flex-wrap:wrap;gap:7px}}
+.chip{{background:#fff1d6;color:#b25a00;font-size:12.5px;font-weight:700;padding:3px 11px;border-radius:14px;
+  border:1px solid #ffdca0}}
+.pans{{margin-top:9px;display:flex;flex-wrap:wrap;gap:7px}}
+.pan{{color:#fff;font-size:12px;font-weight:700;padding:3px 11px;border-radius:14px;
+  box-shadow:0 3px 8px rgba(0,0,0,0.12)}}
+.intro{{margin-top:13px;background:#fff6e6;border:2px solid #ffe2ad;border-radius:16px;
+  padding:11px 14px;font-size:13.5px;line-height:1.85;color:#6b4a1f}}
+.shots{{margin-top:13px;display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}
+.shot{{border-radius:14px;overflow:hidden;aspect-ratio:16/10;background:#fff0d6;border:2px solid #ffe2ad}}
+.shot img{{width:100%;height:100%;object-fit:cover;display:block}}
+.footer{{text-align:center;margin-top:12px;padding:16px;color:#8a5a1f;font-size:13px}}
+.footer b{{color:#e2570b}}
+</style></head>
+<body><div class="wrap">
+<div class="header">
+  <div class="logo">{_svg("drink", 40, "#fff")}</div>
+  <h1>暮黎软件日报</h1>
+  <div class="date">{date_label}</div>
+  <div class="sub">夏日限定 · 每日精选软件 · @机器人搜索软件名即可下载</div>
+</div>
+<div class="count">{_svg("fire", 17, "#e2570b")} 今日共 {n} 款软件更新</div>
+{cards_html}
+<div class="footer">数据来源 <b>{source_label}</b> ｜ 由「暮黎资源聚合」插件自动生成<br>By：暮黎 Muliy</div>
+</div></body></html>'''
+
 
 # ==================== 软件搜索 ====================
 
@@ -323,7 +543,7 @@ def generate_search_html(name:str,desc:str,cover:str,screenshots:list,link:dict,
     now=datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     bg=f'style="background-image: url(\'{cover}\')"' if cover else 'style="background: linear-gradient(135deg, #667eea, #764ba2)"'
     pan=link.get("pan","下载链接"); ru=link.get("url","")
-    icon=SW_DISK_ICONS.get(pan,"📥"); color=SW_PAN_COLORS.get(pan,"#6b7280")
+    icon=_svg("download", 48, "currentColor"); color=SW_PAN_COLORS.get(pan,"#6b7280")
     ok=ru.startswith("http")
     shots="".join(f'<div class="shot-item"><img src="{s}" alt="截图" loading="lazy" onclick="openLightbox(this.src)"></div>\n' for s in screenshots[:6]) if screenshots else '<div class="no-shots">暂无截图</div>'
     dp=desc.replace("\n","</p><p>")
@@ -363,10 +583,10 @@ def generate_search_html(name:str,desc:str,cover:str,screenshots:list,link:dict,
 <body><div class="lightbox" id="lightbox" onclick="this.classList.remove('active')"><div class="lightbox-close">&times;</div><img id="lightbox-img" src="" alt="preview"></div>
 <div class="hero"><div class="hero-bg {bg}"></div><div class="hero-overlay"></div><div class="hero-content"><h1>{name}</h1><div class="subtitle">暮黎资源聚合 · 软件搜索</div></div></div>
 <div class="container">
-<div class="card desc-card"><div class="card-title">📖 资源简介<span class="line"></span></div>{dp}</div>
-<div class="card"><div class="card-title">🖼️ 资源截图<span class="line"></span></div><div class="shots-grid">{shots}</div></div>
-<div class="card"><div class="card-title">📥 网盘下载<span class="line"></span></div>
-<div class="download-box"><div class="download-icon">{icon}</div><div class="download-pan">{pan}</div>'''+(f'<a class="download-link" href="{ru}" target="_blank" rel="noopener">📥 点击下载</a>' if ok else '<div class="download-fail">⚠️ 链接获取失败</div>')+f'''</div></div>
+<div class="card desc-card"><div class="card-title">{_svg("book", 20, "currentColor")} 资源简介<span class="line"></span></div>{dp}</div>
+<div class="card"><div class="card-title">{_svg("image", 20, "currentColor")} 资源截图<span class="line"></span></div><div class="shots-grid">{shots}</div></div>
+<div class="card"><div class="card-title">{_svg("download", 20, "currentColor")} 网盘下载<span class="line"></span></div>
+<div class="download-box"><div class="download-icon">{icon}</div><div class="download-pan">{pan}</div>'''+(f'<a class="download-link" href="{ru}" target="_blank" rel="noopener">{_svg("download", 14, "currentColor")} 点击下载</a>' if ok else f'<div class="download-fail">{_svg("warning", 14, "currentColor")} 链接获取失败</div>')+f'''</div></div>
 <div class="source-info"><p>数据来源：<a href="https://www.x6d.com" target="_blank">小刀娱乐网</a></p><p style="margin-top:4px;">搜索关键词：{keyword} ｜ 生成时间：{now}</p></div>
 </div>
 <script>function openLightbox(src){{document.getElementById('lightbox-img').src=src;document.getElementById('lightbox').classList.add('active')}}</script>

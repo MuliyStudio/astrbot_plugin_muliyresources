@@ -11,7 +11,7 @@ core/software.py   — 软件日报&搜索相关函数
 core/movie.py      — 影视搜索相关函数 (a123tv.com)
 """
 
-import asyncio, base64, concurrent.futures, datetime, json, logging, os, re, sys, tempfile, time, zipfile, zoneinfo
+import asyncio, base64, concurrent.futures, datetime, io, json, logging, os, re, sys, tempfile, time, zipfile, zoneinfo
 from typing import Optional
 
 # === DEBUG INSTRUMENTATION (debug session c4a65f) ===
@@ -73,7 +73,7 @@ from .core.session import SessionManager, SearchSessionManager
 from .core.game import search_games, get_game_detail, resolve_download_link, generate_game_html, check_cookie
 from .core.switch618 import (
     search_games_618, get_game_detail_618, resolve_download_link_618,
-    check_618_cookie, get_qr_image_bytes, submit_618_login,
+    check_618_cookie, get_qr_image_bytes, submit_618_login, get_today_games_618,
 )
 from .core.qr_login import (
     format_cookie_string, extract_xdgame_cookies,
@@ -81,7 +81,15 @@ from .core.qr_login import (
 )
 from .core.software import (
     search_software, get_search_detail, generate_search_html,
-    get_software_list, get_detail, sync_scrape, gen_list_image, gen_report_zip
+    get_software_list, get_detail, sync_scrape, gen_list_image, gen_report_zip,
+    build_summer_html, download_summer_assets
+)
+from .core.game_daily import (
+    get_today_games, build_cartoon_html, render_html_to_png
+)
+from .core.movie_daily import (
+    fetch_movie_daily, fetch_movie_daily_auto, build_glass_html,
+    render_glass_to_png, gen_report_zip as gen_movie_report_zip
 )
 from .core.movie import (
     search_movies, get_movie_detail,
@@ -150,6 +158,48 @@ def _parse_movie_meta_json(text: str):
         return ("", "")
 
 
+def _parse_audit_json(text: str):
+    """从大模型返回的文本里抠出 {"allowed":bool,"reason":str,"intent":str}。
+    解析失败/字段异常 → 默认放行 (True, "", "")，避免审核异常阻断正常搜索。"""
+    import json as _json, re as _re
+    if not text:
+        return True, "", ""
+    m = _re.search(r"\{[\s\S]*?\}", text)
+    if not m:
+        return True, "", ""
+    try:
+        data = _json.loads(m.group(0))
+        raw = data.get("allowed", True)
+        # 兼容大模型把 allowed 返回为字符串 "true"/"false" 的情况
+        if isinstance(raw, str):
+            allowed = raw.strip().lower() in ("true", "1", "yes", "y", "是")
+        else:
+            allowed = bool(raw)
+        reason = str(data.get("reason", "") or "")
+        intent = str(data.get("intent", "") or "")
+        return allowed, reason, intent
+    except Exception:
+        return True, "", ""
+
+
+# 配置分组映射：分组键 -> 其下叶子配置键（与 _conf_schema.json 的 object 分组保持一致）
+# 用途：① _get_config 把嵌套分组展开为扁平视图（旧读取代码 config.get("leaf") 无需改动）
+#       ② _update_config 把回写的值放回到正确的嵌套分组中
+#       ③ _migrate_config 把旧版扁平配置归组，兼容升级
+_CONF_GROUPS = {
+    "account": ["xdgame_username", "xdgame_password", "cookie", "switch618_cookie", "muliy_cookie", "wyy_cookie"],
+    "game_search": ["game_source", "max_search_results"],
+    "game_report": ["game_report_enabled", "game_report_max"],
+    "movie_report": ["movie_report_enabled", "movie_report_max", "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections"],
+    "software_report": ["schedule_hour", "schedule_minute", "group_ids"],
+    "movie_search": ["movie_source", "muliy_cache_ttl"],
+    "netease_music": ["wyy_auto_parse", "wyy_music_type", "wyy_custom_url", "wyy_clip_seconds", "wyy_audio_format"],
+    "vip_video": ["video_vip_parse", "video_vip_timeout"],
+    "browser": ["browser_channel", "browser_exe"],
+}
+_KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
+
+
 # ========================================================================
 #  AstrBot 插件类
 # ========================================================================
@@ -160,7 +210,7 @@ class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self._plugin_config = config
+        self._plugin_config = self._migrate_config(config)
         _dbg_log("H0", "plugin __init__ called", {
             "config_type": str(type(config).__name__) if config is not None else "None",
             "has_xdgame_username": config.get("xdgame_username") if isinstance(config, dict) else "N/A",
@@ -175,9 +225,19 @@ class MuliyResourcesPlugin(Star):
         # 软件日报调度
         self._apscheduler: Optional[AsyncIOScheduler] = None
         self._scheduler_job_id = "daily_software_report"
+        # 游戏日报调度（独立 schedule，与软件日报分开）
+        self._game_scheduler_job_id = "daily_game_report"
+        self._game_last_run_date: str = ""
         self._timezone: Optional[zoneinfo.ZoneInfo] = None
         self._schedule_hour: int = 10
         self._schedule_minute: int = 0
+        self._game_schedule_hour: int = 18
+        self._game_schedule_minute: int = 0
+        # 影视日报调度（独立 schedule，与软件/游戏日报分开）
+        self._movie_scheduler_job_id = "daily_movie_report"
+        self._movie_last_run_date: str = ""
+        self._movie_schedule_hour: int = 20
+        self._movie_schedule_minute: int = 0
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._fallback_task: Optional[asyncio.Task] = None
         # VIP 解析：等待用户「选接口」的待处理会话 {unified_msg_origin: {...}}
@@ -427,32 +487,65 @@ class MuliyResourcesPlugin(Star):
 
     # ==================== 配置 ====================
 
+    def _migrate_config(self, cfg):
+        """旧版扁平配置 -> 新版 object 分组嵌套（兼容升级，避免读取 KeyError）"""
+        if not isinstance(cfg, dict):
+            return cfg
+        if any(k in cfg for k in _CONF_GROUPS):
+            return cfg  # 已含分组键，视为新版嵌套结构
+        nested = {g: {} for g in _CONF_GROUPS}
+        for k, v in cfg.items():
+            g = _KEY_TO_GROUP.get(k)
+            if g:
+                nested[g][k] = v
+            else:
+                nested[k] = v
+        return nested
+
     def _get_config(self) -> dict:
-        if self._plugin_config is None:
+        raw = self._plugin_config
+        if raw is None:
             _dbg_log("H1", "_get_config: _plugin_config is None", {})
             return {}
+        if not isinstance(raw, dict):
+            try:
+                raw = dict(raw)
+            except Exception:
+                try:
+                    if hasattr(raw, '__dict__'):
+                        raw = {k: v for k, v in raw.__dict__.items() if not k.startswith('_')}
+                    else:
+                        raw = {}
+                except Exception:
+                    raw = {}
         _dbg_log("H1", "_get_config: config type", {
-            "type": str(type(self._plugin_config).__name__),
-            "xdgame_username_present": "xdgame_username" in (self._plugin_config if isinstance(self._plugin_config, dict) else dir(self._plugin_config)),
+            "type": str(type(raw).__name__),
+            "xdgame_username_present": "xdgame_username" in raw,
         })
-        if isinstance(self._plugin_config, dict): return self._plugin_config
-        try: return dict(self._plugin_config)
-        except: pass
-        try:
-            if hasattr(self._plugin_config, '__dict__'):
-                return {k:v for k,v in self._plugin_config.__dict__.items() if not k.startswith('_')}
-        except: pass
-        return {}
+        # 把 object 分组的叶子键提升到顶层，使旧读取代码（config.get("leaf")）继续有效
+        flat = {}
+        for k, v in raw.items():
+            if k in _CONF_GROUPS and isinstance(v, dict):
+                flat.update(v)
+            else:
+                flat[k] = v
+        return flat
 
     def _get_cookie(self) -> str:
         return self._get_config().get("cookie", "").strip()
 
     async def _update_config(self, key: str, value: object):
         """持久化更新插件配置中的某个字段（issue4 修复：用插件 id 持久化 + 本地文件兜底）"""
-        cfg = self._get_config()
+        cfg = self._plugin_config
         if not isinstance(cfg, dict):
-            cfg = dict(cfg) if cfg is not None else {}
-        cfg[key] = value
+            cfg = {}
+        g = _KEY_TO_GROUP.get(key)
+        if g is not None:
+            if not isinstance(cfg.get(g), dict):
+                cfg[g] = {}
+            cfg[g][key] = value
+        else:
+            cfg[key] = value
         self._plugin_config = cfg
         try:
             if hasattr(self.context, 'update_plugin_config'):
@@ -646,6 +739,10 @@ class MuliyResourcesPlugin(Star):
             keyword(string): 用户想找的资源名称（去掉了"游戏""软件""影视"等统称后缀）
         """
         keyword = clean_search_keyword(keyword)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
         config = self._get_config()
         fm = min(int(config.get("max_search_results", 32) if isinstance(config, dict) else 32), 48)
         ps = 8
@@ -922,6 +1019,10 @@ class MuliyResourcesPlugin(Star):
             game_name(string): 游戏名称（已自动去掉"游戏"后缀）
         """
         game_name = clean_search_keyword(game_name)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, game_name)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
         config = self._get_config(); ps = 8
         fm = min(int(config.get("max_search_results",32) if isinstance(config,dict) else 32), 48)
         tag = "【暮黎资源】"
@@ -971,6 +1072,10 @@ class MuliyResourcesPlugin(Star):
             software_name(string): 软件名称（已自动去掉"软件""应用"后缀）
         """
         software_name = clean_search_keyword(software_name)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, software_name)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
         ps = 8; tag = "【暮黎资源】"
         try: results = await asyncio.to_thread(search_software, software_name, 32)
         except Exception as e:
@@ -1015,6 +1120,10 @@ class MuliyResourcesPlugin(Star):
         Args:
             movie_name(string): 影视名称（如"怪物"、"庆余年"、"星际穿越"）
         """
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, movie_name)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
         ps = 8; tag = "【暮黎资源】"
         # 影视源自动切换：配置了教父.com 账号密码 → 新站（在线播放+网盘）；
         # 未配置账号密码 → 自动回退 a123tv 旧站（仅在线播放）。
@@ -1756,6 +1865,10 @@ class MuliyResourcesPlugin(Star):
     async def cmd_game_search(self, event: AstrMessageEvent):
         keyword = clean_search_keyword(event.message_str.strip())
         keyword = re.sub(r"^/?找游戏\s*", "", keyword)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
+        if not allowed:
+            yield event.plain_result(f"⚠️ {reason}"); return
         logger.info(f"游戏搜索: 关键词=[{keyword}]")
         if not keyword: yield event.plain_result("请发送：/找游戏 <游戏名>"); return
         if not requests: yield event.plain_result("❌ 缺少 requests"); return
@@ -1776,6 +1889,10 @@ class MuliyResourcesPlugin(Star):
     async def cmd_sw_search(self, event: AstrMessageEvent):
         keyword = clean_search_keyword(event.message_str.strip())
         keyword = re.sub(r"^/?找软件\s*", "", keyword)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
+        if not allowed:
+            yield event.plain_result(f"⚠️ {reason}"); return
         logger.info(f"软件搜索: 关键词=[{keyword}]")
         if not keyword: yield event.plain_result("请发送：/找软件 <资源名>"); return
         if not requests: yield event.plain_result("❌ 缺少 requests"); return
@@ -1789,6 +1906,10 @@ class MuliyResourcesPlugin(Star):
         """影视搜索（a123tv.com）— 自动登录态 + 一步走选节点。"""
         keyword = event.message_str.strip()
         keyword = re.sub(r"^/?找影视\s*", "", keyword)
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
+        if not allowed:
+            yield event.plain_result(f"⚠️ {reason}"); return
         logger.info(f"影视搜索: 关键词=[{keyword}]")
         if not keyword:
             yield event.plain_result("请发送：/找影视 <影视名>"); return
@@ -2118,6 +2239,30 @@ class MuliyResourcesPlugin(Star):
         }
         return msg_map.get(state, detail)
 
+    async def _sw_render_image(self, sws: list) -> bytes | None:
+        """软件日报：下载封面 → 橙色夏日风 HTML → Playwright 渲染为图片（压缩到 ≤2MB）。
+
+        失败返回 None（调用方据此降级）。图标使用 Material Design Icons 内联 SVG，无 emoji 乱码。
+        """
+        config = self._get_config()
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        try:
+            await asyncio.to_thread(download_summer_assets, sws)
+        except Exception as e:
+            logger.warning(f"[软件日报] 封面下载异常: {e}")
+        html = build_summer_html(sws, date_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 720, channel, exe)
+        except Exception as e:
+            logger.error(f"[软件日报] 渲染异常: {e}")
+        if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            img_bytes = self._compress_game_image(img_bytes)
+        return img_bytes
+
     @filter.command("software_report")
     async def cmd_sw_report(self, event: AstrMessageEvent):
         config = self._get_config()
@@ -2127,37 +2272,34 @@ class MuliyResourcesPlugin(Star):
         sel_cache = ""; cds = ""
         if os.path.exists(tc): sel_cache = tc; cds = ts
         elif os.path.exists(yc): sel_cache = yc; cds = ys
-        if sel_cache:
-            await event.send(MessageChain([Plain("📂 发送缓存日报...")]))
-            if await self._upload_zip(sel_cache, f"暮黎软件日报_{cds}.zip", event): return
+        # 日报只发送图片，不再发送自包含 zip 文件
         await event.send(MessageChain([Plain("⏳ 抓取数据...")]))
         mx = 24  # max_softwares 配置已移除，固定默认 24
-        ei = True  # enable_image 配置已移除，固定生成图片
         result = await asyncio.to_thread(sync_scrape, mx)
         if not result["success"]: yield event.plain_result(f"⚠️ {result.get('error','未知')}"); return
         sws = result.get("softwares",[])
         if not sws: yield event.plain_result("📭 今日暂无更新。"); return
-        img_buf = None
-        if ei:
-            try: img_buf = await asyncio.to_thread(gen_list_image, sws)
-            except: pass
-        zp = await asyncio.to_thread(gen_report_zip, sws, img_buf)
-        img_c = []; img_p = None
-        if img_buf:
+        # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
+        img_bytes = await self._sw_render_image(sws)
+        if img_bytes:
             try:
-                fd,img_p = tempfile.mkstemp(suffix=".png",prefix="sw_"); os.close(fd)
-                with open(img_p,"wb") as f: f.write(img_buf.getvalue()); img_c.append(ImageComponent(file=img_p))
-            except: pass
-        if img_c: await event.send(MessageChain(img_c)); await asyncio.sleep(0.5)
-        if zp: await self._upload_zip(zp, f"暮黎软件日报_{ts}.zip", event)
-        if img_buf: img_buf.close()
+                fd, img_p = tempfile.mkstemp(suffix=".jpg", prefix="sw_"); os.close(fd)
+                with open(img_p, "wb") as f: f.write(img_bytes)
+                await event.send(MessageChain([ImageComponent(file=img_p)])); await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"发送软件日报图片失败: {e}")
+                yield event.plain_result("⚠️ 日报图片发送失败，请确认已执行 playwright install chromium。")
+        else:
+            yield event.plain_result("⚠️ 日报图片渲染失败，请确认已执行 playwright install chromium。")
 
     @filter.command("software_report_status")
     async def cmd_sw_status(self, event: AstrMessageEvent):
         config = self._get_config()
         h = config.get("schedule_hour",10); m = config.get("schedule_minute",0)
+        gh = config.get("game_schedule_hour",18); gm = config.get("game_schedule_minute",0)
         gs = config.get("group_ids","").strip(); groups = [g.strip() for g in gs.split(",") if g.strip()]
-        ei = True; mx = 24; pid = config.get("platform_id","aiocqhttp")
+        ggs = config.get("game_group_ids","").strip(); ggroups = [g.strip() for g in ggs.split(",") if g.strip()]
+        ei = True; mx = 24
         sk = self._apscheduler and self._apscheduler.running
         nxt = "未知"
         if self._apscheduler:
@@ -2167,13 +2309,36 @@ class MuliyResourcesPlugin(Star):
             except: pass
         tz = self._timezone.key if self._timezone else "系统本地"
         lr = self._last_run_date or "从未执行"
+        gen = config.get("game_report_enabled", True) if isinstance(config, dict) else True
+        gnxt = "未知"; glr = self._game_last_run_date or "从未执行"
+        if self._apscheduler:
+            try:
+                jg = self._apscheduler.get_job(self._game_scheduler_job_id)
+                if jg and jg.next_run_time: gnxt = jg.next_run_time.strftime("%Y-%m-%d %H:%M")
+            except: pass
+        gmx = int(config.get("game_report_max", 24) or 24) if isinstance(config, dict) else 8
+        # 影视日报状态
+        men = config.get("movie_report_enabled", True) if isinstance(config, dict) else True
+        mh = config.get("movie_schedule_hour", 20); mm = config.get("movie_schedule_minute", 0)
+        mgs = config.get("movie_group_ids","").strip(); mgroups = [g.strip() for g in mgs.split(",") if g.strip()]
+        msec = config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac"
+        mmx = int(config.get("movie_report_max", 24) or 24) if isinstance(config, dict) else 24
+        mnxt = "未知"; mlr = self._movie_last_run_date or "从未执行"
+        if self._apscheduler:
+            try:
+                jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
+                if jm and jm.next_run_time: mnxt = jm.next_run_time.strftime("%Y-%m-%d %H:%M")
+            except: pass
         yield event.plain_result(
             f"📊 暮黎资源聚合\n{'='*30}\n"
-            f"⏰ 日报: 每日 {h:02d}:{m:02d} | 🌍 {tz}\n"
-            f"🔄 调度: {'✅' if sk else '❌'} | 📅 下次: {nxt}\n"
-            f"✅ 上次: {lr} | 📡 {pid}\n"
-            f"👥 群: {len(groups)}个 | 🖼️ {'是' if ei else '否'} | 📦 {mx}\n"
-            f"⚡ 命令: /找软件 | /找游戏")
+            f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'}\n"
+            f"📦 软件日报: 每日 {h:02d}:{m:02d} | 群{len(groups)}个 | 上次:{lr} | 下次:{nxt}\n"
+            f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{len(ggroups)}个 | 上限{gmx}\n"
+            f"   上次:{glr} | 下次:{gnxt}\n"
+            f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{len(mgroups)}个 | 上限{mmx}\n"
+            f"   区块:{msec} | 上次:{mlr} | 下次:{mnxt}\n"
+            f"🖼️ 软件图片: {'是' if ei else '否'} | 软件上限: {mx}\n"
+            f"⚡ 命令: /找软件 | /找游戏 | /game_report | /movie_report")
 
     # ==================== 翻页格式化 ====================
 
@@ -3107,6 +3272,66 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[暮黎资源] LLM 查百科失败 ({movie_name}): {e}")
         return ("", "")
 
+    # ==================== 搜索关键词审核（大模型涉黄/违禁判定） ====================
+
+    # 本地硬屏蔽词：明显涉黄/违禁，无需调用大模型直接拦截（省开销、更稳、零延迟）。
+    # 仅作“保底”快速过滤；其余判定交给下方大模型审核。
+    _AUDIT_BLOCK_WORDS = (
+        "色情", "裸聊", "约炮", "黄片", "做爱", "性交", "性爱", "援交",
+        "裸体", "春药", "淫秽", "嫖娼", "一夜情", "福利姬", "里番", "工口",
+        "巨乳", "萝莉", "调教", "成人", "av", "av女优", "性交",
+    )
+
+    async def _audit_search_keyword(self, event: AstrMessageEvent, keyword: str):
+        """调用大模型审核搜索关键词是否涉黄/违禁，并判断用户搜索意图。
+
+        返回 (allowed: bool, reason: str, intent: str)。
+        - 命中本地硬屏蔽词 → 直接判定为违禁（allowed=False），不消耗大模型额度。
+        - 大模型显式判定 allowed=False → 拦截。
+        - 大模型调用失败/不可用 → fail-open（放行），仅记录日志，
+          避免大模型异常把正常的资源搜索功能拖垮。
+        """
+        kw = (keyword or "").strip()
+        if not kw:
+            return True, "", ""
+        # 1) 本地硬屏蔽（快速、零延迟）
+        low = kw.lower()
+        for w in self._AUDIT_BLOCK_WORDS:
+            if w.lower() in low:
+                logger.info(f"[暮黎资源] 关键词「{kw}」命中本地违禁词，已拦截")
+                return False, f"搜索关键词「{kw}」疑似涉及违规内容，已被拦截。", "违规内容"
+        # 2) 大模型审核（判断是否涉黄/违禁 + 用户搜索意图）
+        umo = getattr(event, "unified_msg_origin", None)
+        sys_prompt = (
+            "你是一名内容安全审核员。用户将在网络资源站搜索某个关键词，"
+            "请判断该关键词是否涉及色情、淫秽、成人内容（涉黄）或其它明显违禁内容；"
+            "同时简要判断用户的搜索意图（想找什么类型的资源）。\n"
+            "只输出一行 JSON，不要任何其它文字：\n"
+            '{"allowed": true 或 false, "reason": "简短理由", "intent": "搜索意图"}'
+        )
+        user_prompt = f"搜索关键词：{kw}"
+        try:
+            if hasattr(self.context, "get_current_chat_provider_id") and hasattr(self.context, "llm_generate"):
+                pid = await self.context.get_current_chat_provider_id(umo=umo)
+                if pid:
+                    resp = await self.context.llm_generate(
+                        chat_provider_id=pid, prompt=user_prompt, system_prompt=sys_prompt)
+                    text = getattr(resp, "completion_text", None) or str(resp)
+                    return _parse_audit_json(text)
+        except Exception as e:
+            logger.debug(f"[暮黎资源] 关键词审核(新API)失败: {e}")
+        try:
+            if hasattr(self.context, "get_using_provider"):
+                provider = self.context.get_using_provider(umo)
+                if provider and hasattr(provider, "text_chat"):
+                    resp = await provider.text_chat(prompt=user_prompt, system_prompt=sys_prompt, persist=False)
+                    text = getattr(resp, "completion_text", None) or str(resp)
+                    return _parse_audit_json(text)
+        except Exception as e:
+            logger.warning(f"[暮黎资源] 关键词审核(旧API)失败: {e}")
+        # fail-open：大模型不可用时不阻断正常搜索
+        return True, "", ""
+
     async def _send_movie_record(self, event: AstrMessageEvent,
                                   name: str, ep, src: dict,
                                   line_name: str, cast: str,
@@ -3276,7 +3501,7 @@ class MuliyResourcesPlugin(Star):
         await self._handle_vip_link(event, link, cfg, prefill=card_meta)
 
     # 平台名称列表（用于判断卡片 title 是否只是平台名而非视频标题）
-    _PLATFORM_NAMES = {"腾讯视频", "芒果tv", "芒果TV", "优酷", "爱奇艺", "搜狐视频", "乐视", "bilibili", "哔哩哔哩"}
+    _PLATFORM_NAMES = {"腾讯视频", "芒果tv", "芒果TV", "优酷", "爱奇艺"}
 
     def _extract_card_meta(self, jdict: dict) -> dict:
         """从分享卡片 JSON 提取自带的标题/简介/封面。
@@ -3329,7 +3554,7 @@ class MuliyResourcesPlugin(Star):
         timeout = int(cfg.get("video_vip_timeout", 20000) or 20000)
         if timeout < 1000:
             timeout = timeout * 1000
-        channel = (cfg.get("video_vip_browser_channel") or "").strip()
+        channel = (cfg.get("browser_channel") or "").strip()
         exe = ""  # video_vip_browser_path 配置已移除，统一自动探测浏览器
         proxy = ""  # video_vip_proxy 配置已移除，统一走环境代理自动探测
 
@@ -3488,7 +3713,7 @@ class MuliyResourcesPlugin(Star):
         # 安全兜底：如果用户把超时设成了秒（如 25），自动转成毫秒
         if timeout < 1000:
             timeout = timeout * 1000
-        channel = (cfg.get("video_vip_browser_channel") or "").strip()
+        channel = (cfg.get("browser_channel") or "").strip()
         exe = ""  # video_vip_browser_path 配置已移除，统一自动探测浏览器
         proxy = ""  # video_vip_proxy 配置已移除，统一走环境代理自动探测
 
@@ -4613,9 +4838,23 @@ class MuliyResourcesPlugin(Star):
             m = int(config.get("schedule_minute",0) if isinstance(config,dict) else 0)
         except: h,m = 10,0
         self._schedule_hour = max(0,min(23,h)); self._schedule_minute = max(0,min(59,m))
+        # 游戏日报独立调度（与软件日报分开）
+        try:
+            gh = int(config.get("game_schedule_hour",18) if isinstance(config,dict) else 18)
+            gm = int(config.get("game_schedule_minute",0) if isinstance(config,dict) else 0)
+        except: gh,gm = 18,0
+        self._game_schedule_hour = max(0,min(23,gh)); self._game_schedule_minute = max(0,min(59,gm))
+        # 影视日报独立调度（与软件/游戏日报分开）
+        try:
+            mh = int(config.get("movie_schedule_hour",20) if isinstance(config,dict) else 20)
+            mm = int(config.get("movie_schedule_minute",0) if isinstance(config,dict) else 0)
+        except: mh,mm = 20,0
+        self._movie_schedule_hour = max(0,min(23,mh)); self._movie_schedule_minute = max(0,min(59,mm))
         tz_kw = {"timezone":self._timezone} if self._timezone else {}
         self._apscheduler = AsyncIOScheduler(**tz_kw); self._apscheduler.start()
         self._schedule_sw_next()
+        self._schedule_game_next()
+        self._schedule_movie_next()
         if self._heartbeat_task: self._heartbeat_task.cancel()
         self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
         if self._fallback_task: self._fallback_task.cancel()
@@ -4648,9 +4887,29 @@ class MuliyResourcesPlugin(Star):
         if nr <= n: nr += datetime.timedelta(days=1)
         return nr
 
+    def _game_next_run(self):
+        n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
+        nr = n.replace(hour=self._game_schedule_hour,minute=self._game_schedule_minute,second=0,microsecond=0)
+        if nr <= n: nr += datetime.timedelta(days=1)
+        return nr
+
     def _schedule_sw_next(self):
         nr = self._sw_next_run()
         self._apscheduler.add_job(self._sw_daily_job,"date",run_date=nr,id=self._scheduler_job_id,name="软件日报",replace_existing=True,misfire_grace_time=600)
+
+    def _schedule_game_next(self):
+        nr = self._game_next_run()
+        self._apscheduler.add_job(self._game_daily_job,"date",run_date=nr,id=self._game_scheduler_job_id,name="游戏日报",replace_existing=True,misfire_grace_time=600)
+
+    def _movie_next_run(self):
+        n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
+        nr = n.replace(hour=self._movie_schedule_hour,minute=self._movie_schedule_minute,second=0,microsecond=0)
+        if nr <= n: nr += datetime.timedelta(days=1)
+        return nr
+
+    def _schedule_movie_next(self):
+        nr = self._movie_next_run()
+        self._apscheduler.add_job(self._movie_daily_job,"date",run_date=nr,id=self._movie_scheduler_job_id,name="影视日报",replace_existing=True,misfire_grace_time=600)
 
     async def _sw_heartbeat(self):
         while True:
@@ -4659,6 +4918,10 @@ class MuliyResourcesPlugin(Star):
                 if not self._apscheduler or not self._apscheduler.running: await self._start_sw_scheduler(); continue
                 j = self._apscheduler.get_job(self._scheduler_job_id)
                 if not j or not j.next_run_time: self._schedule_sw_next()
+                jg = self._apscheduler.get_job(self._game_scheduler_job_id)
+                if not jg or not jg.next_run_time: self._schedule_game_next()
+                jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
+                if not jm or not jm.next_run_time: self._schedule_movie_next()
             except asyncio.CancelledError: return
             except: pass
 
@@ -4668,13 +4931,30 @@ class MuliyResourcesPlugin(Star):
                 await asyncio.sleep(30)
                 n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
                 ts = n.strftime("%Y%m%d")
+                # 软件日报时间窗（独立）
                 tgt = n.replace(hour=self._schedule_hour,minute=self._schedule_minute,second=0,microsecond=0)
-                if n < tgt: continue
-                sp = (n - tgt).total_seconds()
-                if 0 <= sp <= 300 and self._last_run_date != ts:
-                    logger.warning(f"🛡️ 兜底触发 (延迟{sp:.0f}s)")
-                    try: await self._sw_daily_job()
-                    except: pass
+                if n >= tgt:
+                    sp = (n - tgt).total_seconds()
+                    if 0 <= sp <= 300 and self._last_run_date != ts:
+                        logger.warning(f"🛡️ 软件日报兜底触发 (延迟{sp:.0f}s)")
+                        try: await self._sw_daily_job()
+                        except: pass
+                # 游戏日报时间窗（独立）
+                gtgt = n.replace(hour=self._game_schedule_hour,minute=self._game_schedule_minute,second=0,microsecond=0)
+                if n >= gtgt:
+                    gsp = (n - gtgt).total_seconds()
+                    if 0 <= gsp <= 300 and self._game_last_run_date != ts:
+                        logger.warning(f"🛡️ 游戏日报兜底触发 (延迟{gsp:.0f}s)")
+                        try: await self._game_daily_job()
+                        except: pass
+                # 影视日报时间窗（独立）
+                mtgt = n.replace(hour=self._movie_schedule_hour,minute=self._movie_schedule_minute,second=0,microsecond=0)
+                if n >= mtgt:
+                    msp = (n - mtgt).total_seconds()
+                    if 0 <= msp <= 300 and self._movie_last_run_date != ts:
+                        logger.warning(f"🛡️ 影视日报兜底触发 (延迟{msp:.0f}s)")
+                        try: await self._movie_daily_job()
+                        except: pass
             except asyncio.CancelledError: return
             except: pass
 
@@ -4686,12 +4966,141 @@ class MuliyResourcesPlugin(Star):
         try:
             now = datetime.date.today(); cut = now - datetime.timedelta(days=self._reports_retention_days)
             for fn in os.listdir(self._reports_dir):
-                if not fn.startswith("sw_report_") or not fn.endswith(".zip"): continue
-                p = fn.replace("sw_report_","").replace(".zip","")
+                if not fn.endswith(".zip"): continue
+                if not (fn.startswith("sw_report_") or fn.startswith("game_report_")
+                        or fn.startswith("movie_report_")): continue
+                p = (fn.replace("sw_report_","").replace("game_report_","").replace("movie_report_","").replace(".zip",""))
                 if len(p)!=8 or not p.isdigit(): continue
                 fd = datetime.date(int(p[:4]),int(p[4:6]),int(p[6:8]))
                 if fd < cut: os.remove(os.path.join(self._reports_dir,fn))
         except: pass
+
+    def _movie_cached_path(self, ds: str) -> str:
+        return os.path.join(self._reports_dir, f"movie_report_{ds}.zip") if self._reports_dir else ""
+
+    async def _movie_send_report(self, img_bytes, ts, text: str = ""):
+        config = self._get_config()
+        pid = "aiocqhttp"  # 平台 ID 由 platform_manager 自动识别，无需配置
+        gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
+        if not gs: return
+        gids = [g.strip() for g in gs.split(",") if g.strip()]
+        img_path = None; img_c = []
+        if img_bytes:
+            try:
+                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="movie_"); os.close(fd)
+                with open(img_path, "wb") as f: f.write(img_bytes)
+                img_c.append(ImageComponent(file=img_path))
+            except Exception as e: logger.warning(f"[影视日报] 写图片失败: {e}")
+        apid = pid
+        try:
+            for p in self.context.platform_manager.get_insts():
+                if "webchat" not in p.meta().id: apid = p.meta().id; break
+        except: pass
+        for gid in gids:
+            umo = f"{apid}:GroupMessage:{gid}"
+            try:
+                if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
+                elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
+            except Exception as e: logger.error(f"发送影视日报到群{gid}失败: {e}")
+
+    async def _movie_build_and_send(self, items: list, ts: str):
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        html = build_glass_html(items, date_label, source_label="教父.com")
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        config = self._get_config()
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
+        except Exception as e: logger.error(f"[影视日报] 渲染异常: {e}")
+        text = ""
+        if not img_bytes:
+            logger.warning("[影视日报] 图片渲染失败，改用文字版推送")
+            text = (f"🎬 暮黎影视日报 {date_label}\n今日更新 {len(items)} 部：\n"
+                    + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
+                                 for i, it in enumerate(items, 1)))
+        await self._movie_send_report(img_bytes, ts, text)
+
+    async def _movie_daily_job(self):
+        ts = datetime.date.today().strftime("%Y%m%d")
+        if self._movie_last_run_date == ts: return
+        self._movie_last_run_date = ts
+        config = self._get_config()
+        if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
+            self._schedule_movie_next(); return
+        gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
+        if not gs:
+            self._schedule_movie_next(); return
+        cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
+        # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
+        forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
+        mx = int(config.get("movie_report_max", 24) or 24)
+        sections = (config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac")
+        sections_filter = [s.strip() for s in sections.split(",") if s.strip() in ("mv", "tv", "ac")] or None
+        # 自动选择影视源：配了教父.com Cookie 走新站，否则回退 a123tv 旧站（免登录）
+        use_cookie = "" if forced_a123 else cookie
+        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('教父.com' if cookie else 'a123tv(免登录)')}）")
+        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
+        if not result["success"]:
+            logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}")
+            self._schedule_movie_next(); return
+        items = result.get("items", [])
+        if not items:
+            logger.info("[影视日报] 今日暂无更新，跳过推送")
+            self._schedule_movie_next(); return
+        # 缓存 zip 供面板回看
+        try:
+            date_label = datetime.date.today().strftime("%Y年%m月%d日")
+            src_label = result.get("source", "教父.com")
+            html = build_glass_html(items, date_label, source_label=src_label)
+            zp = await asyncio.to_thread(gen_movie_report_zip, items, html, ts)
+            if zp:
+                import shutil
+                shutil.copy2(zp, self._movie_cached_path(ts))
+                self._sw_cleanup_reports()
+        except Exception as e: logger.warning(f"[影视日报] 缓存 zip 失败: {e}")
+        await self._movie_build_and_send(items, ts)
+        self._schedule_movie_next()
+
+    @filter.command("movie_report")
+    async def cmd_movie_report(self, event: AstrMessageEvent):
+        config = self._get_config()
+        cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
+        forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
+        mx = int(config.get("movie_report_max", 24) or 24)
+        sections = (config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac")
+        sections_filter = [s.strip() for s in sections.split(",") if s.strip() in ("mv", "tv", "ac")] or None
+        use_cookie = "" if forced_a123 else cookie
+        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not cookie) else "教父.com 新站"
+        yield event.plain_result(f"⏳ 正在抓取{src_hint}最近更新影视...")
+        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
+        if not result["success"]:
+            yield event.plain_result(f"⚠️ {result.get('error','未知')}"); return
+        items = result.get("items", [])
+        if not items:
+            yield event.plain_result("📭 今日暂无影视更新。"); return
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        src_label = result.get("source", "教父.com")
+        html = build_glass_html(items, date_label, source_label=src_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
+        except Exception as e: logger.error(f"[影视日报] 渲染异常: {e}")
+        if img_bytes:
+            try:
+                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="movie_"); os.close(fd)
+                with open(img_path, "wb") as f: f.write(img_bytes)
+                await event.send(MessageChain([ImageComponent(file=img_path)])); await asyncio.sleep(0.4)
+            except Exception as e: logger.warning(f"发送图片失败: {e}")
+        else:
+            await event.send(MessageChain([Plain(
+                "⚠️ 图片渲染失败（请确认已执行 playwright install chromium），改为文字版：\n"
+                + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
+                             for i, it in enumerate(items, 1)))]))
 
     async def _sw_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -4701,38 +5110,36 @@ class MuliyResourcesPlugin(Star):
         gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
         if not gs: return
         mx = 24  # max_softwares 配置已移除，固定默认 24
-        ei = True  # enable_image 配置已移除，固定生成图片
         result = await asyncio.to_thread(sync_scrape, mx)
         if not result["success"]: return
         sws = result.get("softwares",[])
         if not sws: return
-        img_buf = None
-        if ei:
-            try: img_buf = await asyncio.to_thread(gen_list_image, sws)
-            except: pass
-        zp = await asyncio.to_thread(gen_report_zip, sws, img_buf)
+        # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
+        img_bytes = await self._sw_render_image(sws)
+        zp = await asyncio.to_thread(gen_report_zip, sws, io.BytesIO(img_bytes) if img_bytes else None)
+        # 仅发送图片，不再向群发送自包含 zip 文件
+        await self._sw_send_report(img_bytes, None)
+        # 缓存 zip 仅供面板本地回看（不会发送给用户/群）
         if zp:
-            await self._sw_send_report(img_buf, zp)
             try:
                 import shutil
                 shutil.copy2(zp, self._sw_cached_path(ts))
                 self._sw_cleanup_reports()
             except: pass
-        if img_buf: img_buf.close()
         self._schedule_sw_next()
 
-    async def _sw_send_report(self, img_buf, zp):
+    async def _sw_send_report(self, img_bytes, zp):
         config = self._get_config()
-        pid = config.get("platform_id","aiocqhttp").strip() if isinstance(config,dict) else "aiocqhttp"
+        pid = "aiocqhttp"  # 平台 ID 由下方 platform_manager 自动识别，无需配置
         gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
         if not gs: return
         gids = [g.strip() for g in gs.split(",") if g.strip()]
         ts = datetime.date.today().strftime("%Y%m%d"); zn = f"暮黎软件日报_{ts}.zip"
         img_path = None; img_c = []
-        if img_buf:
+        if img_bytes:
             try:
-                fd,img_path=tempfile.mkstemp(suffix=".png",prefix="sw_"); os.close(fd)
-                with open(img_path,"wb") as f: f.write(img_buf.getvalue()); img_c.append(ImageComponent(file=img_path))
+                fd,img_path=tempfile.mkstemp(suffix=".jpg",prefix="sw_"); os.close(fd)
+                with open(img_path,"wb") as f: f.write(img_bytes); img_c.append(ImageComponent(file=img_path))
             except: pass
         client = self._get_best_client()
         apid = pid
@@ -4744,9 +5151,7 @@ class MuliyResourcesPlugin(Star):
             umo = f"{apid}:GroupMessage:{gid}"
             try:
                 if img_c: await self.context.send_message(umo,MessageChain(img_c)); await asyncio.sleep(0.5)
-                if zp and os.path.exists(zp) and client:
-                    with open(zp,"rb") as f: b64=base64.b64encode(f.read()).decode("utf-8")
-                    await client.call_action(action="upload_group_file",group_id=int(gid),file=f"base64://{b64}",name=zn)
+            # 按需求：日报只发送图片，不再向群发送自包含 zip 文件（zp 仅用于本地缓存回看）
             except Exception as e: logger.error(f"发送日报到群{gid}失败: {e}")
 
     async def _upload_zip(self, zp, zn, event=None, gid=None, uid=None):
@@ -4766,10 +5171,194 @@ class MuliyResourcesPlugin(Star):
         except: pass
         return False
 
+    # ==================== 游戏日报（XDGAME） ====================
+    def _game_cached_path(self, ds: str) -> str:
+        return os.path.join(self._reports_dir, f"game_report_{ds}.zip") if self._reports_dir else ""
+
+    async def _game_send_report(self, img_bytes, ts, text: str = ""):
+        config = self._get_config()
+        pid = "aiocqhttp"  # 平台 ID 由下方 platform_manager 自动识别，无需配置
+        gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
+        if not gs: return
+        gids = [g.strip() for g in gs.split(",") if g.strip()]
+        img_path = None; img_c = []
+        if img_bytes:
+            try:
+                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="game_"); os.close(fd)
+                with open(img_path, "wb") as f: f.write(img_bytes)
+                img_c.append(ImageComponent(file=img_path))
+            except Exception as e: logger.warning(f"[游戏日报] 写图片失败: {e}")
+        apid = pid
+        try:
+            for p in self.context.platform_manager.get_insts():
+                if "webchat" not in p.meta().id: apid = p.meta().id; break
+        except: pass
+        for gid in gids:
+            umo = f"{apid}:GroupMessage:{gid}"
+            try:
+                if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
+                elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
+            except Exception as e: logger.error(f"发送游戏日报到群{gid}失败: {e}")
+
+    async def _game_build_and_send(self, games: list, ts: str):
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        src_label = "switch618" if self._game_source() == "switch618" else "XDGAME"
+        html = build_cartoon_html(games, date_label, source_label=src_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        config = self._get_config()
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
+        except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
+        text = ""
+        if not img_bytes:
+            logger.warning("[游戏日报] 图片渲染失败，改用文字版推送")
+            text = (f"🎮 暮黎游戏日报 {date_label}\n今日共 {len(games)} 款新游戏：\n"
+                    + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))
+        await self._game_send_report(img_bytes, ts, text)
+
+    async def _game_daily_job(self):
+        ts = datetime.date.today().strftime("%Y%m%d")
+        if self._game_last_run_date == ts: return
+        self._game_last_run_date = ts
+        config = self._get_config()
+        if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
+            self._schedule_game_next(); return
+        gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
+        if not gs:
+            self._schedule_game_next(); return
+        mx = int(config.get("game_report_max", 24) or 24)
+        if self._game_source() == "switch618":
+            cookie = self._g_cookie()
+            # switch618 源同样受 game_report_max 上限约束（不再抓全）
+            result = await asyncio.to_thread(get_today_games_618, mx, cookie)
+        else:
+            cookie = (config.get("cookie", "") or "") if isinstance(config, dict) else ""
+            result = await asyncio.to_thread(get_today_games, mx, cookie)
+        if not result["success"]:
+            logger.warning(f"[游戏日报] 抓取失败: {result.get('error','')}")
+            self._schedule_game_next(); return
+        games = result.get("games", [])
+        if not games:
+            logger.info("[游戏日报] 今日暂无更新，跳过推送")
+            self._schedule_game_next(); return
+        await self._game_build_and_send(games, ts)
+        self._schedule_game_next()
+
+    @staticmethod
+    def _compress_game_image(img_bytes: bytes, max_bytes: int = 2 * 1024 * 1024) -> bytes:
+        """把渲染出的大图压缩到 ≤ max_bytes（先降质量再缩放），失败返回原图。
+
+        日报整页图（24 款×封面+截图）常达数 MB，超过 QQ/onebot 发图体积上限，
+        导致 event.send(Image) 被平台拒绝却只静默告警、群里收不到任何内容。
+        """
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(img_bytes))
+            out = img_bytes
+            for q in (80, 70, 60, 50):
+                buf = _io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=q, optimize=True)
+                out = buf.getvalue()
+                if len(out) <= max_bytes:
+                    return out
+            w, h = img.size
+            scale = 0.9
+            while len(out) > max_bytes and scale > 0.4:
+                scale -= 0.1
+                nw, nh = max(120, int(w * scale)), max(120, int(h * scale))
+                buf = _io.BytesIO()
+                img.resize((nw, nh), Image.LANCZOS).convert("RGB").save(
+                    buf, format="JPEG", quality=55, optimize=True)
+                out = buf.getvalue()
+            return out
+        except Exception as e:
+            logger.warning(f"[游戏日报] 压缩图片失败: {e}")
+            return img_bytes
+
+    @filter.command("game_report")
+    async def cmd_game_report(self, event: AstrMessageEvent):
+        config = self._get_config()
+        mx = int(config.get("game_report_max", 24) or 24)
+        source = self._game_source()
+        label = "switch618.com" if source == "switch618" else "XDGAME"
+        # 先立即给出一条反馈，避免下方抓取（switch 源约 1~2 分钟，含大量封面/截图下载）期间无任何响应
+        yield event.plain_result(f"⏳ 正在抓取 {label} 今日新游...")
+        # 在子线程跑抓取。进度只写入 log.txt（get_today_games* 内部已用 logger.info 记录），
+        # 不向群里刷屏；主协程等待完成，设总超时防止 worker 卡在图床时无限等待。
+        state = {"done": False, "result": None, "err": None}
+        def _worker():
+            try:
+                if source == "switch618":
+                    cookie = self._g_cookie()
+                    # 受 game_report_max 上限约束（不再抓全）；进度写入 log.txt
+                    state["result"] = get_today_games_618(mx, cookie)
+                else:
+                    cookie = (config.get("cookie", "") or "") if isinstance(config, dict) else ""
+                    state["result"] = get_today_games(mx, cookie)
+            except Exception as e:
+                state["err"] = str(e)
+            state["done"] = True
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _worker)
+        waited = 0
+        while not state["done"] and waited < 600:
+            await asyncio.sleep(2)
+            waited += 2
+        if not state["done"]:
+            yield event.plain_result("⚠️ 抓取超时（超过 10 分钟，请检查网络/图床连通性，详见 log.txt）"); return
+        if state["err"]:
+            yield event.plain_result(f"⚠️ 抓取异常: {state['err'][:200]}"); return
+        result = state["result"]
+        if not result["success"]:
+            yield event.plain_result(f"⚠️ {result.get('error','未知')}"); return
+        games = result.get("games", [])
+        if not games:
+            yield event.plain_result("📭 今日暂无游戏更新。"); return
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        src_label = "switch618" if self._game_source() == "switch618" else "XDGAME"
+        html = build_cartoon_html(games, date_label, source_label=src_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
+        except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
+        # 体积过大（如 24 款×封面+截图常达数 MB）会被平台拒收，先压缩到安全上限
+        if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            logger.info(f"[游戏日报] 渲染图 {len(img_bytes)//1024}KB，超过 3MB，尝试压缩...")
+            img_bytes = self._compress_game_image(img_bytes)
+            logger.info(f"[游戏日报] 压缩后 {len(img_bytes)//1024}KB")
+        img_path = None
+        html_path = None
+        try:
+            if img_bytes:
+                try:
+                    fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="game_"); os.close(fd)
+                    with open(img_path, "wb") as f: f.write(img_bytes)
+                    await event.send(MessageChain([ImageComponent(file=img_path)])); await asyncio.sleep(0.4)
+                except Exception as e:
+                    logger.warning(f"发送图片失败（可能体积仍过大），降级为文字版: {e}")
+                    img_bytes = None  # 落入下方文字版兜底
+            # 图片不可用（渲染失败/发送失败/过大）时，降级为文字版（仅文本，不发送文件）。
+            if not img_bytes:
+                await event.send(MessageChain([Plain(
+                    "⚠️ 日报图片渲染/发送失败，已降级为文字版：\n"
+                    + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))]))
+        finally:
+            for p in (img_path, html_path):
+                if p and os.path.exists(p):
+                    try: os.unlink(p)
+                    except Exception: pass
+
     def _get_best_client(self, event=None):
         try:
             platforms = list(self.context.platform_manager.get_insts())
-            config = self._get_config(); cid = config.get("platform_id","aiocqhttp").strip()
+            cid = "aiocqhttp"  # 平台 ID 无需配置，默认匹配 QQ/aiocqhttp/onebot
             for p in platforms:
                 pid = p.meta().id
                 if pid==cid or pid==cid.replace("aiocqhttp","qq"):
