@@ -193,7 +193,7 @@ def _parse_audit_json(text: str):
 _CONF_GROUPS = {
     "account": ["xdgame_username", "xdgame_password", "cookie", "switch618_cookie", "muliy_cookie", "wyy_cookie"],
     "game_search": ["game_source", "max_search_results"],
-    "game_report": ["game_report_enabled", "game_report_max"],
+    "game_report": ["game_report_enabled", "game_report_max", "game_schedule_hour", "game_schedule_minute", "game_group_ids"],
     "movie_report": ["movie_report_enabled", "movie_report_max", "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections"],
     "software_report": ["schedule_hour", "schedule_minute", "group_ids"],
     "movie_search": ["movie_source", "muliy_cache_ttl"],
@@ -551,6 +551,23 @@ class MuliyResourcesPlugin(Star):
             else:
                 flat[k] = v
         return flat
+
+    def _resolve_group_ids(self, specific_key: str):
+        """解析某日报的目标群。
+
+        - 优先用各自专属键（game_group_ids / movie_group_ids）；
+        - 若专属群为空，则回退到软件日报共享群 group_ids（避免用户重复配置、也规避
+          配置页只改了软件群而游戏/影视群留空导致永不发送的问题）；
+        - 返回 (群列表, 是否走了回退)。
+        """
+        config = self._get_config()
+        gs = (config.get(specific_key, "") or "").strip() if isinstance(config, dict) else ""
+        if gs:
+            return [g.strip() for g in gs.split(",") if g.strip()], False
+        fallback = (config.get("group_ids", "") or "").strip() if isinstance(config, dict) else ""
+        if fallback:
+            return [g.strip() for g in fallback.split(",") if g.strip()], True
+        return [], False
 
     def _get_cookie(self) -> str:
         return self._get_config().get("cookie", "").strip()
@@ -2319,7 +2336,7 @@ class MuliyResourcesPlugin(Star):
         h = config.get("schedule_hour",10); m = config.get("schedule_minute",0)
         gh = config.get("game_schedule_hour",18); gm = config.get("game_schedule_minute",0)
         gs = config.get("group_ids","").strip(); groups = [g.strip() for g in gs.split(",") if g.strip()]
-        ggs = config.get("game_group_ids","").strip(); ggroups = [g.strip() for g in ggs.split(",") if g.strip()]
+        ggroups, gfb = self._resolve_group_ids("game_group_ids")
         ei = True; mx = 24
         def _nxt(jid):
             try:
@@ -2345,7 +2362,7 @@ class MuliyResourcesPlugin(Star):
         # 影视日报状态
         men = config.get("movie_report_enabled", True) if isinstance(config, dict) else True
         mh = config.get("movie_schedule_hour", 20); mm = config.get("movie_schedule_minute", 0)
-        mgs = config.get("movie_group_ids","").strip(); mgroups = [g.strip() for g in mgs.split(",") if g.strip()]
+        mgroups, mfb = self._resolve_group_ids("movie_group_ids")
         msec = config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac"
         mmx = int(config.get("movie_report_max", 24) or 24) if isinstance(config, dict) else 24
         mnxt = _nxt(self._movie_scheduler_job_id); mlr = self._movie_last_run_date or "从未执行"
@@ -2353,9 +2370,9 @@ class MuliyResourcesPlugin(Star):
             f"📊 暮黎资源聚合\n{'='*30}\n"
             f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'} | 模式: {mode}\n"
             f"📦 软件日报: 每日 {h:02d}:{m:02d} | 群{len(groups)}个 | 上次:{lr} | 下次:{nxt}\n"
-            f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{len(ggroups)}个 | 上限{gmx}\n"
+            f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{len(ggroups)}个{'（共享）' if gfb else ''} | 上限{gmx}\n"
             f"   上次:{glr} | 下次:{gnxt}\n"
-            f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{len(mgroups)}个 | 上限{mmx}\n"
+            f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{len(mgroups)}个{'（共享）' if mfb else ''} | 上限{mmx}\n"
             f"   区块:{msec} | 上次:{mlr} | 下次:{mnxt}\n"
             f"🖼️ 软件图片: {'是' if ei else '否'} | 软件上限: {mx}\n"
             f"⚡ 命令: /找软件 | /找游戏 | /game_report | /movie_report")
@@ -5122,9 +5139,8 @@ class MuliyResourcesPlugin(Star):
 
     async def _movie_send_report(self, img_bytes, ts, text: str = ""):
         config = self._get_config()
-        gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
-        if not gs: return
-        gids = [g.strip() for g in gs.split(",") if g.strip()]
+        gids, _fb = self._resolve_group_ids("movie_group_ids")
+        if not gids: return
         img_path = None; img_c = []
         if img_bytes:
             try:
@@ -5174,10 +5190,12 @@ class MuliyResourcesPlugin(Star):
         if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
             logger.warning("[暮黎资源] 影视日报已触发，但 movie_report_enabled 关闭，跳过")
             return
-        gs = config.get("movie_group_ids", "").strip() if isinstance(config, dict) else ""
-        if not gs:
-            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
+        gs_list, fb = self._resolve_group_ids("movie_group_ids")
+        if not gs_list:
+            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids 且无软件共享群 group_ids，跳过发送")
             return
+        if fb:
+            logger.warning(f"[暮黎资源] 影视日报：movie_group_ids 为空，已回退使用软件共享群 group_ids（{len(gs_list)}个）")
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
         forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
@@ -5361,9 +5379,8 @@ class MuliyResourcesPlugin(Star):
 
     async def _game_send_report(self, img_bytes, ts, text: str = ""):
         config = self._get_config()
-        gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
-        if not gs: return
-        gids = [g.strip() for g in gs.split(",") if g.strip()]
+        gids, _fb = self._resolve_group_ids("game_group_ids")
+        if not gids: return
         img_path = None; img_c = []
         if img_bytes:
             try:
@@ -5413,10 +5430,12 @@ class MuliyResourcesPlugin(Star):
         if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
             logger.warning("[暮黎资源] 游戏日报已触发，但 game_report_enabled 关闭，跳过")
             return
-        gs = config.get("game_group_ids", "").strip() if isinstance(config, dict) else ""
-        if not gs:
-            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids，跳过发送")
+        gs_list, fb = self._resolve_group_ids("game_group_ids")
+        if not gs_list:
+            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids 且无软件共享群 group_ids，跳过发送")
             return
+        if fb:
+            logger.warning(f"[暮黎资源] 游戏日报：game_group_ids 为空，已回退使用软件共享群 group_ids（{len(gs_list)}个）")
         mx = int(config.get("game_report_max", 24) or 24)
         if self._game_source() == "switch618":
             cookie = self._g_cookie()
