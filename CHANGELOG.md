@@ -1,5 +1,28 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.11.0 — 2026-07-18
+
+### ✨ 新增：so-novel 小说搜索与下载（多源聚合）
+
+- 基于开源 [so-novel](https://github.com/freeok/so-novel) 的 Web 模式（`-Dmode=web`，默认端口 7765）HTTP 客户端，新增 `core/novel.py`（统一 `NovelApiError` 封装超时/连接/源失效/JSON 错误）。
+- 新增命令 `/找小说 <名称>`（分页选源、选格式 txt/epub/html/pdf 后整本以文件形式发送）+ `/novel_status`（检查 so-novel 可达性 + 书源可用性）。
+- `on_any_message` 路由小说会话（`_novel_sessions`，复用 `SearchSessionManager` 做分页 / 序号选择 / 格式选择 / 下载状态提示）。
+- 新增 LLM 工具 `search_novel`（**仅当用户明确要搜索/阅读/下载小说时**触发）。
+- 新增 `novel` 配置分组（`sonovel_base_url` / `sonovel_token` / `sonovel_search_limit` / `sonovel_format` / `sonovel_timeout` / `sonovel_download_timeout`）。
+- 新增 `SO-NOVEL部署指南.md`（部署与排错：官方镜像默认是 TUI 菜单、7765 不监听，须 `-e JAVA_TOOL_OPTIONS="-Dmode=web"` 真正以 Web 模式启动；同宿主机用 `http://172.17.0.1:7765`）。
+- 文档：README 功能一览 / 快速开始 / 配置 / 命令 / LLM 工具链 / 文件结构同步补充小说模块；版本徽章 → 1.11.0。
+
+### 🐛 修复：封面 / 介绍 / 宣传类消息误触发 search_novel 小说工具
+
+- **背景**：用户发「帮我生成一张视频封面…新增小说搜索下载…」这类介绍 / 宣传 / 封面生成消息，会被错误地触发小说搜索（调用 `search_novel`）。
+- **根因**：① `on_llm_request` 的 `_novel_intent_kws` 强拦截含过宽关键词 `'小说搜索'`，消息「新增**小说搜索**下载」命中该关键词 → 被强制调小说逻辑（不经 LLM 判断）；② `resource_kw` 含过宽单字 `"小说"`，且搜索引导与工具描述写「或提到小说名/作者名时调用」，使 LLM 把"介绍里提到的'小说'"误判为书名 / 作者名。
+- **改动**（`main.py`）：
+  - 在 `on_llm_request` 最前新增**全局非搜索意图短路**：消息含「封面 / 生成 / 介绍 / 宣传 / 公告 / 海报 / banner / logo / 文案 / 配图 / 插图」等词时直接 `return`，一次性挡住影视强拦截、小说强拦截、资源注入三处搜索逻辑。
+  - 从 `_novel_intent_kws` 移除过宽 `'小说搜索'`（介绍类话语里"小说搜索"是功能名，不是搜索动作）。
+  - 从 `resource_kw` 移除单字 `"小说"`（小说已有专门强拦截，不靠单字命中）。
+  - 收紧搜索引导（guide）与 `search_novel` 工具描述：明确「介绍、宣传、公告、封面生成类话语里提到'小说'**不算小说搜索意图**，严禁调用」。
+- **提醒**：修复需重载 / 重新上传插件到线上 AstrBot 才生效；面板残留旧上传失败记录时，先「卸载」再传新 zip。
+
 ## v1.10.13 — 2026-07-18
 
 ### 📤 调整：所有日报图片改为「以文件形式发送」（绕开 onebot 发图体积上限）

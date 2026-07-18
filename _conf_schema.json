@@ -36,7 +36,7 @@
       "game_schedule_hour": {
         "type": "int",
         "description": "游戏日报推送小时（0-23）",
-        "default": 18,
+        "default": 23,
         "min": 0,
         "max": 23,
         "hint": "游戏日报独立定时小时，与软件/影视日报分开设置。"
@@ -91,7 +91,7 @@
       "schedule_hour": {
         "type": "int",
         "description": "软件日报推送小时（0-23，）",
-        "default": 10,
+        "default": 22,
         "min": 0,
         "max": 23
       },
@@ -217,7 +217,7 @@
       "wyy_audio_format": {
         "type": "string",
         "description": "语音音频格式",
-        "default": "mp3",
+        "default": "wav",
         "hint": "mp3（QQ 兼容性好，推荐）/ wav（部分 OneBot 实现要求）"
       },
       "wyy_cookie": {

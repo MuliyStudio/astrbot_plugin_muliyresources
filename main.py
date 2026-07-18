@@ -377,8 +377,19 @@ class MuliyResourcesPlugin(Star):
         - 插件只负责「执行实际搜索/翻页/下载」
         - 工具的返回文本就是 LLM 看到的事实，LLM 可以自由排版
         """
-        # ★新站影视会话兜底拦截：LLM 可能偷懒不调工具，在 LLM 前直接处理
+        # ★非搜索意图短路：生成封面/图片、介绍、宣传、公告等类消息即使含"小说/游戏/影视"
+        #   等词也绝不应触发任何资源搜索逻辑（否则"新增小说搜索下载"会被误判为小说搜索）。
+        #   这类请求直接放行给普通对话/画图流程，不注入搜索引导、不拦截。
         raw_text = event.message_str.strip()
+        _non_search_intent = (
+            "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
+            "介绍", "宣传", "公告", "海报", "banner", "logo",
+            "文案", "宣传语", "配图", "插图",
+        )
+        if any(k in raw_text for k in _non_search_intent):
+            return
+
+        # ★新站影视会话兜底拦截：LLM 可能偷懒不调工具，在 LLM 前直接处理
         ses_mn = self._movie_sessions_new.get(event)
         if ses_mn and ses_mn.get("stage") in ("select_movie_new", "select_res_type",
                                                "select_pan_type", "select_play_node", "select_episode_new", "select_pan"):
@@ -429,7 +440,7 @@ class MuliyResourcesPlugin(Star):
         #   search_resource/search_movie，这里直接强制调 search_novel，不依赖 LLM 选工具。
         #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
         _novel_intent_kws = ('找小说', '搜小说', '看小说', '读小说', '听小说',
-                             '小说搜索', '本小说', '想看小说', '我想看小说')
+                             '本小说', '想看小说', '我想看小说')
         if any(k in raw_text for k in _novel_intent_kws):
             nses0 = self._novel_sessions.get(event)
             if nses0:
