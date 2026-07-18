@@ -1,13 +1,13 @@
 {
   "game": {
-    "description": "游戏资源（搜索 / 日报）",
-    "hint": "游戏搜索源与游戏日报相关设置，含 xdgame / switch618 登录凭据（原「账号合集」「游戏搜索」「游戏日报」归并至此）。",
+    "description": "游戏资源",
+    "hint": "游戏搜索源与游戏日报相关设置",
     "type": "object",
     "default": {},
     "items": {
       "game_source": {
         "type": "string",
-        "description": "游戏搜索源（auto=有xdgame账密用xdgame，否则自动切换switch618）",
+        "description": "游戏搜索源",
         "default": "auto",
         "hint": "auto（默认）：配置了 xdgame_username/xdgame_password 走 xdgame.com，未配置则自动走 switch618.com 源。也可显式填 xdgame 或 switch618 强制指定源。"
       },
@@ -35,7 +35,7 @@
       },
       "game_schedule_hour": {
         "type": "int",
-        "description": "游戏日报推送小时（0-23，与软件/影视日报独立）",
+        "description": "游戏日报推送小时（0-23）",
         "default": 18,
         "min": 0,
         "max": 23,
@@ -43,7 +43,7 @@
       },
       "game_schedule_minute": {
         "type": "int",
-        "description": "游戏日报推送分钟（0-59，与软件/影视日报独立）",
+        "description": "游戏日报推送分钟（0-59）",
         "default": 0,
         "min": 0,
         "max": 59,
@@ -51,7 +51,7 @@
       },
       "game_group_ids": {
         "type": "list",
-        "description": "游戏日报推送群 ID（与软件/影视日报独立）",
+        "description": "游戏日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
         "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则游戏日报不推送。"
@@ -76,35 +76,35 @@
       },
       "switch618_cookie": {
         "type": "text",
-        "description": "switch618.com 登录 Cookie（wordpress_logged_in_*）",
+        "description": "switch618.com 登录 Cookie",
         "default": "",
         "hint": "由 /game_cookie_refresh 在 switch618 模式下扫码登录后自动写入。未配置 xdgame 账号密码时，游戏搜索自动切换到 switch618 源，需此 Cookie 才能获取下载链接。"
       }
     }
   },
   "software": {
-    "description": "软件资源（日报）",
-    "hint": "软件日报独立定时推送设置（与游戏/影视日报分开，原「软件日报与推送」分组）。",
+    "description": "软件资源",
+    "hint": "软件日报独立定时推送设置。",
     "type": "object",
     "default": {},
     "items": {
       "schedule_hour": {
         "type": "int",
-        "description": "软件日报推送小时（0-23，仅软件日报）",
+        "description": "软件日报推送小时（0-23，）",
         "default": 10,
         "min": 0,
         "max": 23
       },
       "schedule_minute": {
         "type": "int",
-        "description": "软件日报推送分钟（0-59，仅软件日报）",
+        "description": "软件日报推送分钟（0-59）",
         "default": 0,
         "min": 0,
         "max": 59
       },
       "group_ids": {
         "type": "list",
-        "description": "软件日报推送群 ID（仅软件日报）",
+        "description": "软件日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
         "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则软件日报不推送。"
@@ -112,14 +112,14 @@
     }
   },
   "movie": {
-    "description": "影视资源（搜索 / 日报）",
-    "hint": "影视搜索源与影视日报相关设置，含教父.com 登录 Cookie（原「账号合集」「影视搜索」「影视日报」归并至此）。",
+    "description": "影视资源",
+    "hint": "影视搜索源与影视日报相关设置。",
     "type": "object",
     "default": {},
     "items": {
       "movie_source": {
         "type": "string",
-        "description": "影视搜索源（留空=按教父.com账号自动切换）",
+        "description": "影视搜索源",
         "default": "",
         "hint": "留空或默认=自动模式：配置了本分组 muliy_cookie 则走教父.com 新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。也可显式填 a123tv 强制旧站。注意：现已由 Cookie 自动切换，无需手动切换源。"
       },
@@ -147,7 +147,7 @@
       },
       "movie_schedule_hour": {
         "type": "int",
-        "description": "影视日报推送小时（0-23，独立）",
+        "description": "影视日报推送小时（0-23）",
         "default": 20,
         "min": 0,
         "max": 23,
@@ -155,14 +155,14 @@
       },
       "movie_schedule_minute": {
         "type": "int",
-        "description": "影视日报推送分钟（0-59，独立）",
+        "description": "影视日报推送分钟（0-59）",
         "default": 0,
         "min": 0,
         "max": 59
       },
       "movie_group_ids": {
         "type": "list",
-        "description": "影视日报推送群 ID（独立）",
+        "description": "影视日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
         "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则影视日报不推送。"
@@ -176,7 +176,7 @@
       },
       "muliy_cookie": {
         "type": "text",
-        "description": "教父.com 登录态 Cookie（cookie 登录模式，绕过 PoW+验证码）",
+        "description": "教父.com 登录态 Cookie",
         "default": "",
         "hint": "选填（想用教父.com新站影视时）。教父.com 登录态 Cookie，直接以浏览器登录态访问影视源（跳过 PoW 与验证码），新站额外提供网盘下载资源。\n需包含字段（至少）：app_auth、browser_verifie、PHPSESSID（复制该域名下全部 Cookie 更稳妥），各字段以英文分号 ; 隔开整串粘贴。\n获取方式：登陆后按F12，在应用程式页面复制各个带字段名cookie粘贴进来，用 ; 隔开。\n⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新。\n💡 留空也没关系：影视日报与影视搜索都会自动回退 a123tv 旧站（免登录，仅在线播放），照常出日报。"
       }
@@ -184,7 +184,7 @@
   },
   "music": {
     "description": "网易云音乐",
-    "hint": "网易云语音名片 / 歌曲解析相关设置（含黑胶会员 Cookie，原属「账号合集」）。",
+    "hint": "网易云语音名片 / 歌曲解析相关设置。",
     "type": "object",
     "default": {},
     "items": {
@@ -251,14 +251,14 @@
     }
   },
   "browser": {
-    "description": "浏览器（游戏日报 / VIP视频解析共用）",
+    "description": "浏览器",
     "hint": "Playwright 渲染所用的浏览器设置，游戏日报与 VIP 视频解析共用。",
     "type": "object",
     "default": {},
     "items": {
       "browser_channel": {
         "type": "string",
-        "description": "Playwright 浏览器 channel（留空=用自带 Chromium）",
+        "description": "Playwright 浏览器",
         "default": "",
         "hint": "如需用本机已装 Chrome 可填 chrome；留空则使用插件自带的 Chromium（需联网首次下载）。游戏日报与 VIP 视频解析共用。"
       },
@@ -271,7 +271,7 @@
     }
   },
   "novel": {
-    "description": "小说搜索与下载（so-novel）",
+    "description": "小说搜索与下载",
     "hint": "基于 so-novel 开源小说下载器的多源聚合搜索/下载。需另起一个 so-novel 实例并以 Web 模式（-Dmode=web，默认端口 7765）运行，本插件通过 HTTP 调用其接口。",
     "type": "object",
     "default": {},
