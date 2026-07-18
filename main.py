@@ -462,7 +462,7 @@ class MuliyResourcesPlugin(Star):
             "找", "搜索", "下载", "资源", "游戏", "软件",
             "影视", "电影", "电视剧", "综艺", "动漫", "追剧", "看片",
             "想看", "观看", "看剧", "看一", "看个", "看部", "看番", "追番",
-            "小说", "找小说", "搜小说", "看小说", "读小说", "听小说",
+            "找小说", "搜小说", "看小说", "读小说", "听小说",
             "wps", "office", "微信", "qq", "钉钉",
             "有没有", "给个", "给我", "想要",
             "下一页", "上一页", "跳转", "跳到", "翻页",
@@ -472,6 +472,17 @@ class MuliyResourcesPlugin(Star):
             "百度", "天翼", "夸克", "阿里", "迅雷", "123", "uc", "磁力",
         )
         if not any(k in text for k in resource_kw):
+            return
+
+        # 负向意图：明显的非搜索类请求（生成封面/图片、写介绍、宣传、公告等）。
+        # 这类消息常含"小说/游戏/影视/搜索/下载"等词，会被上方 resource_kw 误命中；
+        # 若仍注入资源搜索引导，LLM 可能把"介绍里提到的'小说'"误判为小说搜索而误调工具。
+        _non_search_intent = (
+            "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
+            "介绍", "宣传", "公告", "海报", "banner", "logo",
+            "文案", "宣传语", "配图", "插图",
+        )
+        if any(k in text for k in _non_search_intent):
             return
 
         instruction = '''
@@ -496,7 +507,7 @@ class MuliyResourcesPlugin(Star):
 | "找游戏 XX" / 游戏关键词（王者、原神）   | search_game                              | game_name=游戏名                    |
 | "找软件 XX" / 软件关键词（微信、wps）   | search_software                          | software_name=软件名                |
 | "找影视 XX" / "我想看 XX" / "观看 XX" / 影视名（庆余年、怪奇物语、黑袍、星际穿越）| search_movie | movie_name=影视名 |
-| "找小说 XX" / "搜小说 XX" / "我想看小说 XX" / "看小说 XX" / 小说名或作者名（斗破苍穹、我有一座冒险屋、天蚕土豆）| search_novel | novel_name=小说名或作者名 |
+| "找小说 XX" / "搜小说 XX" / "我想看小说 XX" / "看小说 XX"（明确要搜/看小说）| search_novel | novel_name=小说名或作者名 |
 | "下一页" / "上一页" / "跳转 3"          | paginate_results                         | action=下一页/上一页/跳转3          |
 | 用户回复数字（1、2、3、第一个…）         | select_search_result                     | selection=数字或中文序数             |
 | 用户选网盘（百度网盘、夸克、1）         | select_download_link                     | selection=网盘名或数字              |
@@ -515,7 +526,9 @@ class MuliyResourcesPlugin(Star):
 - 用户选影视/资源类型/节点/网盘时，**只需调 select_search_result(selection=数字)**，系统自动走对应阶段
 
 ■ ⚠️ 小说工具的特殊说明
-- 用户说"找小说XX""搜小说XX""我想看小说XX"或小说名/作者名 → **必须调 search_novel**，不要调 search_resource / search_movie / web_search
+- **仅当用户明确要搜索/阅读/下载小说时**才调 search_novel（如"找小说XX""搜小说XX""我想看小说XX"）。
+- ⚠️ 介绍、宣传、公告、封面生成类话语里提到"小说"（如"新增小说搜索下载""本插件支持小说功能"）**不是小说搜索意图**，严禁调用 search_novel，也不要调其它 search_* 工具，直接按普通对话/画图处理。
+- 用户给出明确的书名或作者名且意图是"看/搜/下"时才算；纯宣传提到"小说"二字不算。
 - 小说名示例：斗破苍穹、我有一座冒险屋、诡秘之主、天蚕土豆（作者）
 - 小说流程：选小说(回复数字) → 选格式(TXT/EPUB/HTML/PDF，回复数字或"下载/确认"用默认 TXT) → 系统拉取文件流以**文件形式**直接发送（不走 localhost 链接、不依赖 WebUI 预览）
 - 用户选小说/格式时，**由 on_any_message 直接处理**（无需再调工具），系统自动走对应阶段
@@ -1316,8 +1329,9 @@ class MuliyResourcesPlugin(Star):
 
     @filter.llm_tool(name="search_novel")
     async def llm_search_novel(self, event: AstrMessageEvent, novel_name: str):
-        """专门搜索小说资源（so-novel 多源聚合）。当用户说"找小说/搜小说/我想看小说/看小说/
-        读小说"或提到小说名/作者名时调用。
+        """专门搜索小说资源（so-novel 多源聚合）。**仅当用户明确要搜索/阅读/下载小说时**调用
+        （如"找小说XX""搜小说XX""我想看小说XX""看小说XX""读小说XX"）。
+        ⚠️ 介绍、宣传、公告、封面生成类话语里提到"小说"（如"新增小说搜索下载"）不算小说搜索，不要调用本工具。
 
         流程：
         1. 搜索 → 列出结果（每行：序号 + 书名 ；下一行：作者 ；再下一行：书源），
