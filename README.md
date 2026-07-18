@@ -7,7 +7,7 @@
 <p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 小说 / 影视 / 游戏 / 软件搜索 · 日报 · 网易云语音名片 · VIP 解析 · 摸头/踢/按摩表情包</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.10.13-2B7FD8" alt="version 1.11.0">
+  <img src="https://img.shields.io/badge/version-1.11.0-2B7FD8" alt="version 1.11.0">
   <img src="https://img.shields.io/badge/AstrBot-v4.20%2B-F4D758" alt="AstrBot v4.20+">
   <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
 </p>
