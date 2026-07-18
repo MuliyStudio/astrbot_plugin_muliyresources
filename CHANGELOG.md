@@ -1,5 +1,20 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.10.13 — 2026-07-18
+
+### 📤 调整：所有日报图片改为「以文件形式发送」（绕开 onebot 发图体积上限）
+
+- **背景**：平台对超限图片是「静默拒收」（不抛异常），导致大图日报进群后群里收不到、且误以为发送成功。小说此前已用 `upload_group_file`（base64，无图片体积上限）以文件形式发送、从不被拒收，故把日报一并改为文件形式。
+- **改动**（`main.py`）：
+  - 新增模块级 `_img_ext(img_bytes)`：按图片魔数判断 `.png`/`.jpg`，用于文件命名（渲染器出 PNG，游戏日报压缩后出 JPEG）。
+  - 原 `_try_send_group`（发 `ImageComponent` 图片）→ 替换为 `_try_send_group_file`：从 `umo` 取 gid，走 `client.call_action(action="upload_group_file", group_id=..., file="base64://...", name=...)`；失败降级文字版兜底。与小说 `_upload_zip` 同一套 client/接口。
+  - 新增 `_send_event_file(event, ...)`：供**手动指令**用——群内走 `upload_group_file`，私聊/好友走临时文件 + `FileComponent` 兜底，失败按文字版兜底。
+  - 三套定时日报 `_movie_send_report` / `_sw_send_report` / `_game_send_report` 改为直接调 `_try_send_group_file`（不再写临时文件 + `ImageComponent`，文件名形如 `暮黎游戏日报_20260718.png`）。
+  - 三个手动指令 `cmd_sw_report` / `cmd_movie_report` / `cmd_game_report` 的图片发送也改为调 `_send_event_file`。
+  - 游戏日报原有的 `_compress_game_image`（>2MB 压缩）**保留**——仍能减小 base64 上传体积、加快发送，与文件形式不冲突。
+- **权衡**：文件形式发送后，QQ 群里日报图不再是内联预览，而变成可下载文件（用户已接受此取舍）。
+- **文档**：README 版本徽章 → 1.10.13；功能一览与游戏/影视日报章节同步说明「以文件形式发送」。
+
 ## v1.10.12 — 2026-07-17
 
 ### 🛡️ 新增：搜索关键词大模型审核（涉黄/违禁判定 + 搜索意图判断）

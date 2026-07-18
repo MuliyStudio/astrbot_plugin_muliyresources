@@ -11,7 +11,7 @@ core/software.py   — 软件日报&搜索相关函数
 core/movie.py      — 影视搜索相关函数 (a123tv.com)
 """
 
-import asyncio, base64, concurrent.futures, datetime, io, json, logging, os, re, sys, tempfile, time, zipfile, zoneinfo
+import asyncio, base64, concurrent.futures, datetime, io, json, os, re, sys, tempfile, time, traceback, zipfile, zoneinfo
 from typing import Optional
 
 # === DEBUG INSTRUMENTATION (debug session c4a65f) ===
@@ -55,6 +55,7 @@ from apscheduler.triggers.cron import CronTrigger
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api.message_components import Plain, Image as ImageComponent, File as FileComponent
+from astrbot.api import logger  # 使用 AstrBot 提供的 logger 接口，日志才会在控制台与 Web 日志页显示
 try:
     from astrbot.api.message_components import Record, Json, At
 except ImportError:  # 旧版 AstrBot 可能未导出这些组件
@@ -99,6 +100,10 @@ from .core.movie import (
     parse_play_page, build_play_url,
     MV_BASE_URL,
 )
+from .core.novel import (
+    search_novels, fetch_novel, download_novel_file,
+    check_sources, NovelApiError, NOVEL_FORMATS,
+)
 from .core.muliy_site import (
     MuliySiteClient, discover_best_domain, cover_url as muliy_cover_url,
     play_url as muliy_play_url, format_movie_list_new, format_resource_type,
@@ -133,16 +138,20 @@ from .core.massage import (
     generate_massage,
 )
 
-logger = logging.getLogger("astrbot_plugin_muliyresources")
-# 强制 INFO 级别并向上传播，确保调度注册/触发日志一定出现在 AstrBot 控制台
-logger.setLevel(logging.INFO)
-logger.propagate = True
-
-
 def _format_size(size_bytes: int) -> str:
     if size_bytes < 1024: return f"{size_bytes} B"
     if size_bytes < 1024*1024: return f"{size_bytes/1024:.1f} KB"
     return f"{size_bytes/(1024*1024):.1f} MB"
+
+
+def _img_ext(img_bytes: bytes) -> str:
+    """根据图片字节魔数判断扩展名（PNG/JPEG），用于以文件形式发送日报图时命名。
+
+    渲染器输出 PNG，游戏日报压缩后输出 JPEG，故以内容而非后缀为准。
+    """
+    if img_bytes and img_bytes[:4] == b"\x89PNG":
+        return ".png"
+    return ".jpg"
 
 
 def _parse_movie_meta_json(text: str):
@@ -187,19 +196,35 @@ def _parse_audit_json(text: str):
 
 
 # 配置分组映射：分组键 -> 其下叶子配置键（与 _conf_schema.json 的 object 分组保持一致）
+# 顶层三大功能分类：game(游戏) / software(软件) / movie(影视)；
+# 跨功能辅助分类：music(网易云音乐) / vip_video(VIP视频解析) / browser(浏览器) / novel(小说, so-novel)
 # 用途：① _get_config 把嵌套分组展开为扁平视图（旧读取代码 config.get("leaf") 无需改动）
 #       ② _update_config 把回写的值放回到正确的嵌套分组中
-#       ③ _migrate_config 把旧版扁平配置归组，兼容升级
+#       ③ _migrate_config 把任意旧结构配置按叶子键重归类，兼容升级
 _CONF_GROUPS = {
-    "account": ["xdgame_username", "xdgame_password", "cookie", "switch618_cookie", "muliy_cookie", "wyy_cookie"],
-    "game_search": ["game_source", "max_search_results"],
-    "game_report": ["game_report_enabled", "game_report_max", "game_schedule_hour", "game_schedule_minute", "game_group_ids"],
-    "movie_report": ["movie_report_enabled", "movie_report_max", "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections"],
-    "software_report": ["schedule_hour", "schedule_minute", "group_ids"],
-    "movie_search": ["movie_source", "muliy_cache_ttl"],
-    "netease_music": ["wyy_auto_parse", "wyy_music_type", "wyy_custom_url", "wyy_clip_seconds", "wyy_audio_format"],
+    "game": [
+        "game_source", "max_search_results",
+        "game_report_enabled", "game_report_max",
+        "game_schedule_hour", "game_schedule_minute", "game_group_ids",
+        "xdgame_username", "xdgame_password", "cookie", "switch618_cookie",
+    ],
+    "software": ["schedule_hour", "schedule_minute", "group_ids"],
+    "movie": [
+        "movie_source", "muliy_cache_ttl",
+        "movie_report_enabled", "movie_report_max",
+        "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections",
+        "muliy_cookie",
+    ],
+    "music": [
+        "wyy_auto_parse", "wyy_music_type", "wyy_custom_url",
+        "wyy_clip_seconds", "wyy_audio_format", "wyy_cookie",
+    ],
     "vip_video": ["video_vip_parse", "video_vip_timeout"],
     "browser": ["browser_channel", "browser_exe"],
+    "novel": [
+        "sonovel_base_url", "sonovel_token", "sonovel_search_limit",
+        "sonovel_format", "sonovel_timeout", "sonovel_download_timeout",
+    ],
 }
 _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 
@@ -223,6 +248,7 @@ class MuliyResourcesPlugin(Star):
         self._search_sessions = SearchSessionManager()
         self._movie_sessions = SearchSessionManager()   # 影视会话 (a123tv)
         self._movie_sessions_new = SearchSessionManager()  # 影视会话 (教父.com 新站)
+        self._novel_sessions = SearchSessionManager()  # 小说会话 (so-novel)
         self._muliy_client: MuliySiteClient | None = None  # 新站客户端（懒加载）
         # 后台任务引用（防止被GC）
         self._bg_tasks: list[asyncio.Task] = []
@@ -268,24 +294,27 @@ class MuliyResourcesPlugin(Star):
             if saved and isinstance(saved, dict):
                 cfg = self._get_config()
                 if isinstance(cfg, dict):
+                    # 兼容旧版嵌套/扁平兜底文件：递归展开为叶子键后再回填
+                    leaves = self._flatten_leaves(saved)
                     restored = []
                     # 通用兜底：兜底文件里「非空、但当前配置为空」的项全部回填，
                     # 覆盖 cookie / switch618_cookie / wyy_cookie / wyy_custom_url /
-                    # cookie / wyy_cookie / muliy_cookie 等所有会因重装/卸载而丢失的项。
+                    # muliy_cookie 等所有会因重装/卸载而丢失的项。
                     # 仅当当前值为空（或该 key 不存在）才回填，避免覆盖用户在网页后台已修改过的值。
-                    for k, v in saved.items():
+                    for k, v in leaves.items():
                         if k in cfg and cfg.get(k):
                             continue
                         if v not in (None, "", [], {}):
                             cfg[k] = v
                             restored.append(k)
                     if restored:
-                        self._plugin_config = cfg
+                        # 重新归组为一致性嵌套结构（game/software/movie/...），再回写
+                        self._plugin_config = self._migrate_config(cfg)
                         logger.info(f"[暮黎资源] 已从本地兜底文件恢复配置: {', '.join(restored)}")
                         # 恢复后回写 AstrBot 中央配置，避免下次再丢
                         try:
                             if hasattr(self.context, 'update_plugin_config'):
-                                await self.context.update_plugin_config(self._plugin_id(), cfg)
+                                await self.context.update_plugin_config(self._plugin_id(), self._plugin_config)
                         except Exception as e:
                             logger.warning(f"[暮黎资源] 恢复配置回写失败: {e}")
         except Exception as e:
@@ -396,12 +425,44 @@ class MuliyResourcesPlugin(Star):
                     event.stop_event()
                     return
 
+        # ★小说搜索意图拦截：用户说"找小说XX/搜小说XX/我想看小说XX"时，LLM 可能误调
+        #   search_resource/search_movie，这里直接强制调 search_novel，不依赖 LLM 选工具。
+        #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
+        _novel_intent_kws = ('找小说', '搜小说', '看小说', '读小说', '听小说',
+                             '小说搜索', '本小说', '想看小说', '我想看小说')
+        if any(k in raw_text for k in _novel_intent_kws):
+            nses0 = self._novel_sessions.get(event)
+            if nses0:
+                self._novel_sessions.delete(event)
+                logger.info(f"[暮黎资源] 新小说搜索自动清除旧会话 (stage={nses0.get('stage')})")
+            _nn = re.sub(r'^(我想看|我要看|想看|要看|帮我找|帮我搜|帮我看|找|搜|看|读|听|我|要|想|帮我|能不能|可以|麻烦|请)\s*', '', raw_text)
+            _nn = re.sub(r'^(一下|一本|本|部|下|个)\s*', '', _nn)  # 去量词
+            _nn = re.sub(r'小说\s*', '', _nn)  # 去"小说"统称
+            _nn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _nn).strip()
+            if _nn:
+                try:
+                    logger.info(f"[暮黎资源] 小说意图拦截: '{raw_text}' → search_novel('{_nn}')")
+                    _ret = await self.llm_search_novel(event, _nn)
+                    # llm_search_novel 成功时已 event.send 并返回"[已发送...]"；
+                    # 未找到/失败时只返回文本（设计给 LLM 转告），但此处 stop_event 了 LLM，
+                    # 需自己把未 send 的文本发给用户，否则用户收不到任何回复。
+                    if _ret and not _ret.startswith("[已发送"):
+                        await event.send(MessageChain([Plain(_ret)]))
+                    event.stop_event()
+                    return
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 小说意图拦截失败: {e}")
+                    await event.send(MessageChain([Plain(f"【暮黎资源】 小说搜索出错：{str(e)[:120]}")]))
+                    event.stop_event()
+                    return
+
         text = event.message_str.strip().lower()
         # 资源搜索关键词 + 翻页/取消关键词（任一匹配就注入）
         resource_kw = (
             "找", "搜索", "下载", "资源", "游戏", "软件",
             "影视", "电影", "电视剧", "综艺", "动漫", "追剧", "看片",
             "想看", "观看", "看剧", "看一", "看个", "看部", "看番", "追番",
+            "小说", "找小说", "搜小说", "看小说", "读小说", "听小说",
             "wps", "office", "微信", "qq", "钉钉",
             "有没有", "给个", "给我", "想要",
             "下一页", "上一页", "跳转", "跳到", "翻页",
@@ -435,6 +496,7 @@ class MuliyResourcesPlugin(Star):
 | "找游戏 XX" / 游戏关键词（王者、原神）   | search_game                              | game_name=游戏名                    |
 | "找软件 XX" / 软件关键词（微信、wps）   | search_software                          | software_name=软件名                |
 | "找影视 XX" / "我想看 XX" / "观看 XX" / 影视名（庆余年、怪奇物语、黑袍、星际穿越）| search_movie | movie_name=影视名 |
+| "找小说 XX" / "搜小说 XX" / "我想看小说 XX" / "看小说 XX" / 小说名或作者名（斗破苍穹、我有一座冒险屋、天蚕土豆）| search_novel | novel_name=小说名或作者名 |
 | "下一页" / "上一页" / "跳转 3"          | paginate_results                         | action=下一页/上一页/跳转3          |
 | 用户回复数字（1、2、3、第一个…）         | select_search_result                     | selection=数字或中文序数             |
 | 用户选网盘（百度网盘、夸克、1）         | select_download_link                     | selection=网盘名或数字              |
@@ -451,6 +513,12 @@ class MuliyResourcesPlugin(Star):
 - 旧站(a123tv)模式：选影视后自动判断电影/剧，剧先选集数再选线路
 - **严禁**对影视调用 `select_download_link`（影视有自己的流程，调用会被拒绝）
 - 用户选影视/资源类型/节点/网盘时，**只需调 select_search_result(selection=数字)**，系统自动走对应阶段
+
+■ ⚠️ 小说工具的特殊说明
+- 用户说"找小说XX""搜小说XX""我想看小说XX"或小说名/作者名 → **必须调 search_novel**，不要调 search_resource / search_movie / web_search
+- 小说名示例：斗破苍穹、我有一座冒险屋、诡秘之主、天蚕土豆（作者）
+- 小说流程：选小说(回复数字) → 选格式(TXT/EPUB/HTML/PDF，回复数字或"下载/确认"用默认 TXT) → 系统拉取文件流以**文件形式**直接发送（不走 localhost 链接、不依赖 WebUI 预览）
+- 用户选小说/格式时，**由 on_any_message 直接处理**（无需再调工具），系统自动走对应阶段
 
 ■ ⚠️ 翻页规则（最容易踩坑）
 - 用户**首次**说"下一页/上一页" → **必须**调 paginate_results(action="下一页")
@@ -494,7 +562,8 @@ class MuliyResourcesPlugin(Star):
             ses_g = self._sessions.get(event)
             ses_mv = self._movie_sessions.get(event)
             ses_mv_new = self._movie_sessions_new.get(event)
-            target_ses = ses_sw or ses_g or ses_mv or ses_mv_new
+            ses_nv = self._novel_sessions.get(event)
+            target_ses = ses_sw or ses_g or ses_mv or ses_mv_new or ses_nv
             if not target_ses or not target_ses.get("_llm_handled"):
                 return
             target_ses["_llm_handled"] = False
@@ -508,19 +577,38 @@ class MuliyResourcesPlugin(Star):
 
     # ==================== 配置 ====================
 
-    def _migrate_config(self, cfg):
-        """旧版扁平配置 -> 新版 object 分组嵌套（兼容升级，避免读取 KeyError）"""
+    def _flatten_leaves(self, cfg, out=None):
+        """递归展开任意嵌套配置，收集所有已登记的叶子键（值为非 dict 的已知键）。
+
+        可用于兼容旧版分组结构（account / game_search / game_report / ...）以及
+        扁平旧配置、本地兜底文件等任意形态，最终都收敛为 {叶子键: 值}。
+        """
+        if out is None:
+            out = {}
         if not isinstance(cfg, dict):
-            return cfg
-        if any(k in cfg for k in _CONF_GROUPS):
-            return cfg  # 已含分组键，视为新版嵌套结构
-        nested = {g: {} for g in _CONF_GROUPS}
+            return out
         for k, v in cfg.items():
-            g = _KEY_TO_GROUP.get(k)
-            if g:
-                nested[g][k] = v
-            else:
-                nested[k] = v
+            if k in _KEY_TO_GROUP:
+                if isinstance(v, dict):
+                    self._flatten_leaves(v, out)
+                else:
+                    out[k] = v
+            elif isinstance(v, dict):
+                self._flatten_leaves(v, out)
+        return out
+
+    def _migrate_config(self, cfg):
+        """把任意旧版/新版嵌套配置统一归到当前分组（按叶子键重归类）。
+
+        旧版配置可能按 account / game_search / game_report / software_report /
+        movie_report / movie_search / netease_music 等分组存放；本方法递归收集
+        所有叶子键并重新归到 game / software / movie / music / vip_video / browser /
+        novel 新分组，避免升级后读取 KeyError 或读到 None。
+        """
+        nested = {g: {} for g in _CONF_GROUPS}
+        if isinstance(cfg, dict):
+            for k, v in self._flatten_leaves(cfg).items():
+                nested[_KEY_TO_GROUP[k]][k] = v
         return nested
 
     def _get_config(self) -> dict:
@@ -539,10 +627,6 @@ class MuliyResourcesPlugin(Star):
                         raw = {}
                 except Exception:
                     raw = {}
-        _dbg_log("H1", "_get_config: config type", {
-            "type": str(type(raw).__name__),
-            "xdgame_username_present": "xdgame_username" in raw,
-        })
         # 把 object 分组的叶子键提升到顶层，使旧读取代码（config.get("leaf")）继续有效
         flat = {}
         for k, v in raw.items():
@@ -550,7 +634,35 @@ class MuliyResourcesPlugin(Star):
                 flat.update(v)
             else:
                 flat[k] = v
+        _dbg_log("H1", "_get_config: config type", {
+            "type": str(type(raw).__name__),
+            "xdgame_username_present": flat.get("xdgame_username") is not None,
+        })
         return flat
+
+    @staticmethod
+    def _parse_multi(val) -> list:
+        """把「多选配置」统一解析为字符串列表。
+
+        兼容三种来源：
+        - AstrBot array 多选框（list / tuple / set）；
+        - 旧版逗号分隔字符串（升级前用户填的 "123,456"）；
+        - 空值（None / "" / []）返回 []。
+        用于 game_group_ids / group_ids / movie_group_ids / movie_sections / sonovel_format。
+        """
+        if val is None:
+            return []
+        if isinstance(val, (list, tuple, set)):
+            out = []
+            for x in val:
+                s = str(x).strip()
+                if s:
+                    out.append(s)
+            return out
+        if isinstance(val, str):
+            return [x.strip() for x in val.split(",") if x.strip()]
+        s = str(val).strip()
+        return [s] if s else []
 
     def _resolve_group_ids(self, specific_key: str):
         """解析某日报的目标群（各自独立配置，不共享软件群）。
@@ -560,8 +672,8 @@ class MuliyResourcesPlugin(Star):
         - 返回 (群列表, 是否走了回退) —— 当前不共享，fb 恒为 False。
         """
         config = self._get_config()
-        gs = (config.get(specific_key, "") or "").strip() if isinstance(config, dict) else ""
-        return [g.strip() for g in gs.split(",") if g.strip()], False
+        raw = config.get(specific_key, []) if isinstance(config, dict) else []
+        return self._parse_multi(raw), False
 
     def _get_cookie(self) -> str:
         return self._get_config().get("cookie", "").strip()
@@ -1201,6 +1313,55 @@ class MuliyResourcesPlugin(Star):
         await event.send(MessageChain([Plain(final_txt)]))
         logger.info(f"[暮黎资源] search_movie('{movie_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
+
+    @filter.llm_tool(name="search_novel")
+    async def llm_search_novel(self, event: AstrMessageEvent, novel_name: str):
+        """专门搜索小说资源（so-novel 多源聚合）。当用户说"找小说/搜小说/我想看小说/看小说/
+        读小说"或提到小说名/作者名时调用。
+
+        流程：
+        1. 搜索 → 列出结果（每行：序号 + 书名 ；下一行：作者 ；再下一行：书源），
+           让用户选序号
+        2. 用户选小说 → 询问下载格式（TXT/EPUB/HTML/PDF）→ 插件拉取文件流以文件形式发送
+
+        返回列表格式：每条 `[N] 书名` / `  👤 作者` / `  🏷️ 书源：xxx`
+        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
+        选择：用户说数字时，由 on_any_message / select_search_result 直接处理（无需再调工具）。
+
+        Args:
+            novel_name(string): 小说名称或作者名（如"斗破苍穹"、"我有一座冒险屋"、"天蚕土豆"）
+        """
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, novel_name)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
+        ps = 8; tag = "【暮黎资源·小说】"
+        base, token, limit, fmts, timeout, dl_timeout = self._novel_cfg()
+        if not requests:
+            return f"{tag} 缺少 requests 依赖，无法搜索小说。"
+        try:
+            results = await asyncio.to_thread(
+                search_novels, novel_name, base, token, limit, timeout)
+        except NovelApiError as e:
+            logger.error(f"[暮黎资源] search_novel('{novel_name}') 失败: {e}")
+            return (f"{tag} 小说搜索失败：{e.message}\n"
+                    f"💡 请确认 so-novel 已以 Web 模式启动（默认 http://127.0.0.1:7765）。")
+        except Exception as e:
+            logger.error(f"[暮黎资源] search_novel('{novel_name}') 异常: {e}")
+            return f"{tag} 小说搜索异常：{str(e)[:120]}"
+        if not results:
+            return f"{tag} 未找到与「{novel_name}」相关的小说，换个书名或作者名试试？"
+        self._novel_sessions.set(event, {
+            "keyword": novel_name, "results": results, "page": 0,
+            "page_size": ps, "stage": "select_novel", "_updated": time.time(),
+            "_llm_handled": True,
+        })
+        t = len(results); pt = (t + ps - 1) // ps
+        page_txt = self._format_novel_page(self._novel_sessions.get(event))
+        final_txt = tag + f" 📚 小说搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
+        await event.send(MessageChain([Plain(final_txt)]))
+        logger.info(f"[暮黎资源] search_novel('{novel_name}') → {len(results)}条 → 直接 send")
+        return f"[已发送给用户] {len(results)} 个小说结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
     # ==================== 新站影视会话状态机 ====================
 
@@ -1974,6 +2135,146 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             yield event.plain_result(f"❌ a123tv.com 不可达：{str(e)[:120]}")
 
+    # ==================== 小说搜索与下载 (so-novel) ====================
+
+    def _novel_cfg(self):
+        """读取小说（so-novel）相关配置，带默认值兜底。"""
+        c = self._get_config()
+        base = (c.get("sonovel_base_url") or "http://127.0.0.1:7765").strip().rstrip("/")
+        if not base:
+            base = "http://127.0.0.1:7765"
+        token = (c.get("sonovel_token") or "").strip()
+        try:
+            limit = int(c.get("sonovel_search_limit", 20) or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        fmts = self._parse_multi(c.get("sonovel_format") or ["txt"])
+        fmts = [f.lower() for f in fmts if f.lower() in NOVEL_FORMATS] or ["txt"]
+        try:
+            timeout = int(c.get("sonovel_timeout", 30) or 30)
+        except (TypeError, ValueError):
+            timeout = 30
+        try:
+            dl_timeout = int(c.get("sonovel_download_timeout", 600) or 600)
+        except (TypeError, ValueError):
+            dl_timeout = 600
+        return base, token, limit, fmts, timeout, dl_timeout
+
+    def _format_novel_page(self, ses: dict) -> str:
+        """格式化小说搜索结果分页展示（极简：每条仅书名+作者，书源独立一行）。
+
+        层级设计：
+          ① 书名      —— 一级（带序号，最显眼）
+          ② 作者      —— 二级
+          ③ 书源      —— 独立一行（🏷️ 书源：xxx），不与作者挤在一行
+          ──────      —— 条目分隔线
+        简介/最新章节不在列表展开（避免刷屏，选中后再看）。
+        """
+        r = ses["results"]
+        p = ses.get("page", 0)
+        ps = ses.get("page_size", 8)
+        t = len(r)
+        st = p * ps
+        ed = min(st + ps, t)
+        pc = ed - st
+        tag = "【暮黎资源·小说】"
+        kw = ses.get("keyword", "")
+        pt = (t + ps - 1) // ps
+        # 头部：关键词 + 总数 + 当前页/总页
+        head = f"{tag} 🔍 「{kw}」"
+        if pt > 1:
+            head += f"  第 {p + 1}/{pt} 页"
+        head += f"\n共 {t} 条结果（多书源聚合）"
+        lines = [head, ""]
+        sep = "────────────"
+        for i, x in enumerate(r[st:ed], 1):
+            idx = emoji_index(i, pc)
+            name = x["book_name"] or "(未知书名)"
+            author = x["author"] or "佚名"
+            src = x["source_name"] or "未知源"
+            # 一级：序号 + 书名
+            lines.append(f"{idx} {name}")
+            # 二级：作者（单独一行，弱化）
+            lines.append(f"   👤 {author}")
+            # 三级：书源（独立一行，不与作者合并）
+            lines.append(f"   🏷️ 书源：{src}")
+            lines.append(sep)
+        # 页脚：翻页 + 选择提示
+        foot = []
+        if pt > 1:
+            foot.append(f"📄 翻页：回复「下一页 / 上一页」，或「跳N」（如 跳3）")
+        foot.append(f"👇 回复数字 1-{pc} 选择下载；回复 0 取消（{SESSION_TIMEOUT}秒超时）")
+        lines.append("")
+        lines.extend(foot)
+        return "\n".join(lines)
+
+    @filter.command("找小说")
+    async def cmd_novel_search(self, event: AstrMessageEvent):
+        """小说搜索与下载（so-novel 多源聚合）。/找小说 <书名或作者>"""
+        keyword = event.message_str.strip()
+        keyword = re.sub(r"^/?找小说\s*", "", keyword).strip()
+        # 去掉「小说」统称后缀，保留书名/作者
+        if keyword.endswith("小说"):
+            keyword = keyword[:-2].strip()
+        logger.info(f"小说搜索: 关键词=[{keyword}]")
+        if not keyword:
+            yield event.plain_result(
+                "请发送：/找小说 <书名或作者>\n例如：/找小说 斗破苍穹"); return
+        if not requests:
+            yield event.plain_result("❌ 缺少 requests 依赖"); return
+
+        base, token, limit, fmts, timeout, dl_timeout = self._novel_cfg()
+        try:
+            results = await asyncio.to_thread(
+                search_novels, keyword, base, token, limit, timeout)
+        except NovelApiError as e:
+            yield event.plain_result(
+                f"❌ 小说搜索失败：{e.message}\n"
+                f"💡 请确认 so-novel 已以 Web 模式启动（默认 http://127.0.0.1:7765）。"); return
+        except Exception as e:
+            yield event.plain_result(f"❌ 小说搜索异常：{str(e)[:200]}"); return
+
+        if not results:
+            yield event.plain_result(
+                f"😕 未找到与「{keyword}」相关的小说，换个关键词试试？"); return
+
+        page_size = 8
+        self._novel_sessions.set(event, {
+            "keyword": keyword, "results": results, "page": 0,
+            "page_size": page_size, "stage": "select_novel", "_updated": time.time(),
+        })
+        yield event.plain_result(self._format_novel_page(self._novel_sessions.get(event)))
+
+    @filter.command("novel_status")
+    async def cmd_novel_status(self, event: AstrMessageEvent):
+        """检查 so-novel 服务是否可达 + 书源可用性。"""
+        base, token, limit, fmts, timeout, dl_timeout = self._novel_cfg()
+        fmt_default_label = "、".join(f.upper() for f in fmts)
+        try:
+            sources = await asyncio.to_thread(check_sources, base, token, timeout)
+            reachable = True
+        except NovelApiError as e:
+            yield event.plain_result(
+                f"❌ so-novel 不可达：{e.message}\n🌐 当前地址：{base}"); return
+        except Exception as e:
+            yield event.plain_result(f"❌ 检查异常：{str(e)[:200]}"); return
+
+        lines = [f"✅ so-novel 服务可访问\n🌐 {base}",
+                 f"📋 默认格式：{fmt_default_label} ｜ 搜索上限：{limit} ｜ 下载超时：{dl_timeout}s\n"]
+        if sources:
+            lines.append(f"📚 已激活书源：{len(sources)} 个")
+            for s in sources[:15]:
+                if isinstance(s, dict):
+                    nm = s.get("sourceName") or s.get("name") or s.get("sourceName") or "?"
+                    av = s.get("available")
+                    mark = "✅" if av is True else ("❌" if av is False else "➖")
+                    lines.append(f"  {mark} {nm}")
+                else:
+                    lines.append(f"  • {s}")
+        else:
+            lines.append("📚 未能获取书源列表（接口可能未返回，不影响搜索）。")
+        yield event.plain_result("\n".join(lines))
+
     @filter.command("game_cookie")
     async def cmd_game_cookie(self, event: AstrMessageEvent):
         """检测游戏 Cookie 状态：有效/失效/次数用尽"""
@@ -2287,12 +2588,20 @@ class MuliyResourcesPlugin(Star):
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
+        logger.info(f"[软件日报] 开始渲染，共 {len(sws)} 款，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 720, channel, exe)
+            logger.info(f"[软件日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
         except Exception as e:
-            logger.error(f"[软件日报] 渲染异常: {e}")
+            logger.error(f"[软件日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            logger.info(f"[软件日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
             img_bytes = self._compress_game_image(img_bytes)
+            logger.info(f"[软件日报] 压缩后体积 {len(img_bytes)//1024}KB")
+        if img_bytes:
+            logger.info(f"[软件日报] 准备发送，最终图片体积 {len(img_bytes)//1024}KB")
+        else:
+            logger.warning("[软件日报] 图片渲染失败（img_bytes=None），将降级为文字版")
         return img_bytes
 
     @filter.command("software_report")
@@ -2314,12 +2623,10 @@ class MuliyResourcesPlugin(Star):
         # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
         img_bytes = await self._sw_render_image(sws)
         if img_bytes:
-            try:
-                fd, img_p = tempfile.mkstemp(suffix=".jpg", prefix="sw_"); os.close(fd)
-                with open(img_p, "wb") as f: f.write(img_bytes)
-                await event.send(MessageChain([ImageComponent(file=img_p)])); await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.warning(f"发送软件日报图片失败: {e}")
+            ts = datetime.date.today().strftime("%Y%m%d")
+            fn = f"暮黎软件日报_{ts}{_img_ext(img_bytes)}"
+            ok = await self._send_event_file(event, img_bytes, fn, "", "软件日报")
+            if not ok:
                 yield event.plain_result("⚠️ 日报图片发送失败，请确认已执行 playwright install chromium。")
         else:
             yield event.plain_result("⚠️ 日报图片渲染失败，请确认已执行 playwright install chromium。")
@@ -2329,7 +2636,7 @@ class MuliyResourcesPlugin(Star):
         config = self._get_config()
         h = config.get("schedule_hour",10); m = config.get("schedule_minute",0)
         gh = config.get("game_schedule_hour",18); gm = config.get("game_schedule_minute",0)
-        gs = config.get("group_ids","").strip(); groups = [g.strip() for g in gs.split(",") if g.strip()]
+        groups = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
         ggroups, gfb = self._resolve_group_ids("game_group_ids")
         ei = True; mx = 24
         def _nxt(jid):
@@ -4408,9 +4715,11 @@ class MuliyResourcesPlugin(Star):
             or text.startswith("跳") or text in num_kw
             or text.startswith("第") or text.startswith("选") or text.startswith("最后")
             or any(k in text for k in ("夸克", "百度", "天翼", "迅雷", "阿里", "123", "uc", "磁力", "网盘", "线路"))
+            or any(k in text for k in ("下载", "确认", "txt", "epub", "html", "pdf", "格式"))
         )
         _all_session_mgrs = (self._sessions, self._search_sessions,
-                              self._movie_sessions, self._movie_sessions_new)
+                              self._movie_sessions, self._movie_sessions_new,
+                              self._novel_sessions)
         _active = [m for m in _all_session_mgrs if m.get(event)]
         if _active and not sel_like:
             for m in _active:
@@ -4857,6 +5166,145 @@ class MuliyResourcesPlugin(Star):
                 self._movie_sessions.delete(event)
                 return
 
+        # ══════════════════════════════════════════════
+        # 小说会话 (so-novel)
+        # ══════════════════════════════════════════════
+        nses = self._novel_sessions.get(event)
+        if nses:
+            stage = nses.get("stage", "")
+            # 取消（任意阶段通用）
+            if text in cancel_kw:
+                event.stop_event()
+                self._novel_sessions.delete(event)
+                event.set_result(event.plain_result("已取消小说下载。"))
+                return
+            # 翻页（仅 select_novel 阶段）
+            if stage == "select_novel" and (text in page_kw or text.startswith("跳")):
+                event.stop_event()
+                r = nses["results"]; ps = nses.get("page_size", 8)
+                t = len(r); cur = nses.get("page", 0)
+                if text in page_kw:
+                    nses["page"] = 0 if (cur + 1) * ps >= t else cur + 1 if "下一页" in text else max(0, cur - 1)
+                else:
+                    m = re.search(r"\d+", text)
+                    if m:
+                        pt = (t + ps - 1) // ps
+                        nses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
+                nses["_updated"] = time.time()
+                await event.send(MessageChain([Plain(self._format_novel_page(self._novel_sessions.get(event)))]))
+                return
+            # 选书
+            if stage == "select_novel":
+                event.stop_event()
+                r = nses["results"]; p = nses.get("page", 0); ps = nses.get("page_size", 8)
+                t = len(r); st = p * ps; ed = min(st + ps, t); pc = ed - st
+                number = self._parse_natural_number(text)
+                if number == -2:
+                    number = pc
+                if number < 1 or number > pc:
+                    await event.send(MessageChain([Plain(
+                        f"请输入 1-{pc} 之间的数字（当前第 {p + 1} 页共 {pc} 条）。回复 0 取消。")]))
+                    return
+                ai = st + number - 1
+                sel = r[ai]
+                self._novel_sessions.set(event, {
+                    **nses, "stage": "select_format", "selected": sel, "_updated": time.time(),
+                })
+                fmt_menu = (
+                    f"📚 已选择：《{sel.get('book_name') or '未知'}》／{sel.get('author') or '佚名'}\n"
+                    f"请选择下载格式（回复数字或格式名）：\n"
+                    + "\n".join(f"  {emoji_index(i, len(NOVEL_FORMATS))} {f.upper()}"
+                                for i, f in enumerate(NOVEL_FORMATS, 1))
+                    + f"\n\n回复 1-{len(NOVEL_FORMATS)} 选择；回复「下载 / 确认」使用默认 TXT；回复 0 取消。"
+                )
+                await event.send(MessageChain([Plain(fmt_menu)]))
+                return
+            # 选格式 → 触发下载（默认格式支持多选：回复「下载/确认」生成全部默认格式）
+            if stage == "select_format":
+                event.stop_event()
+                sel = nses.get("selected", {})
+                base, token, limit, def_fmts, timeout, dl_timeout = self._novel_cfg()
+                low = text.strip().lower()
+                # 确认词 → 使用配置的全部默认格式；否则解析单个临时格式
+                if low in ("下载", "确认", "ok", "go", "默认", "直接", "是", "y", "yes", "全部", "all"):
+                    fmt_list = list(def_fmts) or ["txt"]
+                else:
+                    fm = re.search(r"(txt|epub|html|pdf)", low)
+                    if fm:
+                        fmt_list = [fm.group(1)]
+                    else:
+                        num = self._parse_natural_number(text)
+                        if 1 <= num <= len(NOVEL_FORMATS):
+                            fmt_list = [NOVEL_FORMATS[num - 1]]
+                        else:
+                            await event.send(MessageChain([Plain(
+                                f"未识别格式，请回复 1-{len(NOVEL_FORMATS)} 选择，"
+                                f"或回复「下载/确认」使用默认格式。回复 0 取消。")]))
+                            return
+                multi = len(fmt_list) > 1
+                fmt_label = "、".join(f.upper() for f in fmt_list)
+                suffix = "（多格式将依次抓取，请稍候…）" if multi else ""
+                await event.send(MessageChain([Plain(
+                    f"⏳ 已提交《{sel.get('book_name', '')}》下载任务，"
+                    f"生成格式：{fmt_label}{suffix}")]))
+                book_name = sel.get("book_name", "") or "小说"
+                author = sel.get("author", "") or ""
+                results = []
+                for fmt in fmt_list:
+                    try:
+                        # 1) 触发服务端抓取整本（同步）
+                        res = await asyncio.to_thread(
+                            fetch_novel, sel, base, token, fmt, dl_timeout)
+                        # 2) 插件侧直接拉取文件字节（不再发 localhost 链接 / WebUI 预览）
+                        dl = await asyncio.to_thread(
+                            download_novel_file, base, res["file_name"], token, dl_timeout)
+                        content = dl["content"]
+                        fname = dl["file_name"] or res["file_name"]
+                        if not content:
+                            raise NovelApiError("下载到的文件内容为空，书源可能已失效",
+                                                 stage="download")
+                        # 3) 落盘后以 base64 经 OneBot 文件上传接口发送。
+                        #    注意：群消息里若直接传绝对路径给 FileComponent，客户端
+                        #    （napcat）读不到 AstrBot 容器内的 /tmp 而报 ENOENT；用
+                        #    base64 内嵌可彻底规避。复用已验证的 _upload_zip。
+                        ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname
+                               else fmt)
+                        if ext not in NOVEL_FORMATS:
+                            ext = fmt
+                        fd, tp = tempfile.mkstemp(suffix=f".{ext}", prefix="novel_")
+                        os.close(fd)
+                        with open(tp, "wb") as f:
+                            f.write(content)
+                        try:
+                            ok = await self._upload_zip(tp, fname, event=event)
+                        finally:
+                            if os.path.exists(tp):
+                                try:
+                                    os.unlink(tp)
+                                except Exception:
+                                    pass
+                        if ok:
+                            results.append((fmt, fname, None))
+                        else:
+                            results.append((fmt, None,
+                                            "文件上传失败（OneBot 客户端不可达，请检查连接）"))
+                    except Exception as e:
+                        msg = e.message if isinstance(e, NovelApiError) else str(e)[:200]
+                        results.append((fmt, None, msg))
+                ok_count = sum(1 for r in results if r[1])
+                lines = [
+                    f"✅ 下载完成：《{book_name}》／{author}",
+                    f"📦 已发送 {ok_count}/{len(fmt_list)} 个格式",
+                ]
+                for fmt, fname, err in results:
+                    if err:
+                        lines.append(f"❌ {fmt.upper()}：{err}（可换源/格式重试）")
+                if ok_count == 0:
+                    lines.append("💡 全部格式生成失败，请换一个书源或格式重试。")
+                await event.send(MessageChain([Plain("\n".join(lines))]))
+                self._novel_sessions.delete(event)
+                return
+
         # ── 无活跃 session → 正常退出，不 stop_event，让 LLM 接 ──
 
     def _framework_scheduler(self):
@@ -4916,7 +5364,9 @@ class MuliyResourcesPlugin(Star):
                     sch.add_job(func, CronTrigger(hour=int(jh), minute=int(jm), **tz_kw),
                                 id=job_id, replace_existing=True, misfire_grace_time=600)
                     self._scheduled_job_ids.append(job_id)
-                    logger.info(f"[暮黎资源] 已注册官方定时任务: {name} @ {int(jh):02d}:{int(jm):02d} (Asia/Shanghai)")
+                    j = sch.get_job(job_id)
+                    nxt = j.next_run_time.strftime("%Y-%m-%d %H:%M") if (j and j.next_run_time) else "?"
+                    logger.info(f"[暮黎资源] 已注册官方定时任务: {name} @ {int(jh):02d}:{int(jm):02d} (Asia/Shanghai) 下次运行: {nxt}")
                 except Exception as e:
                     logger.error(f"[暮黎资源] 注册官方定时任务失败 ({name}): {e}")
             # 配置热更新守护：每 600s 检测时间配置变更并重新注册
@@ -5134,22 +5584,17 @@ class MuliyResourcesPlugin(Star):
     async def _movie_send_report(self, img_bytes, ts, text: str = ""):
         config = self._get_config()
         gids, _fb = self._resolve_group_ids("movie_group_ids")
-        if not gids: return
-        img_path = None; img_c = []
-        if img_bytes:
-            try:
-                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="movie_"); os.close(fd)
-                with open(img_path, "wb") as f: f.write(img_bytes)
-                img_c.append(ImageComponent(file=img_path))
-            except Exception as e: logger.warning(f"[影视日报] 写图片失败: {e}")
+        if not gids: return 0
         apid = self._resolve_report_platform()
-        logger.info(f"[暮黎资源] 影视日报推送目标平台: {apid}")
+        logger.info(f"[暮黎资源] 影视日报推送目标平台: {apid} | 目标群: {gids}")
+        fn = f"暮黎影视日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
+        sent = 0
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
-            try:
-                if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
-                elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
-            except Exception as e: logger.error(f"发送影视日报到群{gid}失败: {e}")
+            if await self._try_send_group_file(umo, img_bytes, fn, text, "影视日报"):
+                sent += 1
+        logger.info(f"[暮黎资源] 影视日报本次成功推送 {sent}/{len(gids)} 个群")
+        return sent
 
     async def _movie_build_and_send(self, items: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -5159,16 +5604,23 @@ class MuliyResourcesPlugin(Star):
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
+        logger.info(f"[影视日报] 开始渲染，共 {len(items)} 部，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
-        except Exception as e: logger.error(f"[影视日报] 渲染异常: {e}")
-        text = ""
+            logger.info(f"[影视日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
+        except Exception as e:
+            logger.error(f"[影视日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            logger.info(f"[影视日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
+            img_bytes = self._compress_game_image(img_bytes)
+            logger.info(f"[影视日报] 压缩后体积 {len(img_bytes)//1024}KB")
+        # 始终构建文字版，作为图片上传失败时的兜底（定时任务无 event 可用）
+        text = (f"🎬 暮黎影视日报 {date_label}\n今日更新 {len(items)} 部：\n"
+                + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
+                             for i, it in enumerate(items, 1)))
         if not img_bytes:
-            logger.warning("[影视日报] 图片渲染失败，改用文字版推送")
-            text = (f"🎬 暮黎影视日报 {date_label}\n今日更新 {len(items)} 部：\n"
-                    + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
-                                 for i, it in enumerate(items, 1)))
-        await self._movie_send_report(img_bytes, ts, text)
+            logger.warning("[影视日报] 图片渲染失败，将改用文字版推送")
+        return await self._movie_send_report(img_bytes, ts, text)
 
     async def _movie_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -5192,19 +5644,19 @@ class MuliyResourcesPlugin(Star):
         # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
         forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
         mx = int(config.get("movie_report_max", 24) or 24)
-        sections = (config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac")
-        sections_filter = [s.strip() for s in sections.split(",") if s.strip() in ("mv", "tv", "ac")] or None
+        sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
+        sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
         # 自动选择影视源：配了教父.com Cookie 走新站，否则回退 a123tv 旧站（免登录）
         use_cookie = "" if forced_a123 else cookie
         logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('教父.com' if cookie else 'a123tv(免登录)')}）")
         result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
         if not result["success"]:
-            logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}")
-            self._schedule_movie_next(); return
+            logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
+            return
         items = result.get("items", [])
         if not items:
-            logger.info("[影视日报] 今日暂无更新，跳过推送")
-            self._schedule_movie_next(); return
+            logger.info("[影视日报] 今日暂无更新，标记今日已完成")
+            self._movie_last_run_date = ts; return
         # 缓存 zip 供面板回看
         try:
             date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -5216,7 +5668,13 @@ class MuliyResourcesPlugin(Star):
                 shutil.copy2(zp, self._movie_cached_path(ts))
                 self._sw_cleanup_reports()
         except Exception as e: logger.warning(f"[影视日报] 缓存 zip 失败: {e}")
-        await self._movie_build_and_send(items, ts)
+        sent = await self._movie_build_and_send(items, ts)
+        # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
+        if sent > 0:
+            self._movie_last_run_date = ts
+            logger.info(f"[影视日报] 今日推送完成（{sent} 群）")
+        else:
+            logger.error("[影视日报] 抓取成功但发送 0 群，兜底守护将重试")
         self._schedule_movie_next()
 
     @filter.command("movie_report")
@@ -5225,8 +5683,8 @@ class MuliyResourcesPlugin(Star):
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
         mx = int(config.get("movie_report_max", 24) or 24)
-        sections = (config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac")
-        sections_filter = [s.strip() for s in sections.split(",") if s.strip() in ("mv", "tv", "ac")] or None
+        sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
+        sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
         use_cookie = "" if forced_a123 else cookie
         src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not cookie) else "教父.com 新站"
         yield event.plain_result(f"⏳ 正在抓取{src_hint}最近更新影视...")
@@ -5246,12 +5704,12 @@ class MuliyResourcesPlugin(Star):
         try:
             img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
         except Exception as e: logger.error(f"[影视日报] 渲染异常: {e}")
+        ts = datetime.date.today().strftime("%Y%m%d")
+        fn = f"暮黎影视日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
         if img_bytes:
-            try:
-                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="movie_"); os.close(fd)
-                with open(img_path, "wb") as f: f.write(img_bytes)
-                await event.send(MessageChain([ImageComponent(file=img_path)])); await asyncio.sleep(0.4)
-            except Exception as e: logger.warning(f"发送图片失败: {e}")
+            ok = await self._send_event_file(event, img_bytes, fn, "", "影视日报")
+            if not ok:
+                yield event.plain_result("⚠️ 日报图片发送失败，请确认已执行 playwright install chromium。")
         else:
             await event.send(MessageChain([Plain(
                 "⚠️ 图片渲染失败（请确认已执行 playwright install chromium），改为文字版：\n"
@@ -5270,20 +5728,29 @@ class MuliyResourcesPlugin(Star):
             self._last_run_date = ts  # 先占位，防止并发重入
         logger.info(f"[暮黎资源] ⏰ 软件日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
-        gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
-        if not gs:
+        gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
+        if not gids:
             logger.warning("[暮黎资源] 软件日报已触发，但未配置 group_ids，跳过发送")
             return
         mx = 24  # max_softwares 配置已移除，固定默认 24
         result = await asyncio.to_thread(sync_scrape, mx)
-        if not result["success"]: return
+        if not result["success"]:
+            logger.warning(f"[软件日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
+            return
         sws = result.get("softwares",[])
-        if not sws: return
+        if not sws:
+            logger.info("[软件日报] 今日暂无更新，标记今日已完成")
+            self._last_run_date = ts; return
         # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
         img_bytes = await self._sw_render_image(sws)
         zp = await asyncio.to_thread(gen_report_zip, sws, io.BytesIO(img_bytes) if img_bytes else None)
-        # 仅发送图片，不再向群发送自包含 zip 文件
-        await self._sw_send_report(img_bytes, None)
+        # 文字版兜底内容（图片渲染失败或图片上传失败时使用）
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        text = (f"📦 暮黎软件日报 {date_label}\n今日共 {len(sws)} 款更新：\n"
+                + "\n".join(f"{i}. {s.get('name','')} - {(s.get('desc','') or '')[:40]}"
+                            for i, s in enumerate(sws, 1)))
+        # 仅发送图片/文字，不再向群发送自包含 zip 文件
+        sent = await self._sw_send_report(img_bytes, None, text)
         # 缓存 zip 仅供面板本地回看（不会发送给用户/群）
         if zp:
             try:
@@ -5291,7 +5758,12 @@ class MuliyResourcesPlugin(Star):
                 shutil.copy2(zp, self._sw_cached_path(ts))
                 self._sw_cleanup_reports()
             except: pass
-        self._schedule_sw_next()
+        # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
+        if sent > 0:
+            self._last_run_date = ts
+            logger.info(f"[软件日报] 今日推送完成（{sent} 群）")
+        else:
+            logger.error("[软件日报] 抓取成功但发送 0 群，兜底守护将重试")
 
     def _resolve_report_platform(self) -> str:
         """解析日报推送应使用的平台 ID（unified_msg_origin 的平台前缀）。
@@ -5326,27 +5798,111 @@ class MuliyResourcesPlugin(Star):
             pass
         return "aiocqhttp"
 
-    async def _sw_send_report(self, img_bytes, zp):
-        config = self._get_config()
-        gs = config.get("group_ids","").strip() if isinstance(config,dict) else ""
-        if not gs: return
-        gids = [g.strip() for g in gs.split(",") if g.strip()]
-        ts = datetime.date.today().strftime("%Y%m%d"); zn = f"暮黎软件日报_{ts}.zip"
-        img_path = None; img_c = []
+    async def _try_send_group_file(self, umo: str, img_bytes: bytes | None, file_name: str, text: str, label: str) -> bool:
+        """以「文件」形式发送日报图片（绕开 onebot 发图体积上限，杜绝大图被平台静默拒收）。
+
+        与小说 _upload_zip 一致，走 client.call_action(upload_group_file, base64://..., name=...)。
+        群文件发送失败 → 降级文字版兜底；无图片则直接发文字版。
+        """
+        gid = umo.split(":")[-1]
         if img_bytes:
+            client = self._get_best_client()
+            if client:
+                try:
+                    b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    await client.call_action(action="upload_group_file", group_id=int(gid),
+                                             file=f"base64://{b64}", name=file_name)
+                    await asyncio.sleep(0.5)
+                    logger.info(f"[暮黎资源] {label} 已以文件形式发送到 {umo}（{file_name}, {len(img_bytes)//1024}KB）")
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"[暮黎资源] {label} 群文件发送失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+            else:
+                logger.error(f"[暮黎资源] {label} 未找到可用客户端，无法以文件形式发送")
+            # 文件发送失败 → 降级文字版
+            if text:
+                try:
+                    await self.context.send_message(umo, MessageChain([Plain(text)]))
+                    await asyncio.sleep(0.3)
+                    logger.warning(f"[暮黎资源] {label} 文件发送失败，已回退文字版到 {umo}")
+                    return True
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"[暮黎资源] {label} 文字回退发送到 {umo} 失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+            return False
+        # 无图片：直接发文字版
+        if text:
             try:
-                fd,img_path=tempfile.mkstemp(suffix=".jpg",prefix="sw_"); os.close(fd)
-                with open(img_path,"wb") as f: f.write(img_bytes); img_c.append(ImageComponent(file=img_path))
-            except: pass
-        client = self._get_best_client()
+                await self.context.send_message(umo, MessageChain([Plain(text)]))
+                await asyncio.sleep(0.3)
+                logger.info(f"[暮黎资源] {label} 文字版已发送到 {umo}")
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[暮黎资源] {label} 文字发送到 {umo} 失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+                return False
+        logger.error(f"[暮黎资源] {label} 既无图片也无文字内容，无法发送到 {umo}")
+        return False
+
+    async def _send_event_file(self, event, img_bytes: bytes | None, file_name: str, text: str, label: str) -> bool:
+        """手动指令：把日报图以「文件」形式发到当前会话（与定时日报一致，绕开发图体积上限）。
+
+        群内 → upload_group_file（与小说 _upload_zip 一致）；私聊/好友 → 临时文件 + FileComponent 兜底。
+        任何失败都按 text 兜底（text 为空则仅返回 False）。
+        """
+        if not img_bytes:
+            if text:
+                await event.send(MessageChain([Plain(text)]))
+            return bool(text)
+        gid = event.get_group_id()
+        client = self._get_best_client(event)
+        if gid and client:
+            try:
+                b64 = base64.b64encode(img_bytes).decode("utf-8")
+                await client.call_action(action="upload_group_file", group_id=int(gid),
+                                         file=f"base64://{b64}", name=file_name)
+                await asyncio.sleep(0.4)
+                logger.info(f"[暮黎资源] {label} 手动指令已以文件形式发送到群 {gid}（{file_name}）")
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[暮黎资源] {label} 手动指令群文件发送失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+                if text:
+                    await event.send(MessageChain([Plain(text)]))
+                return bool(text)
+        # 私聊/好友：临时文件 + FileComponent 兜底
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=_img_ext(img_bytes), prefix="report_"); os.close(fd)
+            with open(tmp, "wb") as f: f.write(img_bytes)
+            await self.context.send_message(
+                f"{event.get_platform_id()}:FriendMessage:{event.get_sender_id()}",
+                MessageChain([FileComponent(file=tmp, name=file_name)]))
+            logger.info(f"[暮黎资源] {label} 手动指令已以文件形式发送（FileComponent, {file_name}）")
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[暮黎资源] {label} 手动指令 FileComponent 发送失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+            if text:
+                await event.send(MessageChain([Plain(text)]))
+            return bool(text)
+        finally:
+            if tmp and os.path.exists(tmp):
+                try: os.unlink(tmp)
+                except Exception: pass
+
+    async def _sw_send_report(self, img_bytes, zp, text: str = ""):
+        config = self._get_config()
+        gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
+        if not gids: return 0
+        ts = datetime.date.today().strftime("%Y%m%d")
         apid = self._resolve_report_platform()
-        logger.info(f"[暮黎资源] 软件日报推送目标平台: {apid}")
+        logger.info(f"[暮黎资源] 软件日报推送目标平台: {apid} | 目标群: {gids}")
+        fn = f"暮黎软件日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
+        sent = 0
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
-            try:
-                if img_c: await self.context.send_message(umo,MessageChain(img_c)); await asyncio.sleep(0.5)
-            # 按需求：日报只发送图片，不再向群发送自包含 zip 文件（zp 仅用于本地缓存回看）
-            except Exception as e: logger.error(f"发送日报到群{gid}失败: {e}")
+            # 以文件形式发送（zp 仅用于本地缓存回看，不发送）
+            if await self._try_send_group_file(umo, img_bytes, fn, text, "软件日报"):
+                sent += 1
+        logger.info(f"[暮黎资源] 软件日报本次成功推送 {sent}/{len(gids)} 个群")
+        return sent
 
     async def _upload_zip(self, zp, zn, event=None, gid=None, uid=None):
         if not zp or not os.path.exists(zp): return False
@@ -5370,24 +5926,21 @@ class MuliyResourcesPlugin(Star):
         return os.path.join(self._reports_dir, f"game_report_{ds}.zip") if self._reports_dir else ""
 
     async def _game_send_report(self, img_bytes, ts, text: str = ""):
+        logger.info(f"[游戏日报] 进入发送阶段：图片={'有 %dKB' % (len(img_bytes)//1024) if img_bytes else '无'} | 文字版={'有 %d字' % len(text) if text else '无'}")
         config = self._get_config()
         gids, _fb = self._resolve_group_ids("game_group_ids")
-        if not gids: return
-        img_path = None; img_c = []
-        if img_bytes:
-            try:
-                fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="game_"); os.close(fd)
-                with open(img_path, "wb") as f: f.write(img_bytes)
-                img_c.append(ImageComponent(file=img_path))
-            except Exception as e: logger.warning(f"[游戏日报] 写图片失败: {e}")
+        logger.info(f"[游戏日报] 解析到的目标群: {gids}")
+        if not gids: return 0
         apid = self._resolve_report_platform()
-        logger.info(f"[暮黎资源] 游戏日报推送目标平台: {apid}")
+        logger.info(f"[暮黎资源] 游戏日报推送目标平台: {apid} | 目标群: {gids}")
+        fn = f"暮黎游戏日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
+        sent = 0
         for gid in gids:
             umo = f"{apid}:GroupMessage:{gid}"
-            try:
-                if img_c: await self.context.send_message(umo, MessageChain(img_c)); await asyncio.sleep(0.5)
-                elif text: await self.context.send_message(umo, MessageChain([Plain(text)])); await asyncio.sleep(0.3)
-            except Exception as e: logger.error(f"发送游戏日报到群{gid}失败: {e}")
+            if await self._try_send_group_file(umo, img_bytes, fn, text, "游戏日报"):
+                sent += 1
+        logger.info(f"[暮黎资源] 游戏日报本次成功推送 {sent}/{len(gids)} 个群")
+        return sent
 
     async def _game_build_and_send(self, games: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -5398,15 +5951,25 @@ class MuliyResourcesPlugin(Star):
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
+        logger.info(f"[游戏日报] 开始渲染，共 {len(games)} 款游戏，html 长度 {len(html)} 字符，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
-        except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
-        text = ""
+            logger.info(f"[游戏日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
+        except Exception as e:
+            logger.error(f"[游戏日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        # 体积过大（24 款×封面+截图常达数 MB）会被平台静默拒收，先压缩到安全上限
+        if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            logger.info(f"[游戏日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
+            img_bytes = self._compress_game_image(img_bytes)
+            logger.info(f"[游戏日报] 压缩后体积 {len(img_bytes)//1024}KB")
+        # 始终构建文字版，作为图片上传失败时的兜底（定时任务无 event 可用）
+        text = (f"🎮 暮黎游戏日报 {date_label}\n今日共 {len(games)} 款新游戏：\n"
+                + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))
         if not img_bytes:
-            logger.warning("[游戏日报] 图片渲染失败，改用文字版推送")
-            text = (f"🎮 暮黎游戏日报 {date_label}\n今日共 {len(games)} 款新游戏：\n"
-                    + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))
-        await self._game_send_report(img_bytes, ts, text)
+            logger.warning("[游戏日报] 图片渲染失败，将改用文字版推送")
+        else:
+            logger.info(f"[游戏日报] 准备发送，最终图片体积 {len(img_bytes)//1024}KB")
+        return await self._game_send_report(img_bytes, ts, text)
 
     async def _game_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -5427,6 +5990,7 @@ class MuliyResourcesPlugin(Star):
             logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids，跳过发送")
             return
         mx = int(config.get("game_report_max", 24) or 24)
+        logger.info(f"[游戏日报] 本次抓取：数据源={self._game_source()} | 上限={mx} 款 | 目标群={gs_list}")
         if self._game_source() == "switch618":
             cookie = self._g_cookie()
             # switch618 源同样受 game_report_max 上限约束（不再抓全）
@@ -5435,14 +5999,19 @@ class MuliyResourcesPlugin(Star):
             cookie = (config.get("cookie", "") or "") if isinstance(config, dict) else ""
             result = await asyncio.to_thread(get_today_games, mx, cookie)
         if not result["success"]:
-            logger.warning(f"[游戏日报] 抓取失败: {result.get('error','')}")
-            self._schedule_game_next(); return
+            logger.warning(f"[游戏日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
+            return
         games = result.get("games", [])
         if not games:
-            logger.info("[游戏日报] 今日暂无更新，跳过推送")
-            self._schedule_game_next(); return
-        await self._game_build_and_send(games, ts)
-        self._schedule_game_next()
+            logger.info("[游戏日报] 今日暂无更新，标记今日已完成")
+            self._game_last_run_date = ts; return
+        sent = await self._game_build_and_send(games, ts)
+        # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
+        if sent > 0:
+            self._game_last_run_date = ts
+            logger.info(f"[游戏日报] 今日推送完成（{sent} 群）")
+        else:
+            logger.error("[游戏日报] 抓取成功但发送 0 群，兜底守护将重试")
 
     @staticmethod
     def _compress_game_image(img_bytes: bytes, max_bytes: int = 2 * 1024 * 1024) -> bytes:
@@ -5527,25 +6096,18 @@ class MuliyResourcesPlugin(Star):
         except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
         # 体积过大（如 24 款×封面+截图常达数 MB）会被平台拒收，先压缩到安全上限
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
-            logger.info(f"[游戏日报] 渲染图 {len(img_bytes)//1024}KB，超过 3MB，尝试压缩...")
+            logger.info(f"[游戏日报] 渲染图 {len(img_bytes)//1024}KB，超过 2MB，尝试压缩...")
             img_bytes = self._compress_game_image(img_bytes)
             logger.info(f"[游戏日报] 压缩后 {len(img_bytes)//1024}KB")
         img_path = None
         html_path = None
+        ts = datetime.date.today().strftime("%Y%m%d")
+        fn = f"暮黎游戏日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
+        text_fallback = ("⚠️ 日报图片渲染/发送失败，已降级为文字版：\n"
+                         + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))
         try:
-            if img_bytes:
-                try:
-                    fd, img_path = tempfile.mkstemp(suffix=".jpg", prefix="game_"); os.close(fd)
-                    with open(img_path, "wb") as f: f.write(img_bytes)
-                    await event.send(MessageChain([ImageComponent(file=img_path)])); await asyncio.sleep(0.4)
-                except Exception as e:
-                    logger.warning(f"发送图片失败（可能体积仍过大），降级为文字版: {e}")
-                    img_bytes = None  # 落入下方文字版兜底
-            # 图片不可用（渲染失败/发送失败/过大）时，降级为文字版（仅文本，不发送文件）。
-            if not img_bytes:
-                await event.send(MessageChain([Plain(
-                    "⚠️ 日报图片渲染/发送失败，已降级为文字版：\n"
-                    + "\n".join(f"{i}. {g.get('title','')}（{g.get('category','')}）" for i, g in enumerate(games, 1)))]))
+            # 以文件形式发送（绕开发图体积上限）；失败则降级文字版
+            await self._send_event_file(event, img_bytes, fn, text_fallback, "游戏日报")
         finally:
             for p in (img_path, html_path):
                 if p and os.path.exists(p):
