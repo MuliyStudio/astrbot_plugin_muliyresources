@@ -20,8 +20,29 @@ GAME_PAN_COLORS = {
 }
 GAME_PAN_DOMAINS = [
     "pan.baidu.com", "cloud.189.cn", "pan.xunlei.com",
-    "pan.quark.cn", "aliyundrive.com", "caiyun.139.com",
-    "share.123pan.com", "uc.cn", "drive.uc.cn",
+    "pan.quark.cn", "aliyundrive.com", "alipan.com", "caiyun.139.com", "yun.139.com",
+    "123pan.com", "123pan.cn", "123865.com", "123912.com", "123684.com", "uc.cn", "drive.uc.cn",
+]
+
+# 各网盘「分享链接」精确特征（用于从页面文本提取真实链接）。
+# 关键：要求 /s/ 这类分享路径，避免误命中 aliyundrive.com/static/logo.png 等静态资源；
+# 同时兼容 www./share./m. 等子域。覆盖 123 网盘(www.123pan.com/s/...) 与
+# 阿里云盘(aliyundrive.com/s/... 及新域名 alipan.com/...)。
+GAME_PAN_LINK_PATTERNS = [
+    r'(?:https?:)?//(?:www\.)?pan\.baidu\.com/(?:s/|share/|share/init\?surl=)[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?cloud\.189\.cn/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?pan\.xunlei\.com/s/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?pan\.quark\.cn/s/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?aliyundrive\.com/s/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?alipan\.com/s/[A-Za-z0-9\-_/?=&.%]+',
+    # 123 网盘：真实域名不止 123pan.com/.cn，还有 123865.com / 123912.com / 123684.com
+    # （来自页面 SOURCE_DOMAINS）。分享路径为 /s/ 或 /share/，也可能带 /123pan/ 前缀
+    # （如 share.123pan.cn/123pan/<code>?notoken=1）。强制要求分享路径，避免误命中静态资源。
+    r'(?:https?:)?//(?:[\w-]+\.)*(?:123pan\.(?:com|cn)|123(?:865|912|684)\.com)/(?:(?:123pan/)?(?:s|share)/|123pan/)[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?caiyun\.139\.com/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?yun\.139\.com/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?uc\.cn/[A-Za-z0-9\-_/?=&.%]+',
+    r'(?:https?:)?//(?:www\.)?drive\.uc\.cn/[A-Za-z0-9\-_/?=&.%]+',
 ]
 
 # ==================== 软件常量 ====================

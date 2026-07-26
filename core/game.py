@@ -4,6 +4,7 @@ import re, datetime, requests
 from bs4 import BeautifulSoup
 from .constants import (
     GAME_BASE_URL, GAME_SEARCH_URL, GAME_PAN_ICONS, GAME_PAN_COLORS, GAME_PAN_DOMAINS,
+    GAME_PAN_LINK_PATTERNS,
     parse_cookie_string, logger, extract_game_description
 )
 from .mdi_icons import svg as _svg
@@ -181,16 +182,54 @@ def get_game_detail(game_url: str, cookie_str: str = "") -> dict:
 def resolve_download_link(link_info: dict, cookie_str: str = "") -> dict:
     """解析下载链接的真实地址和提取码(xdgame.com)"""
     ap = link_info["api_url"]
-    url = GAME_BASE_URL + ap if ap.startswith("/") else GAME_BASE_URL + "/" + ap
+    # 兼容 api_url 已是绝对/协议相对外链的情况（如 123 网盘 data-url 直接是
+    # https://share.123pan.cn/... 或 //share.123pan.cn/...）。若一律拼上 GAME_BASE_URL
+    # 前缀会变成非法地址导致请求失败 → 获取失败。
+    if ap.startswith("http://") or ap.startswith("https://"):
+        url = ap
+    elif ap.startswith("//"):
+        url = "https:" + ap
+    elif ap.startswith("/"):
+        url = GAME_BASE_URL + ap
+    else:
+        url = GAME_BASE_URL + "/" + ap
     s = _game_session(cookie_str)
     try:
         resp = s.get(url, timeout=15, allow_redirects=True); resp.encoding = "utf-8"; fu = resp.url
         real_url = ""; code = ""
+        # 1) 先看最终跳转 URL 是否直接命中某网盘（如 302 直跳）
         for d in GAME_PAN_DOMAINS:
             if d in fu: real_url = fu; break
+        # 2) 从页面文本精确提取分享链接（要求 /s/ 等分享路径，避免误命中静态资源）
         if not real_url:
-            m = re.search(r'href="(https?://[^"]*(?:pan\.baidu|cloud\.189|pan\.xunlei|pan\.quark|aliyundrive|caiyun\.139|share\.123pan|drive\.uc)[^"]*)"', resp.text)
-            if m: real_url = m.group(1)
+            for pat in GAME_PAN_LINK_PATTERNS:
+                m = re.search(pat, resp.text)
+                if m:
+                    real_url = m.group(0)
+                    if real_url.startswith("//"):
+                        real_url = "https:" + real_url
+                    break
+        # 2.5) 兜底：meta refresh / JS location 前端跳转（部分网盘用前端跳转而非 302）
+        if not real_url:
+            m = re.search(
+                r'(?:meta[^>]*http-equiv="refresh"[^>]*content="[^"]*url=([^"\'>\s]+))'
+                r'|(?:window\.location(?:\.href)?\s*=\s*["\']([^"\']+)["\'])',
+                resp.text, re.IGNORECASE)
+            if m:
+                ju = m.group(1) or m.group(2)
+                if ju:
+                    if ju.startswith("//"):
+                        ju = "https:" + ju
+                    elif ju.startswith("/"):
+                        ju = GAME_BASE_URL + ju
+                    for d in GAME_PAN_DOMAINS:
+                        if d in ju:
+                            real_url = ju; break
+        # 诊断：页面含 123pan 字样却没取到链接，dump 关键片段便于回查真实格式
+        if not real_url and "123pan" in resp.text:
+            _i = resp.text.find("123pan")
+            logger.warning(f"[游戏下载] 123网盘未匹配到链接，api_url={ap}，url={url}，fu={fu}，"
+                           f"页面片段: ...{resp.text[max(0,_i-60):_i+160]}...")
         if "pan.baidu.com" in (real_url or fu):
             p = re.search(r"pwd=([a-zA-Z0-9]{4})", real_url or fu)
             if p: code = p.group(1)
@@ -212,6 +251,21 @@ def resolve_download_link(link_info: dict, cookie_str: str = "") -> dict:
             else:
                 c = re.search(r"(?:提取码|密码)[：:\s]*([a-zA-Z0-9]{4})", resp.text, re.IGNORECASE)
                 if c: code = c.group(1)
+        if "139.com" in (real_url or fu):
+            p = re.search(r"[?&]code=([A-Za-z0-9]{4,8})", real_url or fu)
+            if p: code = p.group(1)
+            else:
+                c = re.search(r"(?:访问码|提取码|密码)[：:\s]*([A-Za-z0-9]{4,8})", resp.text)
+                if c: code = c.group(1)
+        if "aliyundrive.com" in (real_url or fu) or "alipan.com" in (real_url or fu):
+            p = re.search(r"[?&]pwd=([A-Za-z0-9]{4,8})", real_url or fu)
+            if p: code = p.group(1)
+            else:
+                c = re.search(r"(?:提取码|密码|访问码)[：:\s]*([A-Za-z0-9]{4,8})", resp.text)
+                if c: code = c.group(1)
+        if any(d in (real_url or fu) for d in ("123pan.com", "123pan.cn", "123865.com", "123912.com", "123684.com")):
+            c = re.search(r"(?:提取码|密码|访问码)[：:\s]*([A-Za-z0-9]{4,8})", resp.text)
+            if c: code = c.group(1)
         link_info["real_url"] = real_url if real_url else "(获取失败)"
         link_info["code"] = code
     except Exception as e:

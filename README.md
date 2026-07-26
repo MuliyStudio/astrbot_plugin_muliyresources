@@ -7,7 +7,7 @@
 <p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 小说 / 影视 / 游戏 / 软件搜索 · 日报 · 网易云语音名片 · VIP 解析 · 摸头/踢/按摩表情包</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.11.0-2B7FD8" alt="version 1.11.0">
+  <img src="https://img.shields.io/badge/version-1.12.0-2B7FD8" alt="version 1.12.0">
   <img src="https://img.shields.io/badge/AstrBot-v4.20%2B-F4D758" alt="AstrBot v4.20+">
   <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
 </p>
@@ -30,7 +30,7 @@
 | 🎮 | **游戏搜索** | 在 xdgame.com 搜索游戏，支持多网盘下载链接 |
 | 💿 | **软件搜索** | 在 x6d.com 搜索软件 / 应用 / 工具资源 |
 | 📖 | **小说搜索与下载** | 基于开源 [so-novel](https://github.com/freeok/so-novel) 的多源聚合小说搜索与下载：搜书名/作者 → 分页选源 → 选格式（txt/epub/html/pdf）→ 以文件形式发送整本小说 |
-| 🔍 | **统一搜索** | LLM 自动判断资源类型，跨库一次搜完 |
+| 🔍 | **自然语言搜索（意图拦截）** | 用户说「找游戏/找软件/我想看…」时由意图拦截直接路由到对应单类型工具（search_game / search_software / search_movie / search_novel），省 token 且避免 LLM 误判；类型不确定时由 LLM 选最可能的一种 |
 | 🛡️ | **搜索关键词审核** | 所有资源搜索（统搜/游戏/软件/影视）在发起抓取前，先调用大模型审核关键词是否涉黄/违禁，命中即拦截；同时判断用户搜索意图 |
 | 📰 | **软件日报** | 每日定时推送最新软件到群聊（**以文件形式发送**日报图，绕开 onebot 发图体积上限，不再发送 ZIP 文件） |
 | 🎮 | **游戏日报** | 每日定时抓取当前游戏源（XDGAME / switch618）当日更新的游戏，取标题/简介/截图，排版成卡通风格 HTML 后渲染为图片、**以文件形式推送到群聊** |
@@ -153,7 +153,6 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 工具名 | 触发场景 | 行为 |
 |--------|----------|------|
-| `search_resource` | 资源类型不确定时 | 同时搜索游戏库 + 软件库，返回合并列表 |
 | `search_game` | 明确要游戏 | 仅搜索 xdgame.com |
 | `search_software` | 明确要软件 | 仅搜索 x6d.com |
 | `search_movie` | 明确要影视（关键词：影视/电影/剧/追剧） | 搜索 a123tv.com，自动判断剧/电影并引导选择 |
@@ -175,14 +174,14 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 ### 有 LLM
 
 ```
-用户: @机器人 "帮我找赛车游戏"
-  ↓ LLM 调用 search_resource("赛车")
+用户: @机器人 "帮我找原神"
+  ↓ 命中「游戏意图拦截」→ 直接调 search_game("原神")（不经 LLM 选工具，自动清旧会话）
   ↓ 返回游戏列表（含序号）
 用户: "1"
-  ↓ LLM 调用 select_search_result("1")
+  ↓ 调 select_search_result("1")
   ↓ 返回详情 + 多网盘下载选项
 用户: "百度网盘"
-  ↓ LLM 调用 select_download_link("百度网盘")
+  ↓ 调 select_download_link("百度网盘")
   ↓ 发送合并转发
 完成
 ```

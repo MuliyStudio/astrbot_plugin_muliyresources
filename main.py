@@ -407,7 +407,7 @@ class MuliyResourcesPlugin(Star):
                 event.stop_event()
                 return
 
-        # ★影视搜索意图拦截：用户说"我想看XX/观看XX"时，LLM 可能误调 search_resource，
+        # ★影视搜索意图拦截：用户说"我想看XX/观看XX"时，
         #   这里直接强制调 search_movie，不依赖 LLM 选工具
         #   有旧会话时自动清除（用户要搜新的了，不必手动取消）
         _movie_intent_kws = ('想看', '要看', '观看', '看剧', '看片', '看一', '看个', '看部', '看电影')
@@ -436,8 +436,8 @@ class MuliyResourcesPlugin(Star):
                     event.stop_event()
                     return
 
-        # ★小说搜索意图拦截：用户说"找小说XX/搜小说XX/我想看小说XX"时，LLM 可能误调
-        #   search_resource/search_movie，这里直接强制调 search_novel，不依赖 LLM 选工具。
+        # ★小说搜索意图拦截：用户说"找小说XX/搜小说XX/我想看小说XX"时，
+        #   这里直接强制调 search_novel，不依赖 LLM 选工具。
         #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
         _novel_intent_kws = ('找小说', '搜小说', '看小说', '读小说', '听小说',
                              '本小说', '想看小说', '我想看小说')
@@ -464,6 +464,70 @@ class MuliyResourcesPlugin(Star):
                 except Exception as e:
                     logger.error(f"[暮黎资源] 小说意图拦截失败: {e}")
                     await event.send(MessageChain([Plain(f"【暮黎资源】 小说搜索出错：{str(e)[:120]}")]))
+                    event.stop_event()
+                    return
+
+        # ★游戏搜索意图拦截：用户说"找游戏XX/搜游戏XX/下载XX游戏/我想玩XX"时，
+        #   直接强制调 search_game，不依赖 LLM 选工具（省 token、防误判）。
+        #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
+        _game_intent_kws = (
+            '找游戏', '搜游戏', '下游戏', '下载游戏', '玩游戏',
+            '想玩', '要玩', '帮我找游戏', '帮我搜游戏', '帮我下游戏',
+            '游戏下载', '游戏推荐', '推荐游戏', '来个游戏', '找个游戏', '搜个游戏',
+        )
+        if any(k in raw_text for k in _game_intent_kws):
+            gses0 = self._sessions.get(event)
+            if gses0:
+                self._sessions.delete(event)
+                logger.info(f"[暮黎资源] 新游戏搜索自动清除旧会话 (stage={gses0.get('stage')})")
+            _gn = re.sub(r'^(我想玩|我要玩|想玩|要玩|帮我找|帮我搜|帮我下|帮我|找|搜|下|下载|要|想|请|玩)\s*', '', raw_text)
+            _gn = re.sub(r'^(一下|一个|个|款|部|下|种)\s*', '', _gn)  # 去量词
+            _gn = re.sub(r'游戏\s*', '', _gn)  # 去"游戏"统称
+            _gn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _gn).strip()
+            if _gn:
+                try:
+                    logger.info(f"[暮黎资源] 游戏意图拦截: '{raw_text}' → search_game('{_gn}')")
+                    _ret = await self.llm_search_game(event, _gn)
+                    # llm_search_game 成功时已 event.send 并返回"[已发送...]"；
+                    # 未找到/失败时只返回文本，需自己发给用户，否则收不到回复。
+                    if _ret and not _ret.startswith("[已发送"):
+                        await event.send(MessageChain([Plain(_ret)]))
+                    event.stop_event()
+                    return
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 游戏意图拦截失败: {e}")
+                    await event.send(MessageChain([Plain(f"【暮黎资源】 游戏搜索出错：{str(e)[:120]}")]))
+                    event.stop_event()
+                    return
+
+        # ★软件搜索意图拦截：用户说"找软件XX/搜软件XX/下载XX软件/APP下载"时，
+        #   直接强制调 search_software，不依赖 LLM 选工具。
+        _sw_intent_kws = (
+            '找软件', '搜软件', '下软件', '下载软件', '装软件', '用软件',
+            '帮我找软件', '帮我搜软件', '帮我下软件',
+            '软件下载', '软件推荐', '推荐软件', '找个软件', '搜个软件',
+            'app下载', 'APP下载',
+        )
+        if any(k in raw_text for k in _sw_intent_kws):
+            swses0 = self._search_sessions.get(event)
+            if swses0:
+                self._search_sessions.delete(event)
+                logger.info(f"[暮黎资源] 新软件搜索自动清除旧会话 (stage={swses0.get('stage')})")
+            _sn = re.sub(r'^(帮我找|帮我搜|帮我下|帮我|找|搜|下|下载|装|用|要|想|请)\s*', '', raw_text)
+            _sn = re.sub(r'^(一下|一个|个|款|部|下|种)\s*', '', _sn)  # 去量词
+            _sn = re.sub(r'(软件|app|APP)\s*', '', _sn)  # 去"软件/app"统称
+            _sn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _sn).strip()
+            if _sn:
+                try:
+                    logger.info(f"[暮黎资源] 软件意图拦截: '{raw_text}' → search_software('{_sn}')")
+                    _ret = await self.llm_search_software(event, _sn)
+                    if _ret and not _ret.startswith("[已发送"):
+                        await event.send(MessageChain([Plain(_ret)]))
+                    event.stop_event()
+                    return
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 软件意图拦截失败: {e}")
+                    await event.send(MessageChain([Plain(f"【暮黎资源】 软件搜索出错：{str(e)[:120]}")]))
                     event.stop_event()
                     return
 
@@ -496,76 +560,10 @@ class MuliyResourcesPlugin(Star):
         if any(k in text for k in _non_search_intent):
             return
 
-        instruction = '''
-
-【暮黎资源 — 工具调用规则（务必严格遵守）】
-
-■ 你的工作模式
-你是一个资源检索助手。用户说"找资源/翻页/选资源/选网盘"时，**必须调用下方对应工具**，
-**严禁**自己编造资源列表、网盘名称或下载链接。**严禁**联网搜索。
-
-■ 你的回复格式（非常重要！用户最在意的两点）
-1. **每次回复搜索结果时**第一行必须写明「共 X 个 / 第 M/N 页」——告诉用户一共有多少结果、当前第几页、共几页
-2. **每次回复末尾**必须提示用户可以怎么操作，例如：
-   - 只有1页时：「回复数字选一个吧～😊」
-   - 多页时：「共10个资源，当前第1/2页哦～想要下一页就跟我说'下一页'😆」
-3. emoji、亲切语气都可以自由发挥，但**上述两个要点不可省略**
-
-■ 可用工具与触发场景
-| 用户输入                                | 你必须调用的工具                          | 参数填什么                          |
-|----------------------------------------|------------------------------------------|-------------------------------------|
-| "帮我找 XX"（不明确类型）                | search_resource                          | keyword=用户想找的名称（去掉"游戏""软件""影视"等统称） |
-| "找游戏 XX" / 游戏关键词（王者、原神）   | search_game                              | game_name=游戏名                    |
-| "找软件 XX" / 软件关键词（微信、wps）   | search_software                          | software_name=软件名                |
-| "找影视 XX" / "我想看 XX" / "观看 XX" / 影视名（庆余年、怪奇物语、黑袍、星际穿越）| search_movie | movie_name=影视名 |
-| "找小说 XX" / "搜小说 XX" / "我想看小说 XX" / "看小说 XX"（明确要搜/看小说）| search_novel | novel_name=小说名或作者名 |
-| "下一页" / "上一页" / "跳转 3"          | paginate_results                         | action=下一页/上一页/跳转3          |
-| 用户回复数字（1、2、3、第一个…）         | select_search_result                     | selection=数字或中文序数             |
-| 用户选网盘（百度网盘、夸克、1）         | select_download_link                     | selection=网盘名或数字              |
-
-■ ⚠️ 影视搜索优先（重要！）
-- 用户说"我想看XX""观看XX""找影视XX"或提到任何影视/剧/电影名 → **必须调 search_movie**，不要调 search_resource 或 web_search
-- 影视名示例：庆余年、怪奇物语、黑袍纠察队、星际穿越、流浪地球、庆余年第二季
-- 只有用户明确说"找游戏""找软件"或游戏/软件名时，才调 search_resource/search_game/search_software
-
-■ ⚠️ 影视工具的特殊说明
-- **影视**默认走教父.com 新站（需登录），搜索结果后用户选影视 → 选资源类型：
-  - **[1] 在线播放** → 选播放节点(1-N) → 系统合并转发(标题+封面+简介+播放链接)
-  - **[2] 网盘资源** → 选网盘(1-N，可翻页) → 系统合并转发(标题+封面+简介+网盘链接)
-- 旧站(a123tv)模式：选影视后自动判断电影/剧，剧先选集数再选线路
-- **严禁**对影视调用 `select_download_link`（影视有自己的流程，调用会被拒绝）
-- 用户选影视/资源类型/节点/网盘时，**只需调 select_search_result(selection=数字)**，系统自动走对应阶段
-
-■ ⚠️ 小说工具的特殊说明
-- **仅当用户明确要搜索/阅读/下载小说时**才调 search_novel（如"找小说XX""搜小说XX""我想看小说XX"）。
-- ⚠️ 介绍、宣传、公告、封面生成类话语里提到"小说"（如"新增小说搜索下载""本插件支持小说功能"）**不是小说搜索意图**，严禁调用 search_novel，也不要调其它 search_* 工具，直接按普通对话/画图处理。
-- 用户给出明确的书名或作者名且意图是"看/搜/下"时才算；纯宣传提到"小说"二字不算。
-- 小说名示例：斗破苍穹、我有一座冒险屋、诡秘之主、天蚕土豆（作者）
-- 小说流程：选小说(回复数字) → 选格式(TXT/EPUB/HTML/PDF，回复数字或"下载/确认"用默认 TXT) → 系统拉取文件流以**文件形式**直接发送（不走 localhost 链接、不依赖 WebUI 预览）
-- 用户选小说/格式时，**由 on_any_message 直接处理**（无需再调工具），系统自动走对应阶段
-
-■ ⚠️ 翻页规则（最容易踩坑）
-- 用户**首次**说"下一页/上一页" → **必须**调 paginate_results(action="下一页")
-- **绝对不要**在用户说翻页时重新调 search_*（资源列表已存在会话中）
-- 工具返回的就是下一页的完整数据（已带「共 X 个 / 第 M/N 页」），你可以**自由排版**（加 emoji、改格式都行）
-- **再次强调**：排版时第一行必须保留「共 X 个 第 M/N 页」信息
-
-■ 关键词清洗（重要）
-- 用户说"我想玩赛车游戏" → 传 game_name="赛车"（去掉"游戏"后缀）
-- 用户说"下载微信软件" → 传 software_name="微信"（去掉"软件"后缀）
-- 工具内部已自动清洗，但你也要保持传入简洁
-
-■ 选择规则
-- 用户说数字（1、2、3） → 调 select_search_result(selection="1")
-- 用户说"第一个/最后一个" → select_search_result(selection="第一个")
-- 用户说网盘名（百度网盘、夸克） → 调 select_download_link(selection="百度网盘")
-- 用户说数字（选了网盘后的 1、2、3） → 也调 select_download_link(selection="1")
-
-■ 绝对禁止
-1. 禁止编造任何资源标题、网盘名、下载链接
-2. 禁止在用户说翻页/选择时重搜（已经搜过了！）
-3. 禁止使用 markdown 表格（QQ 客户端会乱码）
-'''
+        instruction = """【暮黎资源】你是资源搜索助手。
+- 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
+- 搜索结果出来后，只需提醒用户：回复“序号”选择、说“下一页/上一页”翻页、选网盘回复“网盘名或序号”；这些由系统直接处理，严禁编造列表或链接。
+- 严禁使用 markdown 表格（QQ 会乱码）。"""
         req.system_prompt += "\n" + instruction
         logger.debug(f"[暮黎资源] LLM请求拦截，注入工具调用指令 text_len={len(text)}")
 
@@ -577,8 +575,8 @@ class MuliyResourcesPlugin(Star):
         清空 LLM 后续的"多嘴总结"文本，避免重复发送。
 
         触发条件：当前 session 上有 _llm_handled 标记
-        - search_software / search_game / paginate_results：插件直接 send 了格式化页面
-        - select_search_result / select_download_link：插件直接 send 了详情/网盘列表
+        - search_software / search_game / search_movie / search_novel：插件直接 send 了格式化页面
+        - select_* / 翻页 / 选网盘：由 on_any_message 纯规则处理，插件直接 send 详情/网盘列表
         → 清空 LLM 的二次总结
         """
         try:
@@ -891,186 +889,6 @@ class MuliyResourcesPlugin(Star):
 
     # ==================== LLM 工具（返回文本给LLM，不单独send） ====================
 
-    @filter.llm_tool(name="search_resource")
-    async def llm_search_resource(self, event: AstrMessageEvent, keyword: str):
-        """综合搜索游戏、软件与影视资源。当用户想找资源、且类型不明确时调用。
-
-        会同时搜索游戏库（xdgame.com / switch618.com）、软件库（x6d.com）与影视库
-        （教父.com 新站或 a123tv 旧站），结果分类型展示。
-        - 仅命中某一类型时，直接展示该类型完整列表（含翻页）。
-        - 同时命中多种类型时，先给出各类型前几条预览，用户回复「游戏」/「软件」/「影视」
-          即可查看对应类型的完整列表（含翻页）。
-        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
-        选择：用户说数字时，**必须调 select_search_result**。
-
-        Args:
-            keyword(string): 用户想找的资源名称（去掉了"游戏""软件""影视"等统称后缀）
-        """
-        keyword = clean_search_keyword(keyword)
-        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
-        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
-        if not allowed:
-            return f"【暮黎资源】⚠️ {reason}"
-        config = self._get_config()
-        fm = min(int(config.get("max_search_results", 32) if isinstance(config, dict) else 32), 48)
-        ps = 8
-        tag = "【暮黎资源】"
-
-        # 检查 xdgame Cookie 有效性
-        cookie_bad = await self._g_check_cookie()
-        if cookie_bad in ("expired", "invalid"):
-            logger.info(f"[暮黎资源] search_resource('{keyword}') → Cookie {cookie_bad}，跳过游戏搜索")
-            game_results = []
-        else:
-            # 并行搜索
-            try: game_results = await asyncio.to_thread(self._g_search, keyword, max(4, fm // 2))
-            except Exception: game_results = []
-        try: sw_results = await asyncio.to_thread(search_software, keyword, max(4, fm // 2))
-        except Exception: sw_results = []
-
-        has_game, has_sw = len(game_results) > 0, len(sw_results) > 0
-
-        # ===== 影视搜索（教父.com 新站优先，否则 a123tv 旧站）=====
-        cfg = self._get_config()
-        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == "a123tv"
-        mv_client = self._get_muliy_client() if not forced_a123 else None
-        mv_results, mv_new = [], False
-        try:
-            if mv_client:
-                mv_results = await asyncio.to_thread(mv_client.search, keyword, fm)
-                mv_new = True
-            else:
-                mv_results = await asyncio.to_thread(search_movies, keyword, fm)
-        except Exception as e:
-            logger.error(f"[暮黎资源] search_resource 影视搜索失败: {e}")
-            mv_results = []
-        has_mv = len(mv_results) > 0
-        logger.info(f"[暮黎资源] search_resource('{keyword}') → 游戏{len(game_results)} 软件{len(sw_results)} 影视{len(mv_results)}")
-
-        # Cookie 失效提示（仅影响游戏）
-        cookie_warn = ""
-        if not has_game and cookie_bad in ("expired", "invalid"):
-            cookie_warn = ("⚠️ 游戏资源 Cookie 未生效，无法搜索游戏。"
-                           + ("请联系管理员发送 /game_cookie_refresh 获取 Cookie"
-                              if self._game_source() == "switch618"
-                              else "请发送 /game_cookie_refresh 更新 Cookie")
-                           + "\n")
-
-        # —— 辅助：建立影视会话（供 select_search_result 路由）——
-        def _setup_movie_ses():
-            if mv_new:
-                self._movie_sessions_new.set(event, {"stage": "select_movie_new", "keyword": keyword,
-                    "results": mv_results, "page": 0, "page_size": ps, "_updated": time.time()})
-            else:
-                self._movie_sessions.set(event, {"stage": "select_movie", "keyword": keyword,
-                    "results": mv_results, "page": 0, "page_size": ps, "_updated": time.time()})
-
-        # 无游戏+无软件时重试（影视已搜过，不再重试）
-        if not has_game and not has_sw:
-            # 重试：若首次游戏失败是因为 cookie 过期就不再重试
-            if cookie_bad not in ("expired", "invalid"):
-                try: game_results = await asyncio.to_thread(self._g_search, keyword, fm)
-                except Exception: game_results = []
-            try: sw_results = await asyncio.to_thread(search_software, keyword, fm)
-            except Exception: sw_results = []
-            has_game, has_sw = len(game_results) > 0, len(sw_results) > 0
-
-        if not has_game and not has_sw and not has_mv:
-            return f"{tag} 未找到与「{keyword}」相关的游戏、软件或影视资源。请确认名称是否正确。"
-
-        # ===== 单一类型：直接 send 完整列表（不把资源列表回传给 LLM）=====
-        if has_mv and not has_game and not has_sw:
-            _setup_movie_ses()
-            t = len(mv_results); pt = (t + ps - 1) // ps
-            page_txt = (format_movie_list_new(mv_results, keyword, 0, ps)
-                        if mv_new else self._format_mv_page(self._movie_sessions.get(event)))
-            await event.send(MessageChain([Plain(
-                tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt)]))
-            if self._movie_sessions.get(event): self._movie_sessions.update(event, _llm_handled=True)
-            if mv_new and self._movie_sessions_new.get(event): self._movie_sessions_new.update(event, _llm_handled=True)
-            logger.info(f"[暮黎资源] → 影视命中{len(mv_results)}条 → 直接 send")
-            return f"[已发送给用户] 影视搜索结果共 {len(mv_results)} 个（已直接发送，含翻页与选择提示）。用户后续操作由 on_any_message 直接处理，无需 LLM 再调用工具。"
-
-        if has_game and not has_sw and not has_mv:
-            self._sessions.set(event, {"stage":"select_game","keyword":keyword,"results":game_results,
-                                        "page":0,"page_size":ps,"selected_index":-1,"game_detail":None,"selected_link":None})
-            t = len(game_results); pt = (t + ps - 1) // ps
-            await event.send(MessageChain([Plain(
-                tag + f" 🎮 游戏搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + self._format_game_page(self._sessions.get(event)))]))
-            self._sessions.update(event, _llm_handled=True)
-            logger.info(f"[暮黎资源] → 游戏命中{len(game_results)}条 → 直接 send")
-            return f"[已发送给用户] 游戏搜索结果共 {len(game_results)} 个（已直接发送，含翻页与选择提示）。用户后续操作由 on_any_message 直接处理，无需 LLM 再调用工具。"
-
-        if has_sw and not has_game and not has_mv:
-            self._search_sessions.set(event, {"stage":"select_software","keyword":keyword,"results":sw_results,
-                                               "page":0,"page_size":ps,"selected_index":-1,"detail":None,"selected_link":None})
-            t = len(sw_results); pt = (t + ps - 1) // ps
-            await event.send(MessageChain([Plain(
-                tag + f" 💿 软件搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + self._format_sw_page(self._search_sessions.get(event)))]))
-            self._search_sessions.update(event, _llm_handled=True)
-            logger.info(f"[暮黎资源] → 软件命中{len(sw_results)}条 → 直接 send")
-            return f"[已发送给用户] 软件搜索结果共 {len(sw_results)} 个（已直接发送，含翻页与选择提示）。用户后续操作由 on_any_message 直接处理，无需 LLM 再调用工具。"
-
-        # ===== 多类型组合：直接 send 预览，回复「游戏/软件/影视」路由（对应工具再发完整列表）=====
-        if has_game:
-            self._sessions.set(event, {"stage":"select_game","keyword":keyword,"results":game_results,
-                                        "page":0,"page_size":ps,"selected_index":-1,"game_detail":None,"selected_link":None})
-        if has_sw:
-            self._search_sessions.set(event, {"stage":"select_software","keyword":keyword,"results":sw_results,
-                                               "page":0,"page_size":ps,"selected_index":-1,"detail":None,"selected_link":None})
-        if has_mv:
-            _setup_movie_ses()
-
-        lines = [f"{tag} 🔍 「{keyword}」的综合搜索结果：\n"]
-        if cookie_warn:
-            lines.append(cookie_warn.strip() + "\n")
-
-        def _snip(items):
-            out = []
-            for i, x in enumerate(items[:4], 1):
-                title = x.get("title", "")
-                title = (title[:40] + "...") if len(title) > 43 else title
-                out.append(f"  {emoji_index(i)} {title}")
-            if len(items) > 4:
-                out.append(f"  ...还有{len(items) - 4}个（共{len(items)}个）")
-            return out
-
-        if has_game:
-            lines.append("🎮 【游戏结果】"); lines += _snip(game_results); lines.append("")
-        if has_sw:
-            lines.append("💿 【软件结果】"); lines += _snip(sw_results); lines.append("")
-        if has_mv:
-            lines.append("🎬 【影视结果】")
-            for i, m in enumerate(mv_results[:4], 1):
-                title = m.get("title", "")
-                title = (title[:30] + "...") if len(title) > 33 else title
-                extra = ""
-                if m.get("type"): extra += f" 【{m['type']}】"
-                if m.get("year"): extra += f"·{m['year']}"
-                if m.get("score"): extra += f" ⭐{m['score']}"
-                lines.append(f"  {emoji_index(i)} {title}{extra}")
-            if len(mv_results) > 4:
-                lines.append(f"  ...还有{len(mv_results) - 4}个（共{len(mv_results)}个影视）")
-            lines.append("")
-
-        nav = []
-        if has_game: nav.append("「游戏」")
-        if has_sw: nav.append("「软件」")
-        if has_mv: nav.append("「影视」")
-        lines.append(f"\n回复{nav}查看对应类型的完整列表（含翻页），回复0取消。{SESSION_TIMEOUT}秒超时。")
-        hints = []
-        if has_game: hints.append(f"回复「游戏」时调 search_game(game_name={keyword})")
-        if has_sw: hints.append(f"回复「软件」时调 search_software(software_name={keyword})")
-        if has_mv: hints.append(f"回复「影视」时调 search_movie(movie_name={keyword})")
-        lines.append(f"\n[系统提示] {'；'.join(hints)}。翻页调 paginate_results；数字选择调 select_search_result。已把预览直接发给用户，请勿再把列表回发给用户。")
-        logger.info(f"[暮黎资源] → 综合命中 游戏{len(game_results)} 软件{len(sw_results)} 影视{len(mv_results)} → 预览直接 send")
-        await event.send(MessageChain([Plain("\n".join(lines))]))
-        # 预览模式下标记 _llm_handled，避免 LLM 再复述列表
-        for _m in (self._sessions, self._search_sessions, self._movie_sessions, self._movie_sessions_new):
-            _s = _m.get(event)
-            if _s: _s["_llm_handled"] = True
-        return f"[已发送给用户] 综合搜索结果预览：游戏{len(game_results)}个、软件{len(sw_results)}个、影视{len(mv_results)}个（已直接发送预览）。用户回复「游戏/软件/影视」时请分别调 search_game/search_software/search_movie 获取完整列表，不要重搜、不要把列表再发给用户。"
-
     async def _handle_session_reply(self, event: AstrMessageEvent, is_sw_session: bool):
         """用 session_waiter 拦截数字/翻页回复，防止 AngelHeart 介入。"""
         text = event.message_str.strip()
@@ -1180,8 +998,7 @@ class MuliyResourcesPlugin(Star):
     async def llm_search_game(self, event: AstrMessageEvent, game_name: str):
         """专门搜索游戏资源。当用户明确说"找游戏"或游戏关键词时调用。
 
-        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
-        选择：用户说数字时，**必须调 select_search_result**。
+        翻页与选择由系统自动处理，用户回复「下一页/序号」即可，无需调用其它工具。
 
         Args:
             game_name(string): 游戏名称（已自动去掉"游戏"后缀）
@@ -1211,7 +1028,7 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 搜索失败：{str(e)[:100]}"
         if not results:
             logger.info(f"[暮黎资源] search_game('{game_name}') → 0条")
-            return f"{tag} 未找到与「{game_name}」相关的游戏。请尝试 search_resource 综合搜索。"
+            return f"{tag} 未找到与「{game_name}」相关的游戏。请换个更精确的关键词再试。"
         # 防覆盖：已有同关键词会话则复用
         existing = self._sessions.get(event)
         if existing and existing.get("keyword") == game_name:
@@ -1233,8 +1050,7 @@ class MuliyResourcesPlugin(Star):
     async def llm_search_software(self, event: AstrMessageEvent, software_name: str):
         """专门搜索软件资源。当用户明确说"找软件"或软件关键词时调用。
 
-        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
-        选择：用户说数字时，**必须调 select_search_result**。
+        翻页与选择由系统自动处理，用户回复「下一页/序号」即可，无需调用其它工具。
 
         Args:
             software_name(string): 软件名称（已自动去掉"软件""应用"后缀）
@@ -1251,7 +1067,7 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 搜索失败：{str(e)[:100]}"
         if not results:
             logger.info(f"[暮黎资源] search_software('{software_name}') → 0条")
-            return f"{tag} 未找到与「{software_name}」相关的资源。请尝试 search_resource 综合搜索。"
+            return f"{tag} 未找到与「{software_name}」相关的资源。请换个更精确的关键词再试。"
         existing = self._search_sessions.get(event)
         if existing and existing.get("keyword") == software_name:
             logger.info(f"[暮黎资源] search_software('{software_name}') → 复用已有会话")
@@ -1270,23 +1086,11 @@ class MuliyResourcesPlugin(Star):
 
     @filter.llm_tool(name="search_movie")
     async def llm_search_movie(self, event: AstrMessageEvent, movie_name: str):
-        """专门搜索影视资源。当用户说"找影视/我想看/观看/看电影"或提到影视名时调用。
-
-        默认走教父.com 新站（需登录，含在线播放+网盘双模式）；可在插件配置 movie_source
-        切换为 a123tv（旧站，仅在线播放线路）。
-
-        流程（新站）：
-        1. 搜索 → 列出结果（【类型·年份·评分】），让用户选序号
-        2. 用户选影视 → 获取详情+资源 → 询问选 [1]在线播放 / [2]网盘资源
-        3. 在线播放 → 列出节点 → 选节点 → 合并转发（标题+封面+简介+播放链接）
-           网盘资源 → 列出网盘（分页）→ 选网盘 → 合并转发（标题+封面+简介+网盘链接）
-
-        返回列表格式：每行 `[N] 影视名  【类型·年份】 ⭐评分`
-        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
-        选择：用户说数字时，由 on_any_message / select_search_result 直接处理（无需再调工具）。
-
+        """搜索影视资源。用户说"找影视/看电影/我想看/影视名"时调用。
+        流程：搜索→选序号→获取详情→选[1]在线播放/[2]网盘资源，后续交互由系统自动处理。
+        源自动切换：配了教父.com账号走新站（在线+网盘），否则回退 a123tv（仅在线）。
         Args:
-            movie_name(string): 影视名称（如"怪物"、"庆余年"、"星际穿越"）
+            movie_name(string): 影视名称（如"怪物"、"庆余年"）
         """
         # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
         allowed, reason, _ = await self._audit_search_keyword(event, movie_name)
@@ -1340,21 +1144,11 @@ class MuliyResourcesPlugin(Star):
 
     @filter.llm_tool(name="search_novel")
     async def llm_search_novel(self, event: AstrMessageEvent, novel_name: str):
-        """专门搜索小说资源（so-novel 多源聚合）。**仅当用户明确要搜索/阅读/下载小说时**调用
-        （如"找小说XX""搜小说XX""我想看小说XX""看小说XX""读小说XX"）。
-        ⚠️ 介绍、宣传、公告、封面生成类话语里提到"小说"（如"新增小说搜索下载"）不算小说搜索，不要调用本工具。
-
-        流程：
-        1. 搜索 → 列出结果（每行：序号 + 书名 ；下一行：作者 ；再下一行：书源），
-           让用户选序号
-        2. 用户选小说 → 询问下载格式（TXT/EPUB/HTML/PDF）→ 插件拉取文件流以文件形式发送
-
-        返回列表格式：每条 `[N] 书名` / `  👤 作者` / `  🏷️ 书源：xxx`
-        翻页：用户说"下一页/上一页/跳转N"时，**必须调 paginate_results**。
-        选择：用户说数字时，由 on_any_message / select_search_result 直接处理（无需再调工具）。
-
+        """搜索小说（so-novel 多源聚合）。仅当用户明确要搜索/阅读/下载小说时调用
+        （如"找小说XX""看小说XX""读小说XX"）。介绍/公告类提到"小说"不算搜索，不要调用。
+        流程：搜索→选序号→选格式(TXT/EPUB/HTML/PDF)→以文件形式发送，后续交互由系统处理。
         Args:
-            novel_name(string): 小说名称或作者名（如"斗破苍穹"、"我有一座冒险屋"、"天蚕土豆"）
+            novel_name(string): 书名或作者名（如"斗破苍穹"、"天蚕土豆"）
         """
         # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
         allowed, reason, _ = await self._audit_search_keyword(event, novel_name)
@@ -1649,7 +1443,6 @@ class MuliyResourcesPlugin(Star):
         client._relogin_on_fail()
         return await asyncio.to_thread(client.get_play_m3u8, node_i, ep)
 
-    @filter.llm_tool(name="paginate_results")
     async def llm_paginate_results(self, event: AstrMessageEvent, action: str):
         """翻页工具。用户说"下一页"/"上一页"/"跳转N"时**必须**调用此工具。
 
@@ -1762,9 +1555,8 @@ class MuliyResourcesPlugin(Star):
             logger.info(f"[暮黎资源] 翻页 新站影视 第{cur+1}→{new_page+1}页")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页。用户后续操作由 on_any_message 处理。"
 
-        return f"{tag} 当前没有活跃的搜索结果会话，无法翻页。请先调 search_resource / search_game / search_software / search_movie 搜索。"
+        return f"{tag} 当前没有活跃的搜索结果会话，无法翻页。请先调 search_game / search_software / search_movie 搜索。"
 
-    @filter.llm_tool(name="select_search_result")
     async def llm_select_search_result(self, event: AstrMessageEvent, selection: str):
         """用户选择搜索结果后调用，获取资源详情和下载链接。
 
@@ -1902,7 +1694,7 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 已发送{len(links)}个下载链接给用户。请等待用户回复数字或网盘名，**不要**自行调用 select_download_link。"
 
         logger.warning(f"[暮黎资源] select_search_result({number}) → 无活跃会话")
-        return f"{tag} 当前没有活跃的搜索结果。请先使用 search_resource 搜索，或回复0取消。"
+        return f"{tag} 当前没有活跃的搜索结果。请先使用 search_game / search_software / search_movie 搜索，或回复0取消。"
 
     @filter.llm_tool(name="select_download_link")
     async def llm_select_download_link(self, event: AstrMessageEvent, selection: str):
@@ -3823,6 +3615,7 @@ class MuliyResourcesPlugin(Star):
         # 1) 有待选会话：把本条消息当作「接口选择」
         if umo in self._vip_pending:
             event.stop_event()
+            p = self._vip_pending.get(umo)
             sel = text.strip()
             if re.fullmatch(r"\d{1,2}", sel):
                 await self._handle_vip_selection(event, umo, int(sel))
@@ -3830,7 +3623,11 @@ class MuliyResourcesPlugin(Star):
                 self._vip_pending.pop(umo, None)
                 await event.send(MessageChain([Plain("已取消 VIP 解析。")]))
             else:
-                await event.send(MessageChain([Plain("请回复要使用的解析接口序号（1-N），或发送 /cancel 取消。")]))
+                # 超时自动取消；超时前忽略非序号消息，不再强硬反复催促用户
+                if time.time() - (p or {}).get("ts", 0) > 300:
+                    self._vip_pending.pop(umo, None)
+                    await event.send(MessageChain([Plain(
+                        "⏰ VIP 解析等待超时，已自动取消。如需解析请重新发送视频链接。")]))
             return
 
         # 2) 新链接：先尝试 message_str，再遍历消息组件（QQ 分享卡片 ComponentType.Json 的 message_str 为空）
@@ -3990,6 +3787,11 @@ class MuliyResourcesPlugin(Star):
             "resolved": True,
             "ts": time.time(),
         }
+        # 启动后台超时自动取消（用户不回复时将主动取消并提示，无需反复催促）
+        try:
+            asyncio.create_task(self._vip_timeout_cancel(umo, self._vip_pending[umo]["ts"]))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[VIP] 启动超时取消任务失败: {e}")
 
         # 组装菜单 — 仅标题 + 操作提示 + 接口列表
         title_disp = title or "（未获取到标题）"
@@ -4055,6 +3857,25 @@ class MuliyResourcesPlugin(Star):
             return title, desc, cover
         except Exception:
             return "", "", ""
+
+    async def _vip_timeout_cancel(self, umo: str, ts: float):
+        """VIP 选源超时自动取消（后台任务）。
+
+        菜单展示后由 _handle_vip_link 启动；到时若用户仍未选择（且非新一轮解析），
+        自动清除会话并通过 context 主动告知用户，避免反复催促。
+        """
+        try:
+            await asyncio.sleep(300)
+        except Exception:
+            return
+        p = self._vip_pending.get(umo)
+        if p and p.get("ts") == ts:
+            self._vip_pending.pop(umo, None)
+            try:
+                await self.context.send_message(umo, MessageChain([Plain(
+                    "⏰ VIP 解析等待超时，已自动取消。如需解析请重新发送视频链接。")]))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[VIP] 超时取消通知发送失败: {e}")
 
     async def _handle_vip_selection(self, event, umo: str, idx: int):
         """用户选了第 idx 个接口 → 校验 → 发送聊天记录格式结果。"""

@@ -1,5 +1,39 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.0 — 2026-07-26
+
+### ✨ 新增：游戏 / 软件搜索意图拦截（自然语言直接路由单类型工具）
+
+- **背景**：此前"找游戏/找软件"等明确意图也要等 LLM 选工具（`search_resource` 综合搜索）再分发，既多耗 token 又易误判类型。
+- **改动**（`main.py` `on_llm_request`）：
+  - 新增**游戏意图拦截** `_game_intent_kws`（找游戏/搜游戏/下载游戏/想玩/来个游戏/游戏推荐…）：命中即直接调 `search_game`，自动清旧会话、清洗关键词（去「我想玩/帮我找/游戏」等前缀与量词）后调用，失败兜底发送并 `stop_event`。
+  - 新增**软件意图拦截** `_sw_intent_kws`（找软件/搜软件/下载软件/app下载/软件推荐…）：命中即直接调 `search_software`，逻辑同上。
+  - 影视 / 小说意图拦截此前已存在，至此四类资源均可在 LLM 选工具前被短路，省 token 且避免误判。
+
+### 🗑️ 移除：`search_resource` 综合搜索工具
+
+- **背景**：`search_resource` 同时跨库搜游戏 + 软件 + 影视再合并列表，LLM 在类型不确定时优先调它导致结果发散、体验差。
+- **改动**（`main.py`）：删除 `@filter.llm_tool(name="search_resource")` 的 `llm_search_resource`（约 186 行）及其在 `search_game`/`search_software` 未找到时的「请尝试综合搜索」回退文案；LLM 指令改为「类型不确定时按最可能的一个调用，**不要做综合搜索**」。
+- **影响**：自然语言「帮我找 XX（类型不明）」不再走综合搜索，而是经意图拦截 / LLM 选最可能的一种单类型工具。
+
+### 🔧 精简：LLM 工具调用指令（去掉冗长带表格规则）
+
+- 原 `instruction` 是一大段含 markdown 表格的详细规则（易在 QQ 客户端乱码），现压缩为 3 行极简提示：清洗前缀关键词 → 按类型选 `search_game`/`search_software`/`search_movie`/`search_novel` → 提醒用户回复序号/翻页/网盘名即可（严禁编造、严禁 markdown 表格）。`_strip_llm_chitchat_after_tool` 注释同步更新工具清单。
+
+### ✨ 优化：下载链接提取大幅增强（覆盖更多网盘 + 更鲁棒）
+
+- **`core/constants.py`**：
+  - 新增 `GAME_PAN_LINK_PATTERNS`：各网盘「分享链接」精确正则，强制要求 `/s/`、`/share/` 等分享路径，避免误命中 `aliyundrive.com/static/logo.png` 等静态资源；兼容 `www./share./m.` 子域与 123 网盘多真实域名（`123pan.com/.cn`/`123865.com`/`123912.com`/`123684.com`）。
+  - `GAME_PAN_DOMAINS` 扩展：`alipan.com`、`yun.139.com`，并补全 123 网盘全部域名。
+- **`core/game.py` `resolve_download_link`**：
+  - 兼容 `api_url` 已是**绝对 / 协议相对外链**（如 123 网盘 `data-url` 直接为 `https://share.123pan.cn/...`），不再一律拼 `GAME_BASE_URL` 前缀（旧逻辑会拼出非法地址导致获取失败）。
+  - 页面文本改用 `GAME_PAN_LINK_PATTERNS` 精确提取分享链接（替代旧的单行宽松正则）。
+  - 新增 **meta refresh / JS `window.location` 前端跳转**兜底（部分网盘用前端跳转而非 302）。
+  - 新增「123网盘未匹配到链接」诊断日志（dump 页面片段），便于回查真实格式。
+  - 提取码识别新增：**移动网盘（139.com）**、**阿里云盘（aliyundrive.com/alipan.com）**、**123 网盘多域名**的访问码 / 提取码。
+- **`core/switch618.py`**：`_pan_name` 同步识别 `alipan.com`→阿里网盘、`caiyun`/`139.com`→移动网盘、123865/912/684→123网盘；`_resolve_dl_all` 域名清单同步扩展。
+- **文档**：README 版本徽章 → 1.12.0；功能一览「统一搜索」改为「自然语言搜索（意图拦截）」；LLM 工具链移除 `search_resource` 行、交互示例改用意图拦截 → `search_game`。
+
 ## v1.11.0 — 2026-07-18
 
 ### ✨ 新增：so-novel 小说搜索与下载（多源聚合）

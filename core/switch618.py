@@ -271,9 +271,10 @@ def _pan_name(href: str) -> str:
     if "pan.baidu.com" in h: return "百度网盘"
     if "pan.xunlei.com" in h: return "迅雷网盘"
     if "cloud.189" in h: return "天翼网盘"
-    if "123pan" in h or "share.123pan" in h: return "123网盘"
+    if any(d in h for d in ("123pan.com", "123pan.cn", "123865.com", "123912.com", "123684.com")): return "123网盘"
     if "lanzou" in h: return "蓝奏网盘"
-    if "aliyun" in h or "aliyundrive" in h: return "阿里网盘"
+    if "aliyun" in h or "aliyundrive" in h or "alipan" in h: return "阿里网盘"
+    if "caiyun" in h or "139.com" in h: return "移动网盘"
     if "ed2k://" in h: return "其他"
     if "magnet:" in h: return "磁力下载"
     return "其他"
@@ -295,8 +296,8 @@ def _resolve_dl_all(session, dl_url: str, referer: str) -> list:
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if any(d in href for d in ["pan.quark.cn", "pan.baidu.com", "pan.xunlei.com",
-                                       "cloud.189", "123pan", "lanzou", "aliyundrive",
-                                       "caiyun", "uc.cn", "drive.uc"]):
+                                       "cloud.189", "123pan", "123865.com", "123912.com", "123684.com", "lanzou", "aliyundrive", "alipan",
+                                       "caiyun", "yun.139.com", "uc.cn", "drive.uc"]):
                 if href in seen:
                     continue
                 seen.add(href)
