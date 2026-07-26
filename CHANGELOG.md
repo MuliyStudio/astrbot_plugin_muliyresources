@@ -34,6 +34,17 @@
 - **`core/switch618.py`**：`_pan_name` 同步识别 `alipan.com`→阿里网盘、`caiyun`/`139.com`→移动网盘、123865/912/684→123网盘；`_resolve_dl_all` 域名清单同步扩展。
 - **文档**：README 版本徽章 → 1.12.0；功能一览「统一搜索」改为「自然语言搜索（意图拦截）」；LLM 工具链移除 `search_resource` 行、交互示例改用意图拦截 → `search_game`。
 
+### ✨ 新增：网易云请求代理支持（wyy_proxy）+ 扫码登录风控规避
+
+- **背景**：部分部署环境（数据中心 IP）调用网易云 `/api/register/anonimous` 匿名注册接口被风控返回 `code=400`，导致 `/wyy_login` 扫码登录拿不到 `MUSIC_A`、无法生成二维码；同时该类出口 IP 在解析 VIP 歌曲 / 下载音频 CDN 时也可能被拦截（静默失败）。
+- **新增 `wyy_proxy` 配置项**（「网易云音乐」分组）：填 `http://user:pass@host:port` 或 `socks5://host:port` 后，网易云**全部请求**（`/wyy` 歌曲解析、`/wyy_login` 扫码登录、音频下载）均走该代理出口，绕开原 IP 风控。
+- **`core/netease.py`**：
+  - 新增全局代理机制 `_WYY_PROXY` / `set_wyy_proxy()` / `_get_wyy_proxy()`；`_weapi_post` / `_api_post` / `_get_json` / `download_mp3` 在 aiohttp 下走 `proxy=`、urllib 下走 `ProxyHandler`，统一支持 HTTP / SOCKS 代理。
+  - 请求 UA 统一为网易云 App 同款 Android Mobile UA（`SM-G960U Chrome/83`），更贴近真实设备环境、降低被风控概率。
+  - `NeteaseParser.__init__` 自动读取 `wyy_proxy` 配置并设置代理。
+- **扫码登录稳定性增强**：`qr_login_key_direct` 各失败点改用 `logger.error` 打印完整堆栈与响应 body（匿名注册 400、unikey 异常等不再被静默吞掉）；`/wyy_login` 失败提示改为引导查看 AstrBot 日志页 / `docker logs` 的「[网易云扫码]」错误详情，便于秒定位。
+- **文档**：README 配置表新增 `wyy_proxy` 行；「网易云扫码登录」说明更新为「内置直连，无需任何外部服务」（默认走 direct 模式，仅显式配置 custom 后端 + `wyy_custom_url` 才回退自建实例）。
+
 ## v1.11.0 — 2026-07-18
 
 ### ✨ 新增：so-novel 小说搜索与下载（多源聚合）

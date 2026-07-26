@@ -116,6 +116,7 @@ from .core.netease import (
     looks_like_netease, resolve_shortlink, download_mp3,
     normalize_api_base, qr_login_key, qr_login_create, qr_login_check,
     qrimg_to_bytes, extract_music_cookie, get_login_nickname,
+    qr_login_key_direct, qr_login_check_direct, build_qr_url, qr_url_to_png,
 )
 from .core.audio_clip import ffmpeg_available, get_duration_seconds, compute_clip_range, cut_clip
 from .core.vip_capture import (
@@ -216,8 +217,8 @@ _CONF_GROUPS = {
         "muliy_cookie",
     ],
     "music": [
-        "wyy_auto_parse", "wyy_music_type", "wyy_custom_url",
-        "wyy_clip_seconds", "wyy_audio_format", "wyy_cookie",
+        "wyy_auto_parse", "wyy_backend", "wyy_music_type", "wyy_custom_url",
+        "wyy_clip_seconds", "wyy_audio_format", "wyy_cookie", "wyy_proxy",
     ],
     "vip_video": ["video_vip_parse", "video_vip_timeout"],
     "browser": ["browser_channel", "browser_exe"],
@@ -4013,15 +4014,49 @@ class MuliyResourcesPlugin(Star):
             pass
 
         cfg = self._get_config()
+        backend = (cfg.get("wyy_backend") or "direct").strip().lower()
+        # 直接走「内置直连」扫码（零部署，无需 NeteaseCloudMusicApi）。
+        # 仅当用户显式配置 custom 后端且填了 wyy_custom_url 时，才回退到自建实例。
+        if backend == "custom" and (cfg.get("wyy_custom_url") or "").strip():
+            await self._wyy_login_custom(event, cfg)
+            return
+
+        await event.send(MessageChain([Plain("🔳 正在生成网易云登录二维码（内置直连，无需任何外部服务）…")]))
+        unikey, device_id, music_a, csrf = await qr_login_key_direct()
+        if not unikey:
+            await event.send(MessageChain([Plain(
+                "❌ 获取登录二维码失败。请查看 AstrBot 日志页 / docker logs 中的「[网易云扫码]」错误详情，"
+                "常见原因：服务器无法访问 music.163.com、缺少 pycryptodome、或被网易云风控拦截。")]))
+            return
+        qr_url = build_qr_url(unikey)
+        img_bytes = qr_url_to_png(qr_url)
+        if img_bytes:
+            import os as _os
+            import tempfile as _tempfile
+            _qr_path = _os.path.join(_tempfile.gettempdir(), f"muliy_wyy_qr_{abs(hash(unikey))}.png")
+            with open(_qr_path, "wb") as _f:
+                _f.write(img_bytes)
+            await event.send(MessageChain([
+                Plain("📷 请用「网易云 App」扫描上方二维码登录：\n"),
+                ImageComponent(file=_qr_path),
+                Plain("⏳ 等待扫码确认（2 分钟内有效，登录成功后自动写入会员 Cookie）。"),
+            ]))
+        else:
+            await event.send(MessageChain([Plain(
+                f"📷 请使用网易云 App 扫码登录（二维码链接）：\n{qr_url}\n"
+                f"⏳ 等待扫码确认（2 分钟内有效）。")]))
+        # 后台轮询，不阻塞命令返回（透传匿名设备会话保持 unikey↔check 一致）
+        asyncio.create_task(self._wyy_login_poll(event, "direct", unikey, device_id=device_id, music_a=music_a, csrf=csrf))
+
+    async def _wyy_login_custom(self, event: AstrMessageEvent, cfg: dict):
+        """custom 后端：沿用自建 NeteaseCloudMusicApi 的扫码接口（兼容旧部署）。"""
         base = normalize_api_base(cfg.get("wyy_custom_url") or "")
         if not base:
             await event.send(MessageChain([Plain(
                 "❌ 未配置 wyy_custom_url（自建 NeteaseCloudMusicApi 实例地址）。\n"
-                "请先在插件配置填写 wyy_custom_url，并确保该实例已运行。\n"
-                "部署见插件 tools/netease-api/ 目录。")]))
+                "请先在插件配置填写 wyy_custom_url，并确保该实例已运行。")]))
             return
-
-        await event.send(MessageChain([Plain("🔳 正在获取网易云登录二维码，请稍候…")]))
+        await event.send(MessageChain([Plain("🔳 正在获取网易云登录二维码（自建实例）…")]))
         key = await qr_login_key(base)
         if not key:
             await event.send(MessageChain([Plain(
@@ -4032,7 +4067,6 @@ class MuliyResourcesPlugin(Star):
             await event.send(MessageChain([Plain(
                 "❌ 生成登录二维码失败，请确认实例 /login/qr/create 接口可用。")]))
             return
-
         img_bytes = qrimg_to_bytes(created.get("qrimg"))
         if img_bytes:
             import os as _os
@@ -4044,18 +4078,19 @@ class MuliyResourcesPlugin(Star):
         else:
             qrurl = created.get("qrurl") or ""
             await event.send(MessageChain([Plain(f"📷 请使用网易云 App 扫码登录（二维码链接）：\n{qrurl}")]))
-
         await event.send(MessageChain([Plain("⏳ 已发送二维码，等待扫码…（2 分钟内有效，扫码后自动写入 Cookie）")]))
-        # 后台轮询，不阻塞命令返回
-        asyncio.create_task(self._wyy_login_poll(event, base, key))
+        asyncio.create_task(self._wyy_login_poll(event, "custom", key, base))
 
-    async def _wyy_login_poll(self, event: AstrMessageEvent, base: str, key: str):
+    async def _wyy_login_poll(self, event: AstrMessageEvent, mode: str, key: str, base: str = "", cookie: str = "", device_id: str = "", music_a: str = "", csrf: str = ""):
         """后台轮询扫码状态，code=803 时提取会员 Cookie 写入 wyy_cookie。"""
         last_tip = ""
         for _ in range(60):  # 60 * 2s = 120s
             await asyncio.sleep(2)
             try:
-                r = await qr_login_check(base, key)
+                if mode == "direct":
+                    r = await qr_login_check_direct(key, device_id=device_id, music_a=music_a, csrf=csrf)
+                else:
+                    r = await qr_login_check(base, key)
             except Exception as e:
                 logger.warning(f"[网易云扫码] 轮询异常: {e}")
                 continue
@@ -4071,12 +4106,13 @@ class MuliyResourcesPlugin(Star):
                 cookie = r.get("cookie") or ""
                 music_cookie = extract_music_cookie(cookie)
                 if not music_cookie:
-                    await event.send(MessageChain([Plain("⚠️ 扫码成功但未提取到会员 Cookie，请检查实例返回。")]))
+                    await event.send(MessageChain([Plain("⚠️ 扫码成功但未提取到会员 Cookie，请检查账号状态。")]))
                     return
                 await self._update_config("wyy_cookie", music_cookie)
                 nick = ""
                 try:
-                    nick = await get_login_nickname(base, music_cookie)
+                    if mode == "custom":
+                        nick = await get_login_nickname(base, music_cookie)
                 except Exception:
                     pass
                 msg = "✅ 网易云登录成功！会员 Cookie 已自动写入 wyy_cookie"
@@ -4105,19 +4141,31 @@ class MuliyResourcesPlugin(Star):
             await event.send(MessageChain([Plain(
                 f"❌ 网易云解析失败（歌曲ID {song_id}）。\n"
                 f"原因：{reason}\n\n"
-                f"请确认已在插件配置中填写 wyy_custom_url（自建 NeteaseCloudMusicApi 实例地址），\n"
-                f"部署见插件 tools/netease-api/docker-compose.yml。")]))
+                f"内置直连模式（默认）无需任何外部服务；若仍失败，可在插件配置填黑胶会员 Cookie（wyy_cookie），\n"
+                f"或发送 /wyy_login 用网易云 App 扫码登录后重试。")]))
             return
 
         tmp_mp3 = None
         clip_path = None
+        wyy_cookie = (cfg.get("wyy_cookie") or "").strip()
         try:
-            # 下载
+            # 下载（携带会员 Cookie 时部分 CDN 节点更稳；免费歌一般无需）
             try:
-                tmp_mp3 = await download_mp3(info["url"])
+                tmp_mp3 = await download_mp3(info["url"], cookie=wyy_cookie)
             except Exception as e:
                 logger.warning(f"[网易云] 下载失败: {e}")
-                await event.send(MessageChain([Plain(f"❌ 音频下载失败：{str(e)[:120]}")]))
+                # 服务器 IP 被网易云音频 CDN 按数据中心封禁时会 403（与公共解析站被封同源）。
+                # 此时无法在服务器端下载音频，降级为「歌曲名片 + 播放链接」，用户点开即可听。
+                play_url = f"https://music.163.com/song?id={song_id}"
+                fallback = (
+                    f"🎵 《{info['name']}》\n👤 {info['artist']}"
+                    + (f"\n💽 {info['album']}" if info.get('album') else "")
+                    + f"\n\n🔗 播放链接（点开即可在网易云收听）：\n{play_url}\n\n"
+                    f"⚠️ 服务器下载音频失败：{str(e)[:80]}\n"
+                    f"💡 这是网易云对云服务器 IP 的 CDN 限制，非插件问题。\n"
+                    f"   想直接发语音，可把插件部署在本地/家宽网络，或更换未被封锁的出口 IP。"
+                )
+                await event.send(MessageChain([Plain(fallback)]))
                 return
 
             # 剪辑为「不超过最大时长的语音」（从开头取 min(歌曲时长, 上限)）

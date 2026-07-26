@@ -1,3 +1,6 @@
 playwright
 pillow
+pycryptodome
+qrcode
 # 部署后执行：playwright install chromium
+

@@ -37,7 +37,7 @@
 | 🎬 | **影视日报** | 每日定时抓取影视站主页「最近更新」的电影/剧集/动漫，取名称/封面/状态/简介，排版成毛玻璃简约风格 HTML 后渲染为图片、**以文件形式推送到群聊**；配置了 `muliy_cookie` 走教父.com 新站，未配置自动回退 a123tv 旧站（免登录也能出日报） |
 | 🔐 | **Cookie 刷新** | 纯 HTTP 自动登录 xdgame，零浏览器依赖 |
 | 🎵 | **网易云语音名片** | 发送网易云链接 / 小程序分享，自动解析为 mp3 并以 QQ 语音发送（时长 = min(歌曲时长, 最大发送歌曲时长)，不满上限则整曲） |
-| 🎵 | **网易云扫码登录** | 管理员发送 `/wyy_login` 获取登录二维码，网易云 App 扫码确认后自动提取会员 Cookie 写入 `wyy_cookie`（需 `wyy_custom_url` 后端在线） |
+| 🎵 | **网易云扫码登录** | 管理员发送 `/wyy_login` 获取登录二维码，网易云 App 扫码确认后自动提取会员 Cookie 写入 `wyy_cookie`（内置直连 music.163.com，无需任何外部服务；仅显式配置 custom 后端 + `wyy_custom_url` 时才回退自建实例） |
 | 🎞️ | **VIP 视频解析（交互式选接口）** | 仅支持爱奇艺/腾讯视频/优酷/芒果TV 四大平台 VIP 视频链接解析（其余平台链接不再识别） |
 | 🤚 | **娱乐功能** | 发送 `摸摸 @某人`，自动生成并发送摸头 GIF 动图（圆形头像） <br> 发送 `给你一脚 @某人`，生成「马踢舔狗」GIF，被@成员为舔狗、发送者为踢人者（头像优先） <br> 发送 `给我按摩 @某人`，生成柴犬按摩 GIF，被@成员为被按摩者、发送者为按摩者（头像优先） |
 
@@ -93,6 +93,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `wyy_music_type` | string | `standard` | 解析音质（传递给自建 NeteaseCloudMusicApi 的 `/song/url?level=`）：`standard` / `exhigh` / `lossless` / `hires` / `jyeffect` / `sky` / `jymaster` |
 | `wyy_custom_url` | string | `""` | **网易云解析后端地址（自建 NeteaseCloudMusicApi 实例地址，唯一后端）**。推荐填基础地址如 `http://127.0.0.1:3000`（自动取歌名/歌手）；也可填 `{id}` 模板。留空则网易云语音名片功能不可用 |
 | `wyy_cookie` | string | `""` | 黑胶会员 Cookie（用于解析 **VIP/付费歌曲**）。留空仅能解析免费歌；填黑胶会员账号 Cookie 整串（含 `MUSIC_U` 与 `__csrf`）即可解析 VIP 歌曲（`standard`/`exhigh`/`lossless` 需黑胶会员，`sky`/`jymaster` 需超级会员）。⚠️ 敏感凭证，建议用专用会员小号，勿外泄 |
+| `wyy_proxy` | string | `""` | 网易云请求代理（可选）。服务器 IP 被网易云风控（扫码匿名注册返回 400 / 解析报 403 / 音频 CDN 下载被拦）时，填代理换出口 IP 即可：支持 `http://user:pass@host:port` 或 `socks5://host:port`（aiohttp 下用 SOCKS 需另装 `aiohttp-socks`）。填后 `/wyy` 解析、`/wyy_login` 扫码、音频下载均走该代理 |
 | `wyy_clip_seconds` | int | `600` | 最大发送歌曲时长（秒，默认 600 = 10 分钟）。实际发送语音时长 = min(歌曲时长, 该值)：设 120 则最长发前 120 秒；设 600 则不满 10 分钟的歌整曲发送 |
 | `wyy_clip_start_ratio` | float | `0.33` | **（已废弃，v1.9.4 起不再生效）** 原用于指定高潮片段起点，现固定从歌曲开头发送、时长不超过 `wyy_clip_seconds` 上限 |
 | `wyy_audio_format` | string | `mp3` | 语音格式：`mp3`（QQ 兼容性好）或 `wav` |

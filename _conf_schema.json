@@ -194,17 +194,23 @@
         "default": true,
         "hint": "自动识别消息中的网易云链接/小程序分享并发送语音（默认开）"
       },
+      "wyy_backend": {
+        "type": "string",
+        "description": "解析后端模式",
+        "default": "direct",
+        "hint": "direct（默认，推荐）：插件内置直连网易云，零部署、无需任何外部服务，免费歌填好即可用；\n扫码登录也走内置接口——发送 /wyy_login 用网易云 App 扫码，会员 Cookie 自动写入 wyy_cookie，无需部署 NeteaseCloudMusicApi。\ncustom：仅当你已自建 NeteaseCloudMusicApi 实例并填了 wyy_custom_url 时保留使用（兼容旧部署）。\n⚠️ 网易云音频 CDN 会封锁云服务器 IP，服务器端下载音频可能 403；此时插件自动降级为发送「歌曲名片 + 播放链接」，把插件部署在家宽/本地网络可恢复正常发语音。"
+      },
       "wyy_music_type": {
         "type": "string",
         "description": "解析音质",
         "default": "standard",
-        "hint": "传递给自建 NeteaseCloudMusicApi 的音质类型如下\nstandard/exhigh/lossless/hires/jyeffect/sky/jymaster部分音质需 VIP\n普通语音片段用 standard 即可"
+        "hint": "direct 模式作为请求网易云的 level 音质参数（custom 模式同样传递）\nstandard/exhigh/lossless/hires/jyeffect/sky/jymaster\n部分音质需 VIP（VIP 歌曲需先在 wyy_cookie 填会员 Cookie 或 /wyy_login 扫码）\n普通语音片段用 standard 即可"
       },
       "wyy_custom_url": {
         "type": "string",
-        "description": "网易云解析后端地址",
+        "description": "自建 NeteaseCloudMusicApi 地址（仅 custom 后端需要）",
         "default": "",
-        "hint": "自建 NeteaseCloudMusicApi 实例地址，唯一后端。\n推荐填「基础地址」如 http://127.0.0.1:3000（插件自动调用 /song/url + /song/detail，名片信息完整）；也可填含 {id} 的直链模板如 http://127.0.0.1:3000/song/url?id={id}（仅直链，歌名可能缺失）。\n部署见 tools/netease-api/docker-compose.yml。\n若插件与 API 同机，用 http://127.0.0.1:3000；跨容器/跨机用 http://<局域网IP>:3000。留空则网易云语音名片功能不可用。"
+        "hint": "仅当 wyy_backend=custom 时才需要。自建 NeteaseCloudMusicApi 实例地址。\n推荐填「基础地址」如 http://127.0.0.1:3000（插件自动调用 /song/url + /song/detail，名片信息完整）；也可填含 {id} 的直链模板如 http://127.0.0.1:3000/song/url?id={id}（仅直链，歌名可能缺失）。\n部署见 tools/netease-api/docker-compose.yml。\n若插件与 API 同机，用 http://127.0.0.1:3000；跨容器/跨机用 http://<局域网IP>:3000。\n⚠️ wyy_backend=direct（默认）时本项留空即可，无需部署任何服务。"
       },
       "wyy_clip_seconds": {
         "type": "int",
@@ -224,7 +230,13 @@
         "type": "string",
         "description": "黑胶会员 Cookie（用于解析 VIP/付费歌曲）",
         "default": "",
-        "hint": "留空则只能解析免费歌曲。\n填黑胶会员账号的 Cookie 即可解析 VIP 歌曲（standard/exhigh/lossless 需黑胶会员，hires 部分需会员，sky/jymaster 需超级会员）。\n获取：网易云网页版登录会员号 → F12 → Network → 复制任意请求的 Cookie 整串（需含 MUSIC_U 与 __csrf）。\n⚠️ 属敏感凭证，建议使用小号/专用会员号，请勿外泄；主号有被风控风险。"
+        "hint": "留空则只能解析免费歌曲。\n填黑胶会员账号的 Cookie 即可解析 VIP 歌曲（standard/exhigh/lossless 需黑胶会员，hires 部分需会员，sky/jymaster 需超级会员）。\ndirect 与 custom 两种后端都支持：direct 模式下 Cookie 会随请求直接发给 music.163.com；custom 模式转发给自建实例。\n获取：网易云网页版登录会员号 → F12 → Network → 复制任意请求的 Cookie 整串（需含 MUSIC_U 与 __csrf）。\n⚠️ 属敏感凭证，建议使用小号/专用会员号，请勿外泄；主号有被风控风险。"
+      },
+      "wyy_proxy": {
+        "type": "string",
+        "description": "网易云请求代理（可选）",
+        "default": "",
+        "hint": "留空则直连。若服务器 IP 被网易云风控（扫码报设备环境异常 / 解析报 403 / 匿名注册返回 400），可填代理换出口 IP。\n支持 http://user:pass@host:port 或 socks5://host:port（aiohttp 下 socks5 需装 aiohttp-socks）。\n填后 /wyy、/wyy_login、音频下载都会走该代理。"
       }
     }
   },
