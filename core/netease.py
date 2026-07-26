@@ -602,8 +602,8 @@ def _cloudmusic_dll_encode_id(device_id: str) -> str:
     return base64.b64encode(digest).decode()
 
 
-async def _weapi_post(api_path: str, raw: dict):
-    """调用网易云 weapi 端点，api_path 以 /api/ 开头。返回 (body_dict, set_cookie_list)。"""
+async def _weapi_post_anon(api_path: str, raw: dict):
+    """调用网易云 weapi 端点（匿名注册专用），api_path 以 /api/ 开头。返回 (body_dict, set_cookie_list)。"""
     import urllib.parse
 
     enc = _weapi(raw)
@@ -646,7 +646,7 @@ async def _register_anonymous(device_id: str):
         raise RuntimeError("缺少 pycryptodome，无法注册匿名设备")
     encoded = _cloudmusic_dll_encode_id(device_id)
     username = base64.b64encode(f"{device_id} {encoded}".encode()).decode()
-    return await _weapi_post("/api/register/anonimous", {"username": username})
+    return await _weapi_post_anon("/api/register/anonimous", {"username": username})
 
 
 def _build_qr_cookie(device_id: str, music_a: str, csrf: str = "", request_id: str = None) -> str:
@@ -779,18 +779,20 @@ async def qr_login_key_direct():
 
     返回 (unikey, device_id, music_a, csrf)：
       - unikey：二维码对应的 key
-      - device_id / music_a / csrf：匿名设备会话信息，必须透传给 check 接口
-        以保持与 NCM 一致的设备环境，否则真实扫码确认时会被风控。
-    失败返回 (None, "", "", "").
+      - device_id / music_a / csrf：匿名设备会话信息（仅匿名注册成功时非空），
+        透传给 check 接口保持会话一致。若匿名注册被风控（如服务器 IP 被封返回 400），
+        自动退化为「最小 cookie」模式（实测 unikey 明文接口不需要 MUSIC_A 也能返回 200），
+        此时 music_a / csrf 为空，check 同样用最小 cookie 轮询，扫码仍可正常进行。
+    仅当 unikey 接口本身失败时才返回 (None, "", "", "").
     """
     import traceback
 
     device_id = _generate_device_id()
+    reg_body, reg_sc = {}, []
     try:
         reg_body, reg_sc = await _register_anonymous(device_id)
     except Exception as e:
-        logger.error(f"[网易云扫码] 匿名设备注册失败: {e}\n{traceback.format_exc()}")
-        return None, "", "", ""
+        logger.warning(f"[网易云扫码] 匿名设备注册失败（{e}），退化最小 cookie 模式继续")
 
     music_a = ""
     csrf = ""
@@ -801,10 +803,10 @@ async def qr_login_key_direct():
         elif first.startswith("__csrf="):
             csrf = first[7:]
     if not music_a:
-        logger.error(f"[网易云扫码] 匿名注册未返回 MUSIC_A，响应 body={reg_body}")
-        return None, "", "", ""
+        logger.warning(f"[网易云扫码] 匿名注册未返回 MUSIC_A（body={reg_body}），退化最小 cookie 模式继续")
 
-    cookie = _build_qr_cookie(device_id, music_a, csrf)
+    # 即便没有 MUSIC_A 也尝试拿 unikey：实测 unikey 明文接口不需要 MUSIC_A 也能返回 200
+    cookie = _build_qr_cookie(device_id, music_a, csrf) if music_a else ""
     try:
         body, sc = await _api_post("/api/login/qrcode/unikey", {"type": 3}, cookie=cookie)
     except Exception as e:
@@ -824,10 +826,11 @@ async def qr_login_check_direct(unikey: str, device_id: str = "", music_a: str =
     """
     import traceback
 
-    if not device_id or not music_a:
-        logger.warning("[网易云扫码] 轮询缺少 device_id/music_a，扫码会话不完整")
+    if not device_id:
+        logger.warning("[网易云扫码] 轮询缺少 device_id，扫码会话不完整")
         return {"code": -1, "message": "扫码会话不完整"}
-    cookie = _build_qr_cookie(device_id, music_a, csrf)
+    # 退化模式（无 MUSIC_A）下用最小 cookie，与 qr_login_key_direct 保持一致
+    cookie = _build_qr_cookie(device_id, music_a, csrf) if music_a else ""
     try:
         body, sc = await _api_post(
             "/api/login/qrcode/client/login", {"key": unikey, "type": 3}, cookie=cookie

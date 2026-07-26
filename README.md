@@ -128,7 +128,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `/game_report` | 可配置 | 手动触发当日游戏日报（按当前游戏源抓取当日新游，卡通图片） |
 | `/movie_report` | 可配置 | 手动触发当日影视日报（影视站主页最近更新的电影/剧集/动漫，毛玻璃图片；无 `muliy_cookie` 时自动用 a123tv 旧站） |
 | `/wyy <链接或ID>` | 所有人 | 解析网易云歌曲为 QQ 语音名片（手动触发，支持短链自动展开） |
-| `/wyy_login` | 管理员 | 获取网易云登录二维码，App 扫码确认后自动把会员 Cookie 写入 `wyy_cookie`（依赖 `wyy_custom_url` 后端在线） |
+| `/wyy_login` | 管理员 | 获取网易云登录二维码，App 扫码确认后自动把会员 Cookie 写入 `wyy_cookie`（默认内置直连 music.163.com，无需外部服务；**云服务器 IP 可能被网易云风控拦截「设备环境异常」，此时请直接把已登录的 `MUSIC_U` 填进 `wyy_cookie`，或填 `wyy_proxy` 住宅代理**，见下方「云服务器 IP 风控」） |
 
 > 开启 LLM 后，以上功能均可通过自然语言触发（搜索由 LLM 工具接管，无需记忆命令）。
 > 网易云语音名片在 `wyy_auto_parse=true` 时**无需命令**，直接发链接 / 小程序卡片即自动解析。
@@ -435,15 +435,36 @@ astrbot_plugin_muliyresources/
 
 1. **确认消息被识别**：发的是 `music.163.com` 链接或 QQ 转发的网易云小程序卡片；纯文字歌名不会触发。
 2. **确认开关**：`wyy_auto_parse=true` 才会自动解析；否则用 `/wyy <链接或ID>` 手动触发。
-3. **解析失败（返回「解析失败」）**：失败提示会**直接带出具体原因**（如 `custom /song/url 请求失败…实例地址不可达`、`custom /song/detail 请求失败…`），按提示排查即可。网易云语音名片仅依赖自建 NeteaseCloudMusicApi（`wyy_custom_url`），请确认该地址可达。
-   - 确认 `wyy_custom_url` 已填写且实例在线：`curl http://127.0.0.1:3000/song/url?id=28921655`（应返回 JSON）。
-   - 实例部署见下方「自建网易云解析后端」章节（docker compose 一键起）。
-4. **发的是完整歌曲而不是中间片段**：服务器没装 ffmpeg。安装 ffmpeg 后插件会自动截取中间片段；未装则退化为发送完整音频。
-5. **提示「不支持语音组件」**：当前 AstrBot / OneBot 实现不支持 `Record`，插件会自动改为发送文件。
+3. **解析失败（返回「解析失败」）**：失败提示会**直接带出具体原因**（如 `内置直连 /song/url 请求失败…`、`custom /song/detail 请求失败…`），按提示排查即可。
+   - 默认走**内置直连后端**（零部署，直接打 `music.163.com`，无需任何外部服务）；仅当你显式把 `wyy_backend` 设为 `custom` 并填了 `wyy_custom_url` 时，才走自建 NeteaseCloudMusicApi 实例。
+   - 想用自建实例：确认 `wyy_custom_url` 已填写且实例在线，`curl http://127.0.0.1:3000/song/url?id=28921655` 应返回 JSON。
+4. **VIP/付费歌曲解析不到直链**：需在 `wyy_cookie` 填入黑胶/超级会员账号 Cookie（见下方「云服务器 IP 风控」的方案 B）。免费歌无需登录即可解析。
+5. **发的是完整歌曲而不是中间片段**：服务器没装 ffmpeg。安装 ffmpeg 后插件会自动截取中间片段；未装则退化为发送完整音频。
+6. **提示「不支持语音组件」**：当前 AstrBot / OneBot 实现不支持 `Record`，插件会自动改为发送文件。
 
-### 自建网易云解析后端（必须）
+### ⚠️ 云服务器 IP 被网易云风控（扫码「设备环境异常」/ 解析 403 / 下载被拦）
 
-网易云语音名片仅依赖你自建的 NeteaseCloudMusicApi 实例，插件通过「服务器直连」调用它，因此**必须自建 NeteaseCloudMusicApi**（公共解析站 wyapi / qzxdp 对服务器 IP 普遍返回 404 拦截，已于 v1.9.3 移除）：
+这是**部署在云服务器（数据中心 IP）上最常见的网易云问题**，本质是网易云对数据中心出口 IP 的风控，而非插件 bug：
+
+- **根因**：网易云对云服务器 IP 在「匿名设备注册 `/api/register/anonimous`」「音频 CDN 下载」「扫码确认」三处均有风控。插件内置直连模式走的就是 `music.163.com`，与官方原版 NeteaseCloudMusicApi、各类第三方 API **走的是同一个被风控的出口 IP**——GitHub 上 `NeteaseCloudMusicApiEnhanced` 的 issue、Melody 音乐服务器等项目均确认该问题**在原版 NCM 上同样重现**，即与客户端代码无关，是 IP 层面的限制。
+- **表现**：`/wyy_login` 能出二维码，但手机扫码确认时网易云提示「检测到当前设备环境异常，本次操作已拦截」（同手机扫网页版二维码却正常，证明不是手机问题）；或解析 VIP 报 403、音频下载被 CDN 拦。
+- **AstrBot 日志佐证**：`docker logs <容器> | grep 网易云扫码` 出现 `匿名注册未返回 MUSIC_A（body={'code': 400}）` 即坐实该 IP 被风控。
+
+**两条可行的解决路径（社区公认，无"改代码绕过"之法）：**
+
+- **方案 B（推荐，最稳）— 直接手填已登录 `MUSIC_U`，跳过扫码**
+  扫码登录的唯一目的就是把会员 `MUSIC_U` 写进 `wyy_cookie`。你直接拿一个已登录网易云账号的 `MUSIC_U` 填进去，效果与扫码完全一致，且不受云 IP 风控影响：
+  1. 电脑浏览器登录 `music.163.com` → F12 → Application/网络 → Cookie → 复制 `MUSIC_U=xxxx`（可连同 `__csrf=yyyy` 一起复制整串）。
+  2. 把该串填入插件「网易云音乐」分组的 `wyy_cookie` → 重载插件。
+  3. 之后发 `/wyy <VIP歌曲链接>` 即可解析，无需再扫码。
+  > 免费歌曲本就无需登录，非 VIP 需求可完全忽略扫码。
+
+- **方案 A（想用扫码才需要）— 住宅/家宽代理 `wyy_proxy`**
+  在「网易云音乐」分组填 `wyy_proxy = http://user:pass@host:port`（或 `socks5://host:port`），网易云**全部请求**（解析、扫码、下载）改从代理出口。要求代理是**住宅/家宽 IP 且 sticky（固定出口）**，否则匿名注册仍 400、会话对不上仍异常。数据中心自建代理无效（同样被封）。
+
+### 自建网易云解析后端（可选回退，非必须）
+
+插件**默认内置直连后端（零部署）**，绝大多数场景无需自建。仅当你想用自建 NeteaseCloudMusicApi（例如配合 `wyy_proxy` 把实例也走代理、或需要 custom 专属能力）时，才需要它：
 
 ```bash
 # 1) 安装 Docker 后，进入插件目录执行：
@@ -454,6 +475,7 @@ docker compose up -d --build
 curl http://127.0.0.1:3000/song/url?id=28921655
 
 # 3) 插件配置：
+wyy_backend = custom
 wyy_custom_url = http://127.0.0.1:3000      # 同机；跨机/跨容器用 http://<局域网IP>:3000
 ```
 

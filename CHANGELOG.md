@@ -1,5 +1,25 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.1 — 2026-07-26
+
+### 🐛 修复：网易云内置直连后端两处问题
+
+- **双 `_weapi_post` 定义冲突**：`core/netease.py` 中匿名注册专用版（2 参、返回 tuple）覆盖了歌曲解析用的 3 参版（返回 dict），导致 direct 模式解析歌曲时 `_weapi_post(url, dict, cookie)` 直接 `TypeError` 崩溃。已将匿名注册版重命名为 `_weapi_post_anon`，解析版保留。
+- **扫码登录强制匿名注册卡死**：原 `qr_login_key_direct` 在 `/api/register/anonimous` 返回 `400`（云服务器 IP 被风控常见现象）拿不到 `MUSIC_A` 时直接 `return None` 导致无法出码。现改为退化「最小 cookie」模式继续生成 unikey（实测明文 unikey 接口无需 `MUSIC_A` 也能返回 200），`qr_login_check_direct` 同步允许无 `MUSIC_A` 轮询。
+
+### 📌 已知限制：云服务器 IP 被网易云风控（扫码「设备环境异常」/ 解析 403）
+
+- 该问题为**网易云对数据中心出口 IP 的风控**，与客户端代码无关：官方原版 NeteaseCloudMusicApi、各第三方 API、本插件内置直连均走同一被风控出口，GitHub 相关 issue 与 Melody 等项目均确认在原版 NCM 上同样重现。
+- AstrBot 日志出现 `匿名注册未返回 MUSIC_A（body={'code': 400}）` 即坐实。
+- **推荐解法（方案 B）**：直接将已登录账号的 `MUSIC_U` 填入 `wyy_cookie`，跳过扫码，VIP 歌直接解析，不受云 IP 风控影响。
+- **备选（方案 A）**：填 `wyy_proxy` 住宅/家宽 + sticky 代理，让匿名注册从干净 IP 拿到 `MUSIC_A`；数据中心自建代理无效。
+- README「网易云语音名片」章节已同步更新：修正「必须自建 NeteaseCloudMusicApi」为「默认内置直连、自建为可选回退」，并新增「云服务器 IP 风控」说明。
+
+### 📝 文档
+
+- README：网易云配置/命令/排错章节同步至 v1.12.x 实际架构（内置直连默认、custom 可选回退）；新增「云服务器 IP 风控」小节与方案 B/A。
+- metadata 版本号 → 1.12.1。
+
 ## v1.12.0 — 2026-07-26
 
 ### ✨ 新增：游戏 / 软件搜索意图拦截（自然语言直接路由单类型工具）
