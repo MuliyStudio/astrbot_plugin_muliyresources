@@ -1,5 +1,45 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.2 — 2026-07-28
+
+### 🐛 修复：教父.com 影视详情页 / 播放页「浏览器安全验证」(PoW) 拦截，导致影视详情与播放直链取不到
+
+- **根因**：教父.com 的详情页 `/{dir}/{id}` 与播放页 `/py/{node}/{ep}` 是 HTML 页，会被「浏览器安全验证」页拦截（返回约 1325 字节的 `powSolve.js` + Web Worker 验证页，无 `_obj.d` / `_obj.player`）；而搜索 `/res/search_suggest`、资源 `/res/downurl` 是 XHR 接口不受拦截。此前有三处致命坑：
+  1. `config.muliy_cookie` 若含用户浏览器里的 `browser_verified` / `browser_pow`（与 IP/域名绑定的会话态、极易失效），注入后详情/播放页永远被拦；
+  2. 旧的 `solve_pow` 有「cookie 里已有 `browser_verified` 就 `return True` 跳过求解」的早返回——陈旧 cookie 触发它、**永不真正求解**；
+  3. `get_play_m3u8` 被拦时只调 `_relogin_on_fail()`（重灌 cookie，不求解 PoW），**从不调 `solve_pow`** → 播放直链永远取不到。
+- **修复**（`core/muliy_site.py` / `_conf_schema.json` / `main.py`）：
+  - `_apply_cookies` 过滤 `browser_verified` / `browser_pow`（`_SKIP_COOKIES`），只注入账号态字段，杜绝陈旧会话态干扰。
+  - `solve_pow` 仅在「拿不到挑战但已有我们刚求解的有效验证」时复用，否则一律真实求解 `y = x^(2^t) mod N` 并 POST `/res/pow`；`get_detail` / `get_play_m3u8` 被验证页拦截时都先 `solve_pow` 重算再重试。
+  - 配置 `muliy_cookie` 的 hint 改为提示**勿填 browser_verified / browser_pow**，并说明插件自动求解 PoW。
+- **实测**：首次详情页约 5s（被拦→求解 PoW≈3-4s→重试成功），同会话内播放页约 1s（复用验证态）。PoW 求解结果由服务端设为 host-only、请求可正常携带。
+
+### ✨ 新增：教父.com 多站点探测（发布页动态选最低延迟节点）
+
+- **背景**：此前影视源固定连单一教父域名，该域名失效 / 被墙即整体不可用。
+- **改动**（`core/muliy_site.py`）：
+  - 新增 `discover_best_domain()`：访问教父系**发布页**（默认挂了 `.com` 的 xn--ykq321c.com，动态列出 `check.js` 中的全部域名），逐个 `requests` 测延迟，选最低延迟且可达的站点作为连接 / 登录目标。
+  - 新增 `set_release_url(url)` + 配置 `muliy_release_url`：仅当默认发布页不可用时，才填其它同结构的教父系发布页地址；留空即用默认发布页。
+  - 域名探测结果缓存复用（`muliy_cache_ttl`），避免每次搜索都重探。
+- **文档**：README 配置表新增 `muliy_release_url` 行 + 修正 `muliy_cookie` 说明。
+
+### 🛡️ 优化：多用户并发防护（PoW / 搜索 双锁 single-flight）
+
+- 所有用户共用一个 `MuliySiteClient` / `requests.Session`（asyncio.to_thread 多线程）：
+  - `_solve_pow_shared(base, force)` 加 single-flight 锁（`_pow_lock` + `_pow_ts`，30s 复用窗口 `_POW_REUSE_WINDOW`；重试第 2 轮 `force=True` 强制重解）—— 防 PoW 惊群与 `browser_verified` 并发互相覆盖。
+  - 类级 `_SEARCH_LOCK` 串行化搜索（限速 + 请求 + 缓存写在锁内，锁内首查缓存 double-check）—— 防 `search_suggest` 并发限流互踩。
+- 用户会话状态机本身按 `平台:用户:群` 键隔离（`core/session.py`），无需处理。
+
+### 🔧 优化：搜索结果列表底部分割线统一为 `=`（避免手机端换行）
+
+- **现象**：影视 / 游戏 / 软件 / 小说搜索列表底部分割线用的是 `─`（U+2500 制表符），在手机端会换行、与顶部分割线 `=` 不一致。
+- **改动**（`main.py` / `core/movie.py` / `core/muliy_site.py`）：把全部用户可见的列表底部分割线 `"─" * 36` 改为 `"=" * 36`（与顶部长度一致、半角 `=` 不在手机端换行）；小说列表条目分隔 `"────────────"` 改为更轻量的 `"=" * 12`。
+- 非用户输出的 `─`（如 `core/vip_capture.py` 注释、`main.py` docstring 示例）维持不变。
+
+### 📝 文档
+
+- metadata 版本号 → 1.12.2；README 版本徽章 → 1.12.2；配置表新增 `muliy_release_url` + 修正 `muliy_cookie` 说明（勿填 browser_verified/browser_pow）。
+
 ## v1.12.1 — 2026-07-26
 
 ### 🐛 修复：网易云内置直连后端两处问题

@@ -479,7 +479,7 @@ def format_movie_list(s: dict) -> str:
             tag = ""
         lines.append(f"{emoji_index(i - st + 1, ed - st)} {title_trim}{tag}")
     lines.append("")
-    lines.append("─" * 36)
+    lines.append("=" * 36)
     nav = []
     if st > 0:
         nav.append("「上一页」")

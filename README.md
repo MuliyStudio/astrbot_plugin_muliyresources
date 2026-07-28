@@ -7,7 +7,7 @@
 <p align="center"><strong>AstrBot 全能资源搜索插件</strong> — 小说 / 影视 / 游戏 / 软件搜索 · 日报 · 网易云语音名片 · VIP 解析 · 摸头/踢/按摩表情包</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.12.0-2B7FD8" alt="version 1.12.0">
+  <img src="https://img.shields.io/badge/version-1.12.2-2B7FD8" alt="version 1.12.2">
   <img src="https://img.shields.io/badge/AstrBot-v4.20%2B-F4D758" alt="AstrBot v4.20+">
   <img src="https://img.shields.io/badge/license-MIT-E84A5F" alt="MIT license">
 </p>
@@ -99,7 +99,8 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `wyy_audio_format` | string | `mp3` | 语音格式：`mp3`（QQ 兼容性好）或 `wav` |
 | `video_vip_parse` | bool | `true` | VIP 视频解析：消息里出现**四大平台**（爱奇艺/腾讯视频/优酷/芒果TV，含爱奇艺分享卡片 `playShare.html?shareId=`）的 VIP 视频链接才会被自动识别，提取影视信息并展示解析接口菜单；乐视/搜狐/bilibili/PPTV 等其它站点链接不再识别解析 |
 | `video_vip_timeout` | int | `25000` | 单个解析接口超时（毫秒，建议 8000–60000） |
-| `muliy_cookie` | string | `""` | **教父.com 新站**登录态 Cookie（启用新站影视源）。填此值 → 影视搜索走新站（含网盘资源，跳过 PoW + 验证码）；留空则回退 a123tv 旧站。需含 `app_auth` / `browser_verifie` / `PHPSESSID` 等字段，用英文分号 `;` 隔开 |
+| `muliy_release_url` | string | `""` | **教父.com 发布页地址（多站点探测源）**。默认挂了 `.com` 的发布页（xn--ykq321c.com）会动态列出教父系所有可用影视域名，插件访问发布页拿到域名列表、测延迟后自动选最低延迟站点连接与登录（而非固定单一源）。**仅当默认发布页不可用时**才需要填入其它可用的教父系发布页地址（须为同样列出 `check.js` 域名列表的发布页）；留空即用默认发布页 |
+| `muliy_cookie` | string | `""` | **教父.com 新站**登录态 Cookie（启用新站影视源）。填此值 → 影视搜索走新站（含网盘资源，插件自动求解 PoW「浏览器安全验证」）；留空则回退 a123tv 旧站。需含账号态字段 `app_auth` / `PHPSESSID`，用英文分号 `;` 隔开。⚠️ **请勿填写 `browser_verified` / `browser_pow`**：这两个是「浏览器安全验证」会话态，与 IP/域名绑定、极易失效，手动填入反而会让详情页/播放页始终被验证页拦截、拿不到影视详情与播放直链；插件会自动重新求解 PoW 获取有效验证 |
 | `muliy_cache_ttl` | int | `3600` | 新站 Cookie 登录态 / 域名探测结果缓存秒数（默认 1 小时） |
 | `sonovel_base_url` | string | `http://127.0.0.1:7765` | **so-novel Web 服务地址**（Jetty，默认端口 7765）。同机直连 `http://127.0.0.1:7765`；so-novel 跑在 Docker 且与 AstrBot 同宿主机用 `http://172.17.0.1:7765`（切勿填公网 IP，回环 NAT 易不通）；跨机/跨容器用 `http://<内网IP>:7765`。⚠️ 默认镜像启动的是 TUI 菜单、7765 不监听，须加 `-e JAVA_TOOL_OPTIONS="-Dmode=web"` 真正以 Web 模式启动 |
 | `sonovel_token` | string | `""` | 访问令牌（可选）。官方 so-novel servlet 不做鉴权，留空即可；若部署在带鉴权的封装层后，填其 Bearer Token |

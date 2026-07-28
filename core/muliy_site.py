@@ -53,17 +53,30 @@ def _punycode_url(url: str) -> str:
         return url
 
 
-# ==================== 有效域名探测 ====================
+# ==================== 有效域名探测（发布页 + 延迟 + 多站点） ====================
 
-# 域名探测结果缓存 {url: (best_domain, ts)}
-_DOMAIN_CACHE = {"domain": "", "ts": 0.0}
+# 发布页地址：默认挂了.com（xn--ykq321c.com，即用户举例的发布页）。可在 main.py
+# 初始化时通过 set_release_url() 覆盖为其它发布页。发布页 check.js 列出所有当前
+# 可用的影视域名，从中探测延迟并自动选点，实现「不固定单一源」。
+_RELEASE_URL = MULIY_GUALE_URL
+# 探测结果缓存：所有可用域名及首字节延迟，按延迟升序 [(url, ms), ...]
+_DOMAIN_LIST_CACHE = {"domains": [], "ts": 0.0}
 _DOMAIN_CACHE_TTL = 3600  # 1 小时
 
 
-def _guale_get_checkjs(session: requests.Session) -> str:
-    """访问挂了.com：先 /auth?count=1 拿 cookie，再取 check.js 文本。"""
-    session.get(MULIY_GUALE_URL + "/auth?count=1", timeout=12, verify=False)
-    r = session.get(MULIY_GUALE_URL + "/check.js?25", timeout=12, verify=False)
+def set_release_url(url: str):
+    """设置发布页地址（默认 MULIY_GUALE_URL=挂了.com xn--ykq321c.com）。"""
+    global _RELEASE_URL
+    if url and url.strip():
+        _RELEASE_URL = url.strip().rstrip("/")
+        logger.info(f"[muliy_site] 发布页地址已设为: {_RELEASE_URL}")
+
+
+def _guale_get_checkjs(session: requests.Session, release_url: str = None) -> str:
+    """访问发布页：先 /auth?count=1 拿 cookie，再取 check.js 文本。"""
+    base = (release_url or _RELEASE_URL).rstrip("/")
+    session.get(base + "/auth?count=1", timeout=12, verify=False)
+    r = session.get(base + "/check.js?25", timeout=12, verify=False)
     return r.text
 
 
@@ -88,61 +101,66 @@ def _probe_latency(url: str) -> int | None:
     return None
 
 
-def discover_best_domain(force: bool = False) -> str:
-    """从挂了.com 探测延迟最低的可用影视域名。
+def discover_domains(force: bool = False, exclude: set = None) -> list:
+    """从发布页探测所有可用影视域名（带首字节延迟，按延迟升序）。
 
-    缓存 1 小时；force=True 强制刷新。
+    返回 [(url, ms), ...]。exclude 为需排除的域名集合（已失效站点，由
+    MuliySiteClient 运行时累积传入），返回结果中已剔除这些域名。
+
+    探测结果缓存 1 小时（与 exclude 无关，exclude 只影响返回过滤），
+    force=True 强制刷新（如所有候选域名均失效时重新拉取发布页）。
+    """
+    exclude = set(exclude or {})
+    now = time.time()
+    if not force and _DOMAIN_LIST_CACHE["domains"] and \
+            now - _DOMAIN_LIST_CACHE["ts"] < _DOMAIN_CACHE_TTL:
+        pass  # 命中缓存，直接走下方过滤
+    else:
+        s = requests.Session()
+        s.headers.update({"User-Agent": MULIY_UA})
+        try:
+            checkjs = _guale_get_checkjs(s, _RELEASE_URL)
+            domains = _parse_domains(checkjs)
+            logger.info(f"[muliy_site] 发布页解析到 {len(domains)} 个域名")
+        except Exception as e:
+            logger.warning(f"[muliy_site] 发布页探测失败: {e}")
+            domains = []
+        if not domains:
+            domains = [MULIY_DEFAULT_DOMAIN]
+        # 并发测延迟
+        results = [None] * len(domains)
+
+        def _test(i, u):
+            results[i] = _probe_latency(u)
+
+        threads = [threading.Thread(target=_test, args=(i, u)) for i, u in enumerate(domains)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        measured = [(u, ms) for u, ms in zip(domains, results) if ms is not None]
+        measured.sort(key=lambda x: x[1])
+        _DOMAIN_LIST_CACHE["domains"] = measured
+        _DOMAIN_LIST_CACHE["ts"] = time.time()
+        if measured:
+            logger.info("[muliy_site] 探测到可用域名(按延迟升序): "
+                        + ", ".join(f"{u}({ms}ms)" for u, ms in measured))
+        else:
+            logger.warning("[muliy_site] 所有域名延迟探测失败，将回退默认域名")
+
+    # 排除已失效域名（不影响缓存本身，便于同会话后续仍可使用）
+    return [(u, ms) for u, ms in _DOMAIN_LIST_CACHE["domains"] if u not in exclude]
+
+
+def discover_best_domain(force: bool = False, exclude: set = None) -> str:
+    """兼容旧接口：返回延迟最低且未失效的可用域名；无可用时回退默认域名。
+
     返回形如 'https://www.xn--wcv59z.com' 的 URL（无尾斜杠）。
     """
-    if not force and _DOMAIN_CACHE["domain"]:
-        if time.time() - _DOMAIN_CACHE["ts"] < _DOMAIN_CACHE_TTL:
-            return _DOMAIN_CACHE["domain"]
-
-    s = requests.Session()
-    s.headers.update({"User-Agent": MULIY_UA})
-    try:
-        checkjs = _guale_get_checkjs(s)
-        domains = _parse_domains(checkjs)
-    except Exception as e:
-        logger.warning(f"[muliy_site] 挂了.com 探测失败: {e}，使用默认域名")
-        _DOMAIN_CACHE["domain"] = MULIY_DEFAULT_DOMAIN
-        _DOMAIN_CACHE["ts"] = time.time()
-        return MULIY_DEFAULT_DOMAIN
-
-    if not domains:
-        _DOMAIN_CACHE["domain"] = MULIY_DEFAULT_DOMAIN
-        _DOMAIN_CACHE["ts"] = time.time()
-        return MULIY_DEFAULT_DOMAIN
-
-    # 并发测延迟
-    measured = []
-    results = [None] * len(domains)
-
-    def _test(i, u):
-        results[i] = _probe_latency(u)
-
-    threads = [threading.Thread(target=_test, args=(i, u)) for i, u in enumerate(domains)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-    for u, ms in zip(domains, results):
-        if ms is not None:
-            measured.append((u, ms))
-            logger.debug(f"[muliy_site] {u} -> {ms}ms")
-
-    if not measured:
-        logger.warning("[muliy_site] 所有域名探测失败，使用默认域名")
-        _DOMAIN_CACHE["domain"] = MULIY_DEFAULT_DOMAIN
-        _DOMAIN_CACHE["ts"] = time.time()
-        return MULIY_DEFAULT_DOMAIN
-
-    measured.sort(key=lambda x: x[1])
-    best = measured[0][0]
-    logger.info(f"[muliy_site] 选定延迟最低域名: {best} ({measured[0][1]}ms)")
-    _DOMAIN_CACHE["domain"] = best
-    _DOMAIN_CACHE["ts"] = time.time()
-    return best
+    ds = discover_domains(force=force, exclude=exclude)
+    if ds:
+        return ds[0][0]
+    return MULIY_DEFAULT_DOMAIN
 
 
 # ==================== PoW 解决器 ====================
@@ -164,11 +182,12 @@ def solve_pow(session: requests.Session, base: str) -> bool:
         return False
 
     if "error" in chal or "N" not in chal:
-        # 已通过 PoW（browser_verified 存在）则跳过求解，直接复用会话。
-        # 注意：绝不能在此 pop browser_pow/browser_verified，否则服务器不再
-        # 下发挑战（报"未找到挑战"），导致 relogin 彻底失败、播放页判未登录。
+        # 拿不到挑战（如会话异常）：若本会话已拥有「由我们刚求解得到的」有效
+        # browser_verified 则直接复用；否则无法通过验证。
+        # 注意：这里仅当挑战不可用时才复用，正常情况下（无 browser_verified 或
+        # 需要刷新）一律走下面的真实求解，避免误判「已验证」而跳过 PoW。
         if "browser_verified" in session.cookies:
-            logger.info("[muliy_site] 已有 browser_verified，跳过 PoW")
+            logger.info("[muliy_site] 挑战获取失败，但已有 browser_verified，直接复用")
             return True
         logger.error(f"[muliy_site] PoW 挑战异常: {chal}")
         return False
@@ -272,30 +291,83 @@ class MuliySiteClient:
     session 缓存复用 cookie，避免每次都等 PoW(~3s)+登录。
     """
 
-    def __init__(self, base_url: str = "", cache_ttl: int = 3600, cookies: str = ""):
-        self.base_url = _punycode_url(base_url or "").rstrip("/")
+    def __init__(self, base_url: str = "", cache_ttl: int = 3600, cookies: str = "",
+                 exclude_domains: set = None):
+        # base_url 为空 → 首次 _get_base() 时从发布页探测所有可用域名并选最低延迟，
+        # 支持多站点 + 失效自动切换（跨站点共享同一份 cookie）。
+        # base_url 非空 → 固定使用指定域名（用于测试或强制单一源），跳过探测。
+        self.base_url = _punycode_url(base_url or "").rstrip("/") if base_url else ""
         self.cache_ttl = cache_ttl
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": MULIY_UA})
         self._logged_in = False
         self._login_ts = 0.0
         self._lock = threading.Lock()
+        self._pow_lock = threading.Lock()  # PoW 求解串行锁（多用户并发 single-flight）
+        self._pow_ts = 0.0                 # 最近一次 PoW 成功求解时间
         self._session_searched = False  # 当前 session 是否已搜过（搜索限流追踪）
-        # cookie 模式：直接注入浏览器登录态，跳过 PoW + 验证码
+        # 已失效域名集合（运行时累积，下次选点时排除，实现自动切换）
+        self._failed_domains = set(exclude_domains or {})
+        # cookie 模式：直接注入浏览器登录态，跨同源所有影视域名通用，
+        # 因此切换域名时只需基于新域名重新设 domain 即可复用同一份 cookie。
         self._cookie_str = cookies or ""
-        if self._cookie_str:
-            if not self.base_url:
-                # cookie 模式固定教父.com，避免自动探测到不匹配的节点导致 cookie 失效
-                self.base_url = MULIY_DEFAULT_DOMAIN
+        if self._cookie_str and self.base_url:
+            # 仅当显式指定固定域名时预注入；空 base_url 由 _get_base 首次选点后注入
             self._apply_cookies(self._cookie_str)
             self._logged_in = True
             self._login_ts = time.time()
 
-    # ---------- 会话管理 ----------
+    # ---------- 会话与多站点管理 ----------
     def _get_base(self) -> str:
-        if not self.base_url:
-            self.base_url = discover_best_domain().rstrip("/")
+        """返回当前应使用的影视域名（无尾斜杠）。
+
+        支持多站点自动选点与失效切换：
+          - 当前域名仍有效（未被标记失效）→ 直接复用；
+          - 否则从发布页探测结果中选「延迟最低且未失效」的域名；
+          - 选到新域名时，若处于 cookie 模式则清掉旧域名 cookie 并基于新域名
+            重新注入同一份 cookie（教父各域名同源，cookie 值通用 = 跨站点共享）。
+        """
+        if self.base_url and self.base_url not in self._failed_domains:
+            return self.base_url
+        with self._lock:
+            # double-check：并发选点时避免重复探测/重复注入
+            if self.base_url and self.base_url not in self._failed_domains:
+                return self.base_url
+            candidates = discover_domains(exclude=self._failed_domains)
+            if not candidates:
+                # 候选全部失效：强制刷新发布页并清零失效集合，再探一次
+                logger.warning("[muliy_site] 候选域名全部失效，强制刷新发布页重探")
+                self._failed_domains.clear()
+                candidates = discover_domains(force=True, exclude=self._failed_domains)
+            if not candidates:
+                logger.warning("[muliy_site] 发布页无可用域名，回退默认域名")
+                self.base_url = MULIY_DEFAULT_DOMAIN
+                candidates = [(self.base_url, 0)]
+            new_base = candidates[0][0]
+            switched = (self.base_url != new_base)
+            self.base_url = new_base
+            if self._cookie_str:
+                # 跨站点共享同一 Cookie：清空旧域名 cookie，用同一份值注入新域名
+                self._session.cookies.clear()
+                self._apply_cookies(self._cookie_str)
+            self._logged_in = bool(self._cookie_str)
+            self._login_ts = time.time()
+            if switched:
+                logger.info(f"[muliy_site] 已切换到域名 {new_base}"
+                            f"{'（跨站点复用同一 Cookie）' if self._cookie_str else ''}")
         return self.base_url
+
+    def _mark_current_domain_failed(self, reason: str = ""):
+        """标记当前域名失效，下次 _get_base 会切换到下一个最低延迟域名。
+
+        同时清空登录态，强制切换后重新注入 cookie / 重登。
+        """
+        if self.base_url:
+            self._failed_domains.add(self.base_url)
+            logger.warning(f"[muliy_site] 标记域名失效: {self.base_url}（{reason}）")
+        self.base_url = ""
+        self._logged_in = False
+        self._login_ts = 0.0
 
     def ensure_session(self) -> bool:
         """确保已注入有效 cookie。线程安全。cookie 过期则重灌。"""
@@ -313,11 +385,47 @@ class MuliySiteClient:
         self._logged_in = False
         return self.ensure_session()
 
+    # PoW 复用窗口（秒）：窗口内其他线程刚求解出的 browser_verified 直接复用，
+    # 不重复求解。browser_verified 服务端有效期 24h，30s 窗口非常保守。
+    _POW_REUSE_WINDOW = 30
+
+    def _solve_pow_shared(self, base: str, force: bool = False) -> bool:
+        """PoW 求解 single-flight（多用户并发安全）。
+
+        多个用户同时触发详情/播放页被「浏览器安全验证」拦截时，只让第一个
+        线程真正求解（3-4s 纯 CPU 大整数运算），其余线程等待并复用其结果。
+        避免：① 并发重复求解拖慢整个机器人；② 服务器对同一 IP 重发
+        browser_verified 时并发互相覆盖，导致刚解出的验证被作废、互相踩踏。
+
+        force=True 跳过复用窗口强制重解（用于「复用后重试仍被拦截」的场景，
+        说明当前验证态实际已失效）。
+        """
+        if not force and time.time() - self._pow_ts < self._POW_REUSE_WINDOW:
+            return True  # 其他请求刚解出新鲜验证态，直接复用
+        with self._pow_lock:
+            # double-check：排队等锁期间可能已被其他线程解出
+            if not force and time.time() - self._pow_ts < self._POW_REUSE_WINDOW:
+                return True
+            ok = solve_pow(self._session, base)
+            if ok:
+                self._pow_ts = time.time()
+            return ok
+
+    # 浏览器验证类 cookie：与具体 IP/域名/会话绑定、极易失效；若直接注入会误导
+    # solve_pow 误判「已验证」而跳过真正的 PoW 求解，使详情页/播放页始终被
+    # 「浏览器安全验证」页拦截。必须剔除，交由 solve_pow 每次重新求解生成新鲜
+    # 有效的 browser_verified。
+    _SKIP_COOKIES = {"browser_verified", "browser_pow"}
+
     def _apply_cookies(self, cookie_str: str) -> bool:
         """把 'k1=v1; k2=v2' 形式的 cookie 字符串注入 session。
 
         使用 base_url 的 host（带点前缀以匹配 www 子域）作为 domain。
         返回是否成功注入至少一个 cookie。
+
+        ⚠️ 自动剔除 browser_verified / browser_pow 等「浏览器验证态」cookie
+        （见 _SKIP_COOKIES）：它们是浏览器会话态、易失效，且注入后会破坏
+        solve_pow 的求解逻辑，导致详情页/播放页取不到真实内容。
         """
         if not cookie_str:
             return False
@@ -330,7 +438,7 @@ class MuliySiteClient:
                 continue
             k, v = part.split("=", 1)
             k, v = k.strip(), v.strip()
-            if not k:
+            if not k or k in self._SKIP_COOKIES:
                 continue
             self._session.cookies.set(k, v, domain=domain)
             ok = True
@@ -338,44 +446,69 @@ class MuliySiteClient:
 
     def _api_get(self, path: str, referer: str = "", as_json: bool = True,
                  retry: bool = True):
-        """带登录保障的 GET。"""
-        base = self._get_base()
-        if not self.ensure_session():
-            return None
-        hdrs = {"X-Requested-With": "XMLHttpRequest",
-                "Referer": referer or (base + "/")}
-        try:
-            r = self._session.get(base + path, headers=hdrs,
-                                  timeout=15, verify=False)
-        except Exception as e:
-            logger.error(f"[muliy_site] GET {path} 请求异常: {e}")
-            if retry and self._relogin_on_fail():
-                return self._api_get(path, referer, as_json, retry=False)
-            return None
+        """带登录保障 + 域名失效自动切换的 GET。
 
-        if not as_json:
-            return r.text
-
-        try:
-            return r.json()
-        except Exception:
-            txt = r.text[:300]
-            low = txt.lower()
-            # nologin / PoW 验证页 / 失效 → 重新登录重试
-            need_relogin = ("nologin" in low or "powSolve" in txt
-                            or "安全验证" in txt or "未登录" in txt
-                            or r.status_code in (401, 403))
-            logger.warning(f"[muliy_site] {path} 返回非JSON status={r.status_code} "
-                           f"relogin={need_relogin}: {txt[:120]}")
-            if retry and need_relogin and self._relogin_on_fail():
-                return self._api_get(path, referer, as_json, retry=False)
-            return None
+        当前域名「连接异常 / 重登后仍失效 / 被拦截」时，标记该域名失效并自动
+        切换到下一个最低延迟域名重试，实现多站点高可用（跨站点共用 cookie）。
+        """
+        # 外层循环：域名切换（最多尝试 已失效数+4 个候选，避免无限切换）
+        max_domains = len(self._failed_domains) + 4
+        for _ in range(max_domains):
+            base = self._get_base()
+            if not self.ensure_session():
+                # 登录/注入失败（cookie 对该域名无效等）→ 当前域名失效，切换
+                self._mark_current_domain_failed(f"ensure_session失败@{base}")
+                continue
+            hdrs = {"X-Requested-With": "XMLHttpRequest",
+                    "Referer": referer or (base + "/")}
+            # 内层循环：单域名内先正常请求，被拦截则重登一次再试
+            for inner in range(2):
+                try:
+                    r = self._session.get(base + path, headers=hdrs,
+                                          timeout=15, verify=False)
+                except Exception as e:
+                    # 连接级异常（超时/拒绝/重置）→ 当前域名失效，切换
+                    logger.error(f"[muliy_site] GET {path} 请求异常@{base}: {e}")
+                    self._mark_current_domain_failed(f"请求异常@{base}: {e}")
+                    break  # 跳出内层，外层 continue 切下一个域名
+                if not as_json:
+                    return r.text
+                try:
+                    return r.json()
+                except Exception:
+                    txt = r.text[:300]
+                    low = txt.lower()
+                    # nologin / PoW 验证页 / 失效 → 重登一次；仍失败则切换域名
+                    need_relogin = ("nologin" in low or "powSolve" in txt
+                                    or "安全验证" in txt or "未登录" in txt
+                                    or r.status_code in (401, 403))
+                    if retry and need_relogin and inner == 0:
+                        logger.warning(f"[muliy_site] {path} 需重登 status={r.status_code}: {txt[:120]}")
+                        if self._relogin_on_fail():
+                            continue  # 同域名重登后重试一次
+                        # 无 cookie 可重灌 → 域名失效
+                        self._mark_current_domain_failed(f"重登失败@{base}")
+                        break
+                    if need_relogin:
+                        # 重登后仍被拦截 → 当前域名 cookie 不通用/过期 → 切换
+                        self._mark_current_domain_failed(f"重登后仍失效@{base}")
+                        break
+                    # 其它非登录类错误：返回 None（不切域名）
+                    logger.warning(f"[muliy_site] {path} 非登录类错误 status={r.status_code}: {txt[:120]}")
+                    return None
+            # 内层因域名失效 break 出来 → 外层 continue 切下一个域名
+        logger.error(f"[muliy_site] GET {path} 在多个域名均失败，放弃")
+        return None
 
     # ---------- 业务接口 ----------
     # 搜索结果缓存 {keyword: (results, ts)}，5分钟有效，避免频繁请求触发限流
     _SEARCH_CACHE: dict = {}
     _SEARCH_CACHE_TTL = 300
     _LAST_SEARCH_TS = 0.0
+    # 搜索串行锁：/res/search_suggest 同一 session 只允许搜 1 次且有频率限制，
+    # 多用户并发搜索若不串行，1.5s 间隔检查会被同时通过 → 全部被限流返回空。
+    # 串行后等锁的线程可直接命中前一个线程写入的缓存，代价极小。
+    _SEARCH_LOCK = threading.Lock()
 
     def _do_search_once(self, keyword: str, max_results: int) -> list:
         """单次搜索（不缓存不降级）。
@@ -433,42 +566,70 @@ class MuliySiteClient:
             candidates.append(s3)
 
         results = []
-        for kw in candidates:
-            # 降级时先查缓存（避免重复请求触发限流）；空结果不当命中
-            cached = MuliySiteClient._SEARCH_CACHE.get(kw)
-            if cached and cached[0] and (time.time() - cached[1] < MuliySiteClient._SEARCH_CACHE_TTL):
-                results = cached[0]
-                logger.info(f"[muliy_site] 搜索 '{kw}' 缓存命中 {len(results)} 条"
-                            f"{' (降级)' if kw != cache_key else ''}")
+        # 串行化搜索：等锁期间其他线程可能已完成同词搜索并写入缓存，
+        # 锁内循环首先查缓存即天然 double-check，不会重复请求。
+        with MuliySiteClient._SEARCH_LOCK:
+            for kw in candidates:
+                # 降级时先查缓存（避免重复请求触发限流）；空结果不当命中
+                cached = MuliySiteClient._SEARCH_CACHE.get(kw)
+                if cached and cached[0] and (time.time() - cached[1] < MuliySiteClient._SEARCH_CACHE_TTL):
+                    results = cached[0]
+                    logger.info(f"[muliy_site] 搜索 '{kw}' 缓存命中 {len(results)} 条"
+                                f"{' (降级)' if kw != cache_key else ''}")
+                    if results:
+                        break
+                    continue  # 缓存空结果，跳过该候选词不重复请求
+                # 请求间隔（至少1.5秒），避免触发联想接口限流
+                gap = time.time() - MuliySiteClient._LAST_SEARCH_TS
+                if gap < 1.5:
+                    time.sleep(1.5 - gap)
+                MuliySiteClient._LAST_SEARCH_TS = time.time()
+                results = self._do_search_once(kw, max_results)
                 if results:
-                    break
-                continue  # 缓存空结果，跳过该候选词不重复请求
-            # 请求间隔（至少1.5秒），避免触发联想接口限流
-            gap = time.time() - MuliySiteClient._LAST_SEARCH_TS
-            if gap < 1.5:
-                time.sleep(1.5 - gap)
-            MuliySiteClient._LAST_SEARCH_TS = time.time()
-            results = self._do_search_once(kw, max_results)
-            if results:
-                MuliySiteClient._SEARCH_CACHE[kw] = (results, time.time())
-                logger.info(f"[muliy_site] 搜索 '{kw}' -> {len(results)} 个结果"
-                            f"{' (降级)' if kw != cache_key else ''}")
-                break  # 有结果就不再降级
-            logger.info(f"[muliy_site] 搜索 '{kw}' -> 0 个结果（空结果不写缓存，"
-                        f"限流瞬态可自愈）")
+                    MuliySiteClient._SEARCH_CACHE[kw] = (results, time.time())
+                    logger.info(f"[muliy_site] 搜索 '{kw}' -> {len(results)} 个结果"
+                                f"{' (降级)' if kw != cache_key else ''}")
+                    break  # 有结果就不再降级
+                logger.info(f"[muliy_site] 搜索 '{kw}' -> 0 个结果（空结果不写缓存，"
+                            f"限流瞬态可自愈）")
 
         return results
 
     def get_detail(self, dir_: str, id_: str) -> dict:
-        """获取详情（解析详情页内联 _obj.d）。带安全验证(PoW)补跑 / nologin 重登重试。"""
-        base = self._get_base()
+        """获取详情（解析详情页内联 _obj.d）。
+
+        支持多站点：当前域名失效时自动切换到下一个最低延迟域名重试，
+        直至成功或所有候选域名均失败。
+        """
+        tried = 0
+        while tried < 12:
+            tried += 1
+            base = self._get_base()
+            detail, domain_failed = self._get_detail_once(base, dir_, id_)
+            if detail.get("name") != "获取失败":
+                return detail
+            if not domain_failed:
+                return detail  # 非域名级失败（影视本身不可达）→ 直接返回
+            # domain_failed=True：_get_detail_once 已标记当前域名失效，切下一个
+        return {"name": "获取失败", "desc": "所有影视站点均不可用，请稍后重试",
+                "cover": "", "year": "", "dir": dir_, "id": id_, "status": "",
+                "daoyan": [], "zhuyan": [], "leixing": [], "diqu": [],
+                "score_db": "", "score_im": ""}
+
+    def _get_detail_once(self, base: str, dir_: str, id_: str):
+        """在指定域名上获取详情（含单域名内 PoW 补跑/重登重试）。
+
+        返回 (detail_dict, domain_failed: bool)。domain_failed=True 表示当前域名
+        经恢复仍不可用（应切换站点）；False 表示影视本身获取失败（非域名问题）。
+        """
         empty = {"name": "获取失败", "desc": "登录失败", "cover": "",
                  "year": "", "dir": dir_, "id": id_, "status": "",
                  "daoyan": [], "zhuyan": [], "leixing": [], "diqu": [],
                  "score_db": "", "score_im": ""}
         if not self.ensure_session():
-            return empty
-        for attempt in range(3):  # 最多重试：PoW 补验证 + 重登
+            self._mark_current_domain_failed(f"ensure_session失败@{base}")
+            return empty, True
+        for attempt in range(3):  # 单域名内：PoW 补验证 + 重登
             try:
                 r = self._session.get(
                     base + f"/{dir_}/{id_}",
@@ -476,20 +637,17 @@ class MuliySiteClient:
                     timeout=15, verify=False,
                 )
                 txt = r.text
-                # 有效详情页必须含内联 _obj.d；否则一律视为未登录/安全验证页。
-                # ★关键修复：检测必须扫整页文本（中文「未登录」+ 英文 nologin 可能在
-                # 300 字符之后，旧逻辑只扫前300字符导致漏检，parse_detail_html 兜底成
-                # "未知影视"）。
                 if "_obj.d" not in txt:
                     blocked = ("未登录" in txt or "nologin" in txt.lower()
                                or "powSolve" in txt or "安全验证" in txt
                                or "访问受限" in txt or "pow" in txt.lower())
                     if blocked:
                         # 详情页被「浏览器安全验证」(PoW) 拦截：补跑 PoW 获取
-                        # browser_verified 后重试。cookie/账号模式均适用（无需账号密码）。
+                        # browser_verified 后重试。cookie/账号模式均适用。
                         logger.warning(f"[muliy_site] 详情页被安全验证拦截(attempt={attempt})，补跑 PoW")
                         try:
-                            solve_pow(self._session, base)
+                            # attempt>0 说明上一轮复用/求解后仍被拦截 → 强制重解
+                            self._solve_pow_shared(base, force=(attempt > 0))
                         except Exception as e:
                             logger.warning(f"[muliy_site] PoW 补跑失败: {e}")
                         if attempt < 2:
@@ -497,21 +655,24 @@ class MuliySiteClient:
                     # 非 PoW 拦截（如登录失效）→ 重登重试
                     if self._relogin_on_fail():
                         continue
-                    return empty
+                    # 重登仍失败 → 当前域名 cookie 无效，标记域名失效
+                    self._mark_current_domain_failed(f"详情重登失败@{base}")
+                    return empty, True
                 detail = parse_detail_html(txt, dir_, id_)
-                # 若解析出真实标题则成功；否则可能页面结构异常
                 if detail.get("name") and detail["name"] != "未知影视":
-                    return detail
+                    return detail, False
                 # 解析失败但页面非 nologin：可能是 _obj.d 结构异常，返回带 cover 的兜底
                 detail["cover"] = cover_url(dir_, id_)
-                return detail
+                return detail, False
             except Exception as e:
-                logger.error(f"[muliy_site] 详情获取失败: {e}")
+                logger.error(f"[muliy_site] 详情获取失败@{base}: {e}")
                 if attempt == 0 and self._relogin_on_fail():
                     continue
+                self._mark_current_domain_failed(f"详情异常@{base}: {e}")
                 empty["desc"] = str(e)[:120]
-                return empty
-        return empty
+                return empty, True
+        self._mark_current_domain_failed(f"详情恢复失败@{base}")
+        return empty, True
 
     def get_resources(self, dir_: str, id_: str) -> dict:
         """获取在线播放节点 + 网盘资源。"""
@@ -564,15 +725,33 @@ class MuliySiteClient:
         return {"playlist": playlist, "panlist": panlist}
 
     def get_play_m3u8(self, node_i: str, ep: int = 1) -> str:
-        """获取播放页的 m3u8 直链。
+        """获取播放页的 m3u8 直链（多站点：当前域名失效自动切换）。
 
         播放页 /py/{node_i}/{ep} 内联 _obj.player.url 即 m3u8 直链。
         注意：该页在 cookie 失效时会返回「未登录，访问受限」或「浏览器安全验证」
         页（无 _obj.player），必须重做 PoW+登录后重试才能拿到直链。
         """
-        base = self._get_base()
+        tried = 0
+        while tried < 12:
+            tried += 1
+            base = self._get_base()
+            url, domain_failed = self._get_play_m3u8_once(base, node_i, ep)
+            if url:
+                return url
+            if not domain_failed:
+                return ""  # 非域名级失败，不再切换
+            # domain_failed=True：切下一个域名
+        logger.error("[muliy_site] m3u8 在多个域名均失败，放弃")
+        return ""
+
+    def _get_play_m3u8_once(self, base: str, node_i: str, ep: int = 1):
+        """在指定域名上获取播放页 m3u8 直链（含单域名内 PoW 补跑/重登重试）。
+
+        返回 (url, domain_failed)。domain_failed=True 表示当前域名经恢复仍不可用。
+        """
         if not self.ensure_session():
-            return ""
+            self._mark_current_domain_failed(f"ensure_session失败@{base}")
+            return "", True
         for attempt in range(3):
             try:
                 r = self._session.get(
@@ -588,30 +767,43 @@ class MuliySiteClient:
                                or "访问受限" in txt or "pow" in txt.lower())
                     logger.warning(f"[muliy_site] 播放页非有效页(attempt={attempt}) "
                                    f"blocked={blocked} len={len(txt)}")
-                    # 强制刷新登录（solve_pow 已改为每次重算 PoW）后重试
+                    # 浏览器安全验证(PoW)拦截：补跑 PoW 获取 browser_verified 后重试；
+                    # 非 PoW(登录失效)则重登重试。注意：必须调 solve_pow 而非仅靠
+                    # _relogin_on_fail（重灌 cookie 不会重新求解 PoW，播放页将始终被拦截）。
+                    if blocked:
+                        try:
+                            # attempt>0 说明上一轮复用/求解后仍被拦截 → 强制重解
+                            self._solve_pow_shared(base, force=(attempt > 0))
+                        except Exception as e:
+                            logger.warning(f"[muliy_site] PoW 补跑失败: {e}")
+                        if attempt < 2:
+                            continue
                     if self._relogin_on_fail():
                         continue
-                    return ""
+                    self._mark_current_domain_failed(f"播放重登失败@{base}")
+                    return "", True
                 m = re.search(r"_obj\.player\s*=\s*(\{)", txt)
                 if not m:
                     logger.warning(f"[muliy_site] 播放页无 _obj.player")
-                    return ""
+                    return "", False  # 非域名级（页面结构异常），不切换
                 block = _extract_balanced(txt, m.start(1))
                 d = json.loads(block)
                 url = d.get("url", "")
                 if not url:
                     logger.warning(f"[muliy_site] _obj.player 无 url 字段")
-                    return ""
+                    return "", False
                 # 解析 302 得到最终可播放直链（如 svip.xgplayN.com → vipN.jimxtc.com）
                 url = self._resolve_media_url(url, base)
                 logger.info(f"[muliy_site] m3u8提取成功 node={node_i} ep={ep} -> {url[:80]}")
-                return url
+                return url, False
             except Exception as e:
-                logger.error(f"[muliy_site] m3u8提取失败(attempt={attempt}): {e}")
+                logger.error(f"[muliy_site] m3u8提取失败@{base}(attempt={attempt}): {e}")
                 if attempt < 2 and self._relogin_on_fail():
                     continue
-                return ""
-        return ""
+                self._mark_current_domain_failed(f"m3u8异常@{base}: {e}")
+                return "", True
+        self._mark_current_domain_failed(f"m3u8恢复失败@{base}")
+        return "", True
 
     def _resolve_media_url(self, url: str, base: str) -> str:
         """解析 m3u8 可能的 302 跳转，返回最终可直接播放的直链。失败则原样返回。"""
@@ -672,25 +864,8 @@ def _extract_vip_media_urls(html: str) -> list:
     return out
 
 
-def parse_vip_url(video_url: str, cookies: str = "",
-                 client: "MuliySiteClient" = None, base_url: str = "") -> dict:
-    """把外部视频链接提交到教父.com 的 /zjx VIP 解析页，解析出可播放直链。
-
-    参数：
-      - video_url：待解析的视频分享链接（爱奇艺/腾讯/优酷/芒果TV/乐视/搜狐）
-      - client：    已登录的 MuliySiteClient（优先复用其会话/域名）；为空则临时新建
-      - cookies/base_url：新建 client 时使用（与影视搜索共用浏览器登录态 Cookie）
-    返回 {"ok", "url", "platform_page", "candidates", "error", "raw"}。
-      - ok=True 时 url 为真实可播放直链；ok=False 时 url 为空，error 说明原因，
-        raw 附带解析页 HTML 前若干字符便于排障。
-    """
-    own = False
-    if client is None:
-        client = MuliySiteClient(base_url=base_url, cookies=cookies)
-        own = True
-    if not client.ensure_session():
-        return {"ok": False, "url": "", "platform_page": "", "candidates": [],
-                "error": "影视站登录失败（请检查 muliy_cookie 配置或 Cookie 是否已过期）", "raw": ""}
+def _vip_core(video_url: str, client: "MuliySiteClient", base_url: str) -> dict:
+    """单个域名上的 VIP 解析核心逻辑（不含域名切换）。"""
     base = client._get_base()
     page = base + "/zjx"
     encoded = quote(video_url, safe="")
@@ -764,6 +939,46 @@ def parse_vip_url(video_url: str, cookies: str = "",
             "error": "解析页未找到任何直链/解析接口", "raw": raw}
 
 
+def parse_vip_url(video_url: str, cookies: str = "",
+                 client: "MuliySiteClient" = None, base_url: str = "") -> dict:
+    """把外部视频链接提交到教父.com 的 /zjx VIP 解析页，解析出可播放直链。
+
+    支持多站点：当前域名解析失败（请求异常）时自动切换到下一个最低延迟
+    域名重试（跨站点共享同一份 Cookie）。
+
+    参数：
+      - video_url：待解析的视频分享链接（爱奇艺/腾讯/优酷/芒果TV/乐视/搜狐）
+      - client：    已登录的 MuliySiteClient（优先复用其会话/域名）；为空则临时新建
+      - cookies/base_url：新建 client 时使用（与影视搜索共用浏览器登录态 Cookie）
+    返回 {"ok", "url", "platform_page", "candidates", "error", "raw"}。
+      - ok=True 时 url 为真实可播放直链；ok=False 时 url 为空，error 说明原因，
+        raw 附带解析页 HTML 前若干字符便于排障。
+    """
+    own = False
+    if client is None:
+        client = MuliySiteClient(base_url=base_url, cookies=cookies)
+        own = True
+    if not client.ensure_session():
+        return {"ok": False, "url": "", "platform_page": "", "candidates": [],
+                "error": "影视站登录失败（请检查 muliy_cookie 配置或 Cookie 是否已过期）", "raw": ""}
+    # 多域名：当前域名解析失败（请求异常）时切换重试（最多尝试 已失效数+3 个）
+    max_try = len(client._failed_domains) + 3
+    last = None
+    for _ in range(max_try):
+        res = _vip_core(video_url, client, base_url)
+        if res.get("ok"):
+            return res
+        last = res
+        err = res.get("error", "")
+        # 仅「请求解析页异常」这类域名级错误才切换；单纯无直链视为视频不支持
+        if "请求解析页异常" in err:
+            client._mark_current_domain_failed(f"VIP解析: {err}")
+            continue
+        return res
+    return last or {"ok": False, "url": "", "platform_page": "", "candidates": [],
+                    "error": "多个影视站点解析均失败", "raw": ""}
+
+
 # ==================== URL 构造 ====================
 
 def cover_url(dir_: str, id_: str, size: int = 256) -> str:
@@ -809,7 +1024,7 @@ def format_movie_list_new(results: list, keyword: str, page: int = 0,
             tag += f" ⭐{sc}"
         lines.append(f"{emoji_index(i - st + 1, ed - st)} {title_trim}{tag}")
     lines.append("")
-    lines.append("─" * 36)
+    lines.append("=" * 36)
     nav = []
     if st > 0:
         nav.append("「上一页」")

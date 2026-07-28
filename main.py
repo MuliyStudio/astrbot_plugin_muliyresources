@@ -105,7 +105,7 @@ from .core.novel import (
     check_sources, NovelApiError, NOVEL_FORMATS,
 )
 from .core.muliy_site import (
-    MuliySiteClient, discover_best_domain, cover_url as muliy_cover_url,
+    MuliySiteClient, discover_best_domain, set_release_url, cover_url as muliy_cover_url,
     play_url as muliy_play_url, format_movie_list_new, format_resource_type,
     format_play_nodes, format_pan_list, format_pan_types, group_panlist_by_type,
     extract_pwd, build_merged_text,
@@ -324,6 +324,10 @@ class MuliyResourcesPlugin(Star):
         # 影视源 / 游戏源：按 cookie 是否配置自动决定（替代手动 movie_source 切换）
         try:
             cfg = self._get_config()
+            # 发布页地址可配置（默认挂了.com xn--ykq321c.com），用于多站点探测选点
+            release_url = (cfg.get("muliy_release_url") or "").strip()
+            if release_url:
+                set_release_url(release_url)
             # 影视源：cookie 登录模式（绕过 PoW+验证码），否则回退 a123tv 旧站
             cookies = (cfg.get("muliy_cookie") or "").strip()
             ttl = int(cfg.get("muliy_cache_ttl") or 3600)
@@ -2004,7 +2008,7 @@ class MuliyResourcesPlugin(Star):
             head += f"  第 {p + 1}/{pt} 页"
         head += f"\n共 {t} 条结果（多书源聚合）"
         lines = [head, ""]
-        sep = "────────────"
+        sep = "=" * 12
         for i, x in enumerate(r[st:ed], 1):
             idx = emoji_index(i, pc)
             name = x["book_name"] or "(未知书名)"
@@ -2508,7 +2512,7 @@ class MuliyResourcesPlugin(Star):
         for i in range(st,ed):
             x=r[i]["title"]; x=(x[:45]+"...") if len(x)>48 else x; lines.append(f"{emoji_index(i-st+1, ed-st)} {x}")
         lines.append("")
-        lines.append("─" * 36)
+        lines.append("=" * 36)
         nav = []
         if st>0: nav.append("「上一页」")
         if ed<t: nav.append("「下一页」")
@@ -2529,7 +2533,7 @@ class MuliyResourcesPlugin(Star):
         for i in range(st,ed):
             x=r[i]["title"]; x=(x[:45]+"...") if len(x)>48 else x; lines.append(f"{emoji_index(i-st+1, ed-st)} {x}")
         lines.append("")
-        lines.append("─" * 36)
+        lines.append("=" * 36)
         nav = []
         if st>0: nav.append("「上一页」")
         if ed<t: nav.append("「下一页」")
@@ -2567,7 +2571,7 @@ class MuliyResourcesPlugin(Star):
                 tag = ""
             lines.append(f"{emoji_index(i - st + 1, ed - st)} {title}{tag}")
         lines.append("")
-        lines.append("─" * 36)
+        lines.append("=" * 36)
         nav = []
         if st > 0: nav.append("「上一页」")
         if ed < t: nav.append("「下一页」")
