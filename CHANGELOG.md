@@ -1,5 +1,15 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.8 — 2026-08-31
+
+### 🐛 修复：日报手动指令在不支持「文件消息」的平台发送失败
+
+- **背景**：`/movie_report` `/software_report` `/game_report` 手动指令渲染成功后，经 `_send_event_file` 一律以**文件消息**发送（群内 `upload_group_file` / 私聊 `FileComponent`）。企业微信/QQ官方/Telegram 等平台不支持文件消息，导致发送失败并误报「请确认已执行 playwright install chromium」（实际渲染已成功）。
+- **改动**（`main.py`）：
+  - `_send_event_file` 发送链改为四级降级：OneBot 群文件 → `FileComponent` 文件 → **当前会话直接发图片（ImageComponent）** → 文字兜底。
+  - `/movie_report` 手动指令补齐**三级渲染降级**（本地 Chromium → AstrBot 内置渲染 → Pillow），与定时日报一致。
+  - 优化报错文案，不再误导用户去装 chromium。
+
 ## v1.12.7 — 2026-08-31
 
 ### 🖼️ 日报渲染三级降级：本地 Chromium → AstrBot 内置渲染 → Pillow

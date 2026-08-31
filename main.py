@@ -14,35 +14,6 @@ core/movie.py      — 影视搜索相关函数 (a123tv.com)
 import asyncio, base64, concurrent.futures, datetime, io, json, os, re, sys, tempfile, time, traceback, zipfile, zoneinfo
 from typing import Optional
 
-# === DEBUG INSTRUMENTATION (debug session c4a65f) ===
-import threading as _thr, pathlib as _pl
-_DBGL = threading.Lock() if hasattr(threading := __import__('threading'), 'Lock') else _thr.Lock()
-def _dbg_log(hid, msg, data):
-    try:
-        line = json.dumps({
-            "sessionId": "c4a65f",
-            "location": "main.py",
-            "message": msg,
-            "data": data,
-            "hypothesisId": hid,
-            "runId": "initial",
-            "timestamp": int(time.time() * 1000),
-        }, ensure_ascii=False)
-        # 优先写容器内路径（Docker 部署）；宿主机回退；桌面调试最后回退
-        for _p in ("/AstrBot/data/plugins/astrbot_plugin_muliyresources/debug-c4a65f.log",
-                   "/www/dk_project/dk_app/astrbot/astrbot_RLHF/data/plugins/astrbot_plugin_muliyresources/debug-c4a65f.log",
-                   r"C:\Users\Administrator\debug-c4a65f.log"):
-            try:
-                _pl.Path(_p).parent.mkdir(parents=True, exist_ok=True)
-                with open(_p, "a", encoding="utf-8") as f:
-                    f.write(line + "\n")
-                break
-            except Exception:
-                continue
-    except Exception:
-        pass
-# === END DEBUG INSTRUMENTATION ===
-
 try:
     import requests
 except ImportError: requests = None
@@ -239,16 +210,12 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.7")
+          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.8")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self._plugin_config = self._migrate_config(config)
-        _dbg_log("H0", "plugin __init__ called", {
-            "config_type": str(type(config).__name__) if config is not None else "None",
-            "has_xdgame_username": config.get("xdgame_username") if isinstance(config, dict) else "N/A",
-        })
         self._sessions = SessionManager()
         self._search_sessions = SearchSessionManager()
         self._movie_sessions = SearchSessionManager()   # 影视会话 (a123tv)
@@ -645,7 +612,6 @@ class MuliyResourcesPlugin(Star):
     def _get_config(self) -> dict:
         raw = self._plugin_config
         if raw is None:
-            _dbg_log("H1", "_get_config: _plugin_config is None", {})
             return {}
         if not isinstance(raw, dict):
             try:
@@ -665,10 +631,6 @@ class MuliyResourcesPlugin(Star):
                 flat.update(v)
             else:
                 flat[k] = v
-        _dbg_log("H1", "_get_config: config type", {
-            "type": str(type(raw).__name__),
-            "xdgame_username_present": flat.get("xdgame_username") is not None,
-        })
         return flat
 
     @staticmethod
@@ -2502,26 +2464,8 @@ class MuliyResourcesPlugin(Star):
             xd_nick = result.get("xd_nick", "未知")
             cookie_str = format_cookie_string(extract_xdgame_cookies(cookies))
             logger.info(f"[暮黎资源] 登录成功 昵称={xd_nick} cookie长度={len(cookie_str)}")
-            # === DEBUG H4/H2: 入参与提取 ===
-            _dbg_log("H2", "_handle_login_result 入参", {
-                "input_n": len(cookies),
-                "input_names": list(cookies.keys()),
-                "xd_nick": xd_nick,
-            })
-            _dbg_log("H2", "extract_xdgame_cookies 后", {
-                "filtered_keys": list(extract_xdgame_cookies(cookies).keys()),
-                "cookie_str_len": len(cookie_str),
-                "cookie_str_preview": cookie_str[:200],
-            })
             if cookie_str:
                 await self._update_config("cookie", cookie_str)
-                # === DEBUG H4: 验证持久化真的写入了 ===
-                saved = self._get_config().get("cookie", "")
-                _dbg_log("H4", "_update_config 后回读", {
-                    "saved_len": len(saved),
-                    "saved_first60": saved[:60],
-                    "saved_has_DedeUserID": "DedeUserID" in saved,
-                })
                 msg = (f"✅ xdgame.com 登录成功！\n"
                        f"👤 昵称：{xd_nick}\n"
                        f"📋 新 Cookie 已保存到配置\n"
@@ -2729,9 +2673,9 @@ class MuliyResourcesPlugin(Star):
             fn = f"暮黎软件日报_{ts}{_img_ext(img_bytes)}"
             ok = await self._send_event_file(event, img_bytes, fn, "", "软件日报")
             if not ok:
-                yield event.plain_result("⚠️ 日报图片发送失败，请确认已执行 playwright install chromium。")
+                yield event.plain_result("⚠️ 日报图片发送失败（已尝试降级发图/文字版）。")
         else:
-            yield event.plain_result("⚠️ 日报图片渲染失败，请确认已执行 playwright install chromium。")
+            yield event.plain_result("⚠️ 日报图片渲染失败（已内置 Pillow 兜底，请查看 AstrBot 日志）。")
 
     @filter.command("software_report_status")
     async def cmd_sw_status(self, event: AstrMessageEvent):
@@ -5790,15 +5734,43 @@ class MuliyResourcesPlugin(Star):
         try:
             img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
         except Exception as e: logger.error(f"[影视日报] 渲染异常: {e}")
+        if not img_bytes:
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[影视日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[影视日报] 尝试 Pillow 兜底渲染")
+            cards = []
+            for it in items:
+                chips = []
+                if it.get("status"):
+                    chips.append(str(it["status"]))
+                db = it.get("douban", "")
+                if db and str(db) not in ("0", "0.0", ""):
+                    chips.append("豆瓣 " + str(db))
+                im = it.get("imdb", "")
+                if im and str(im) not in ("0", "0.0", ""):
+                    chips.append("IMDb " + str(im))
+                for q in (it.get("quality") or []):
+                    chips.append(str(q))
+                cards.append({
+                    "cover": it.get("cover_b64") or "",
+                    "title": it.get("title") or "未知",
+                    "chips": chips,
+                    "desc": (it.get("synopsis") or "暂无简介")[:160],
+                })
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, src_label, font_path, 720, "影视日报")
         ts = datetime.date.today().strftime("%Y%m%d")
         fn = f"暮黎影视日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
         if img_bytes:
             ok = await self._send_event_file(event, img_bytes, fn, "", "影视日报")
             if not ok:
-                yield event.plain_result("⚠️ 日报图片发送失败，请确认已执行 playwright install chromium。")
+                yield event.plain_result("⚠️ 日报图片发送失败，已尝试降级发图/文字版。")
         else:
             await event.send(MessageChain([Plain(
-                "⚠️ 图片渲染失败（请确认已执行 playwright install chromium），改为文字版：\n"
+                "⚠️ 图片渲染失败，改为文字版：\n"
                 + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
                              for i, it in enumerate(items, 1)))]))
 
@@ -5931,8 +5903,9 @@ class MuliyResourcesPlugin(Star):
     async def _send_event_file(self, event, img_bytes: bytes | None, file_name: str, text: str, label: str) -> bool:
         """手动指令：把日报图以「文件」形式发到当前会话（与定时日报一致，绕开发图体积上限）。
 
-        群内 → upload_group_file（与小说 _upload_zip 一致）；私聊/好友 → 临时文件 + FileComponent 兜底。
-        任何失败都按 text 兜底（text 为空则仅返回 False）。
+        群内且 OneBot(aiocqhttp) → upload_group_file；
+        其余平台先尝试 FileComponent 文件发送，不支持文件的平台（企微/QQ官方/TG 等）
+        自动降级为「当前会话直接发图片」，再不行才用 text 兜底。
         """
         if not img_bytes:
             if text:
@@ -5940,6 +5913,7 @@ class MuliyResourcesPlugin(Star):
             return bool(text)
         gid = event.get_group_id()
         client = self._get_best_client(event)
+        # ① 群内 + OneBot(aiocqhttp) → 上传群文件
         if gid and client:
             try:
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
@@ -5949,29 +5923,44 @@ class MuliyResourcesPlugin(Star):
                 logger.info(f"[暮黎资源] {label} 手动指令已以文件形式发送到群 {gid}（{file_name}）")
                 return True
             except Exception as e:  # noqa: BLE001
-                logger.error(f"[暮黎资源] {label} 手动指令群文件发送失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
-                if text:
-                    await event.send(MessageChain([Plain(text)]))
-                return bool(text)
-        # 私聊/好友：临时文件 + FileComponent 兜底
+                logger.error(f"[暮黎资源] {label} 手动指令群文件发送失败: {type(e).__name__}: {e!r}")
+        # 写临时文件（文件发送 / 图片发送共用）
         tmp = None
         try:
             fd, tmp = tempfile.mkstemp(suffix=_img_ext(img_bytes), prefix="report_"); os.close(fd)
-            with open(tmp, "wb") as f: f.write(img_bytes)
-            await self.context.send_message(
-                f"{event.get_platform_id()}:FriendMessage:{event.get_sender_id()}",
-                MessageChain([FileComponent(file=tmp, name=file_name)]))
-            logger.info(f"[暮黎资源] {label} 手动指令已以文件形式发送（FileComponent, {file_name}）")
-            return True
+            with open(tmp, "wb") as f:
+                f.write(img_bytes)
+            # ② 尝试按文件发送（FileComponent）
+            try:
+                await self.context.send_message(
+                    f"{event.get_platform_id()}:FriendMessage:{event.get_sender_id()}",
+                    MessageChain([FileComponent(file=tmp, name=file_name)]))
+                logger.info(f"[暮黎资源] {label} 手动指令已以文件形式发送（FileComponent, {file_name}）")
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[暮黎资源] {label} FileComponent 发送失败，降级为图片发送: {type(e).__name__}: {e!r}")
+            # ③ 不支持文件的平台（企微/QQ官方/TG 等）→ 当前会话直接发图片
+            try:
+                await event.send(MessageChain([ImageComponent(file=tmp)]))
+                logger.info(f"[暮黎资源] {label} 已降级为当前会话发图片（{file_name}）")
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[暮黎资源] {label} 图片发送也失败: {type(e).__name__}: {e!r}")
+            # ④ 最后文字兜底
+            if text:
+                await event.send(MessageChain([Plain(text)]))
+            return bool(text)
         except Exception as e:  # noqa: BLE001
-            logger.error(f"[暮黎资源] {label} 手动指令 FileComponent 发送失败: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+            logger.error(f"[暮黎资源] {label} 手动指令发送异常: {type(e).__name__}: {e!r}")
             if text:
                 await event.send(MessageChain([Plain(text)]))
             return bool(text)
         finally:
             if tmp and os.path.exists(tmp):
-                try: os.unlink(tmp)
-                except Exception: pass
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     async def _sw_send_report(self, img_bytes, zp, text: str = ""):
         config = self._get_config()
