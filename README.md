@@ -298,7 +298,7 @@ aiocqhttp(OneBot v11)、企业微信、个人微信、QQ官方、Telegram、飞�
 
 ## 📝 更新日志
 
-见 [GitHub Releases](https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases)
+见 [CHANGELOG.md](./CHANGELOG.md) 与 [GitHub Releases](https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases)
 
 ---
 
