@@ -7,7 +7,7 @@ desc: |
   还有vip视频解析功能，支持爱奇艺/腾讯视频/优酷/芒果也能解析网易云音乐（需要会员）。内置摸头杀、给你一脚、给我按摩等娱乐功能。
 repo: https://github.com/MuliyStudio/astrbot_plugin_muliyresources
 astrbot_version: ">=4.20.0"
-version: "1.12.9"
+version: "1.13.0"
 social_link: https://github.com/MuliyStudio
 support_platforms:
   - aiocqhttp
