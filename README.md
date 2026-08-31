@@ -221,7 +221,10 @@ xdgame Cookie 约 30 天过期。配置账密后执行 `/game_cookie_refresh`：
 ### 🎮 日报推送
 
 - 三套日报（软件 / 游戏 / 影视）各自独立定时、独立群配置。
-- **渲染**：优先用 Chromium 渲染精美 HTML 图；**没装 Chromium 也完全可用**——自动用内置 Pillow 渲染成卡片图。
+- **渲染（三级降级，无需装任何东西）**：
+  1. 本地 Chromium（若已安装）→ 最高清
+  2. **AstrBot 内置 `html_render`**（官方 T2I 服务）→ 装好插件即用，无需浏览器
+  3. Pillow 纯 Python 兜底 → 永远可用
 - 以**文件形式**发送到群，绕开发图体积上限。
 
 ### 📖 小说：so-novel 部署（唯一需要额外服务的功能）
@@ -257,11 +260,12 @@ docker run -d --name sonovel -p 7765:7765 \
 |------|------|:---:|
 | Pillow | 图片生成 / 日报兜底渲染 | ✅ 必需 |
 | requests / bs4 / apscheduler / httpx / aiohttp | 搜索 / 解析 / 调度 | ✅ 必需（AstrBot 一般自带） |
-| **Chromium**（`playwright install chromium`） | 日报高清 HTML 渲染 | ⚠️ 可选（不装用 Pillow 兜底） |
+| **Chromium**（`playwright install chromium`） | 日报高清 HTML 渲染 | ⚠️ 可选（**AstrBot 内置渲染 / Pillow 兜底，装好插件即出图**） |
 | **so-novel** | 小说搜索下载 | ⚠️ 可选（仅小说功能需要） |
 | ffmpeg | 网易云语音截取 | ⚠️ 可选（不装发完整音频） |
 
-国内安装 Chromium 加速（可选）：
+> 日报渲染默认走三级降级：**本地 Chromium（若已安装）→ AstrBot 内置 `html_render`（官方 T2I 服务）→ Pillow 纯 Python**，三级都不需要你手动装任何东西。
+> 若想用本地 Chromium 获得最高清渲染（可选），国内可加速安装：
 
 ```bash
 PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright \

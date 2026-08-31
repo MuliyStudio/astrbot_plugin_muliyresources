@@ -1,5 +1,19 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.7 — 2026-08-31
+
+### 🖼️ 日报渲染三级降级：本地 Chromium → AstrBot 内置渲染 → Pillow
+
+- **背景**：经核对 AstrBot 参考文档与源码，AstrBot 的 `Star` 类自带 `self.html_render()` / `self.text_to_image()`（底层为内置 `html_renderer`，走官方/自建 **T2I 图文渲染服务**），插件可直接调用，**无需本机安装 Playwright/Chromium**。基座 Docker 镜像**默认并不自带 Chromium**（此前需手动 `playwright install chromium`）。
+- **改动**（`main.py`）：
+  - 新增 `_html_render_astrbot()`：调用 AstrBot 内置 `self.html_render(html, {}, return_url=False)` 渲染 HTML→图片字节。
+  - 软件/游戏/影视日报渲染升级为**三级降级**：
+    1. **本地 Playwright/Chromium**（若已安装，最高清最稳定）；
+    2. **AstrBot 内置渲染**（`html_renderer`，无需本机浏览器，装好插件即用）；
+    3. **Pillow 纯 Python 兜底**（永远可用）。
+- **实测**：无 Chromium 时 AstrBot 内置渲染成功产出日报图（约 13KB）；服务器已装 Chromium 则走本地高清渲染。
+- `requirements.txt` / README 同步说明：Chromium 完全可选，装好插件即可出图。
+
 ## v1.12.6 — 2026-08-31
 
 ### 🖼️ 新增：日报图片 Pillow 纯 Python 渲染兜底（不再强依赖 Chromium）

@@ -239,7 +239,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.6")
+          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.7")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -2605,6 +2605,31 @@ class MuliyResourcesPlugin(Star):
         }
         return msg_map.get(state, detail)
 
+    async def _html_render_astrbot(self, html: str, width: int = 720) -> bytes | None:
+        """用 AstrBot 内置 html_renderer（云端 T2I 服务）渲染 HTML→图片字节。
+
+        这是 AstrBot 自带的文转图能力（Star.html_render / html_renderer），
+        无需本机安装 Playwright/Chromium，适合「没装浏览器」的用户直接出日报图。
+        失败返回 None（调用方继续走 Pillow 兜底）。
+        """
+        try:
+            path = await self.html_render(
+                html, {}, return_url=False,
+                options={"full_page": True, "type": "jpeg", "quality": 85})
+            if path and os.path.exists(path):
+                with open(path, "rb") as f:
+                    data = f.read()
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
+                if data:
+                    logger.info(f"[日报] AstrBot 内置渲染完成，体积 {len(data)//1024}KB")
+                    return data
+        except Exception as e:
+            logger.warning(f"[日报] AstrBot 内置渲染失败: {e}")
+        return None
+
     async def _report_pil_fallback(self, cards: list, date_label: str, source_label: str,
                                    font_path: str, width: int, tag: str) -> bytes | None:
         """Playwright/Chromium 渲染失败时的兜底：用 Pillow 纯 Python 直接把日报数据画成图片。
@@ -2647,8 +2672,12 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.error(f"[软件日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
         if not img_bytes:
-            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
-            logger.info("[软件日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[软件日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[软件日报] 尝试 Pillow 兜底渲染")
             cards = []
             for sw in sws:
                 chips = []
@@ -5640,8 +5669,12 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.error(f"[影视日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
         if not img_bytes:
-            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
-            logger.info("[影视日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[影视日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[影视日报] 尝试 Pillow 兜底渲染")
             cards = []
             for it in items:
                 chips = []
@@ -6011,8 +6044,12 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.error(f"[游戏日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
         if not img_bytes:
-            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
-            logger.info("[游戏日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[游戏日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[游戏日报] 尝试 Pillow 兜底渲染")
             cards = []
             for g in games:
                 chips = []
@@ -6168,8 +6205,12 @@ class MuliyResourcesPlugin(Star):
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
         except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
         if not img_bytes:
-            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
-            logger.info("[游戏日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[游戏日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[游戏日报] 尝试 Pillow 兜底渲染")
             cards = []
             for g in games:
                 chips = []
