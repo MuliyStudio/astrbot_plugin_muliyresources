@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""新站影视搜索 - 适配 教父.com (挂了.com 发布的备用域名簇)
+"""新站影视搜索 - 适配 片库 (挂了.com 发布的备用域名簇)
 
 完整流程：
   discover_best_domain()  -> 从挂了.com 探测延迟最低的可用影视域名
@@ -33,7 +33,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _punycode_url(url: str) -> str:
-    """把 URL 里的中文域名转成 Punycode（如 www.教父.com → www.xn--wcv59z.com）。
+    """把 URL 里的中文域名转成 Punycode（如 www.片库.com → www.xn--dxtn25b.com）。
 
     HTTP header 只支持 latin-1，中文域名必须先转 Punycode。
     """
@@ -166,7 +166,7 @@ def discover_best_domain(force: bool = False, exclude: set = None) -> str:
 # ==================== PoW 解决器 ====================
 
 def solve_pow(session: requests.Session, base: str) -> bool:
-    """解决教父.com 的 PoW 工作量证明。
+    """解决片库的 PoW 工作量证明。
 
     算法（来自 powSolve.js）：GET /res/pow 拿 {N,x,t}，
     y=x 循环 t 次 y=(y*y)%N，POST /res/pow y=hex。
@@ -286,7 +286,7 @@ def parse_detail_html(html: str, dir_: str, id_: str) -> dict:
 # ==================== 客户端 ====================
 
 class MuliySiteClient:
-    """教父.com 影视站客户端：PoW + 登录 + 搜索 + 详情 + 资源。
+    """片库影视站客户端：PoW + 登录 + 搜索 + 详情 + 资源。
 
     session 缓存复用 cookie，避免每次都等 PoW(~3s)+登录。
     """
@@ -325,7 +325,7 @@ class MuliySiteClient:
           - 当前域名仍有效（未被标记失效）→ 直接复用；
           - 否则从发布页探测结果中选「延迟最低且未失效」的域名；
           - 选到新域名时，若处于 cookie 模式则清掉旧域名 cookie 并基于新域名
-            重新注入同一份 cookie（教父各域名同源，cookie 值通用 = 跨站点共享）。
+            重新注入同一份 cookie（片库各域名同源，cookie 值通用 = 跨站点共享）。
         """
         if self.base_url and self.base_url not in self._failed_domains:
             return self.base_url
@@ -827,7 +827,7 @@ class MuliySiteClient:
 
 # ==================== VIP 解析（/zjx 解析页） ====================
 #
-# 教父.com（挂了.com 发布的域名簇）自带「VIP 解析」功能，解析页即 <域名>/zjx。
+# 片库（挂了.com 发布的域名簇）自带「VIP 解析」功能，解析页即 <域名>/zjx。
 # 把外部视频分享链接（爱奇艺/腾讯视频/优酷/芒果TV/乐视/搜狐）提交到该页，
 # 站点后端会还原出真实可播放直链（.m3u8 / .mp4），这正是视频链接解析想要的「直链」。
 #
@@ -941,7 +941,7 @@ def _vip_core(video_url: str, client: "MuliySiteClient", base_url: str) -> dict:
 
 def parse_vip_url(video_url: str, cookies: str = "",
                  client: "MuliySiteClient" = None, base_url: str = "") -> dict:
-    """把外部视频链接提交到教父.com 的 /zjx VIP 解析页，解析出可播放直链。
+    """把外部视频链接提交到片库的 /zjx VIP 解析页，解析出可播放直链。
 
     支持多站点：当前域名解析失败（请求异常）时自动切换到下一个最低延迟
     域名重试（跨站点共享同一份 Cookie）。

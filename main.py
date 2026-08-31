@@ -210,7 +210,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.0")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.0")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -219,7 +219,7 @@ class MuliyResourcesPlugin(Star):
         self._sessions = SessionManager()
         self._search_sessions = SearchSessionManager()
         self._movie_sessions = SearchSessionManager()   # 影视会话 (a123tv)
-        self._movie_sessions_new = SearchSessionManager()  # 影视会话 (教父.com 新站)
+        self._movie_sessions_new = SearchSessionManager()  # 影视会话 (片库新站)
         self._novel_sessions = SearchSessionManager()  # 小说会话 (so-novel)
         self._muliy_client: MuliySiteClient | None = None  # 新站客户端（懒加载）
         # 后台任务引用（防止被GC）
@@ -304,9 +304,9 @@ class MuliyResourcesPlugin(Star):
             ttl = int(cfg.get("muliy_cache_ttl") or 3600)
             if cookies:
                 self._muliy_client = MuliySiteClient(base_url="", cache_ttl=ttl, cookies=cookies)
-                logger.info("[暮黎资源] 影视源=教父.com新站 (cookie登录模式)")
+                logger.info("[暮黎资源] 影视源=片库新站 (cookie登录模式)")
             else:
-                logger.warning("[暮黎资源] 未配置教父.com Cookie，影视搜索回退 a123tv 旧站")
+                logger.warning("[暮黎资源] 未配置片库 Cookie，影视搜索回退 a123tv 旧站")
                 self._muliy_client = None
         except Exception as e:
             logger.warning(f"[暮黎资源] 客户端初始化失败: {e}")
@@ -1059,7 +1059,7 @@ class MuliyResourcesPlugin(Star):
     async def llm_search_movie(self, event: AstrMessageEvent, movie_name: str):
         """搜索影视资源。用户说"找影视/看电影/我想看/影视名"时调用。
         流程：搜索→选序号→获取详情→选[1]在线播放/[2]网盘资源，后续交互由系统自动处理。
-        源自动切换：配了教父.com账号走新站（在线+网盘），否则回退 a123tv（仅在线）。
+        源自动切换：配了片库 Cookie 走新站（在线+网盘），否则回退 a123tv（仅在线）。
         Args:
             movie_name(string): 影视名称（如"怪物"、"庆余年"）
         """
@@ -1068,12 +1068,14 @@ class MuliyResourcesPlugin(Star):
         if not allowed:
             return f"【暮黎资源】⚠️ {reason}"
         ps = 8; tag = "【暮黎资源】"
-        # 影视源自动切换：配置了教父.com 账号密码 → 新站（在线播放+网盘）；
-        # 未配置账号密码 → 自动回退 a123tv 旧站（仅在线播放）。
-        # movie_source 配置若显式设为 "a123tv" 则强制旧站（向后兼容）。
+        # 影视源自动切换：配置了片库 Cookie → 新站（在线播放+网盘）；
+        # 未配置 Cookie → 自动回退 a123tv 旧站（仅在线播放）。
+        # movie_source 配置支持关键字强制指定源：
+        #   "片库" → 强制新站（片库）；"a123tv" → 强制旧站（向后兼容）。
         cfg = self._get_config()
-        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == "a123tv"
-        client = self._get_muliy_client() if not forced_a123 else None
+        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
+        forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
+        client = self._get_muliy_client() if (forced_new or not forced_a123) else None
         if client:
             # ===== 新站流程 =====
             try:
@@ -1667,7 +1669,7 @@ class MuliyResourcesPlugin(Star):
             selection(string): 用户的选择（数字如"1"、"2"，或"第一个"、"第二个"等中文序数）
         """
         tag = "【暮黎资源】"
-        # ★新站影视会话（教父.com）：独立状态机，优先处理
+        # ★新站影视会话（片库）：独立状态机，优先处理
         ses_mn = self._movie_sessions_new.get(event)
         if ses_mn and ses_mn.get("stage") in ("select_movie_new", "select_res_type",
                                                "select_pan_type", "select_play_node", "select_episode_new", "select_pan"):
@@ -2000,7 +2002,7 @@ class MuliyResourcesPlugin(Star):
 
     @filter.command("找影视")
     async def cmd_movie_search(self, event: AstrMessageEvent):
-        """影视搜索 — 源自动切换：配置了 muliy_cookie → 教父.com 新站（在线+网盘）；
+        """影视搜索 — 源自动切换：配置了 muliy_cookie → 片库新站（在线+网盘）；
         未配置或 movie_source=a123tv → 回退 a123tv 旧站（仅在线播放）。"""
         keyword = event.message_str.strip()
         keyword = re.sub(r"^/?找影视\s*", "", keyword)
@@ -2012,13 +2014,14 @@ class MuliyResourcesPlugin(Star):
         if not keyword:
             yield event.plain_result("请发送：/找影视 <影视名>"); return
 
-        # —— 源自动切换：配了教父.com muliy_cookie → 新站（在线播放+网盘）；
-        #    movie_source 显式设为 "a123tv" 则强制旧站（向后兼容）——
+        # —— 源自动切换：配了片库 Cookie → 新站（在线播放+网盘）；
+        #    movie_source 支持关键字强制指定源："片库" 强制新站、"a123tv" 强制旧站（向后兼容）——
         cfg = self._get_config()
-        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == "a123tv"
-        client = self._get_muliy_client() if not forced_a123 else None
+        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
+        forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
+        client = self._get_muliy_client() if (forced_new or not forced_a123) else None
         if client:
-            # ===== 教父.com 新站流程（与 llm_search_movie 一致，会话状态机处理后续选择） =====
+            # ===== 片库新站流程（与 llm_search_movie 一致，会话状态机处理后续选择） =====
             tag = "【暮黎资源】"
             try:
                 results = await asyncio.to_thread(client.search, keyword, 24)
@@ -2259,26 +2262,32 @@ class MuliyResourcesPlugin(Star):
     @filter.command("game_cookie_refresh")
     async def cmd_game_cookie_refresh(self, event: AstrMessageEvent):
         """
-        刷新 xdgame.com Cookie（仅 AstrBot 管理员可用）：
-        1. 从插件配置读取账号密码
-        2. 自动填入账密登录
-        3. 有验证码 → 发图让你输入 → 自动提交
-        4. 登录成功后自动更新 Cookie 配置
+        刷新游戏源 Cookie（仅 AstrBot 管理员可用），按当前游戏源动态路由：
+        - 游戏源为 switch618 → 走 switch618 扫码关注登录流程，更新 switch618_cookie
+        - 游戏源为 xdgame → 走 xdgame 账密登录流程（需先配置 xdgame_username/xdgame_password）
 
-        ⚠️ 首次使用需先在 WebUI 插件设置中填写 xdgame_username 和 xdgame_password
+        ⚠️ 首次使用需先在 WebUI 插件设置中填写对应源的账密/配置
         """
         gid = event.get_group_id()
         uid_full = event.get_sender_id()
         pid = event.get_platform_id()
         target = f"{pid}:GroupMessage:{gid}" if gid else f"{pid}:FriendMessage:{uid_full}"
 
-        # ——— 读取配置中的账密 ———
+        # ——— 按当前游戏源动态路由：switch618 源一律走 switch618 流程 ———
+        if self._game_source() == "switch618":
+            await self._run_switch618_login_flow(event, target)
+            return
+
+        # ——— 读取配置中的账密（xdgame 源） ———
         config = self._get_config()
         username = (config.get("xdgame_username") or "").strip()
         password = (config.get("xdgame_password") or "").strip()
 
         if not username or not password:
-            await self._run_switch618_login_flow(event, target)
+            await event.send(MessageChain([Plain(
+                "❌ 当前游戏源为 xdgame，但未配置 xdgame_username / xdgame_password。\n"
+                "💡 请先在 WebUI 插件设置中填写 xdgame 账密；或把 game_source 设为 switch618 后重试。"
+            )]))
             return
 
         # 脱敏日志
@@ -2479,13 +2488,13 @@ class MuliyResourcesPlugin(Star):
     # game_login 旧代码已移除
 
     # ====================================================================
-    #  /movie_cookie — 教父.com 影视登录 Cookie 查看 / 设置 / 检测
+    #  /movie_cookie — 片库（新站）影视登录 Cookie 查看 / 设置 / 检测
     # ====================================================================
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("movie_cookie")
     async def cmd_movie_cookie(self, event: AstrMessageEvent):
-        """查看/设置/检测教父.com 影视登录 Cookie。
+        """查看/设置/检测片库影视登录 Cookie。
         用法：
           /movie_cookie            → 查看当前配置状态
           /movie_cookie test       → 检测当前 Cookie 是否可用
@@ -2505,7 +2514,7 @@ class MuliyResourcesPlugin(Star):
             await self._update_config("muliy_cookie", new_cookie)
             self._muliy_client = None  # 强制下次 _get_muliy_client 重建
             cur = new_cookie
-            yield event.plain_result(f"✅ 教父.com Cookie 已保存（{len(new_cookie)} 字符），正在检测...")
+            yield event.plain_result(f"✅ 片库 Cookie 已保存（{len(new_cookie)} 字符），正在检测...")
         elif len(parts) == 2 and parts[0].lower() == "set":
             yield event.plain_result("⚠️ 请提供 Cookie 内容。用法：/movie_cookie set <cookie>")
             return
@@ -2513,13 +2522,13 @@ class MuliyResourcesPlugin(Star):
         # —— 状态 / 检测 ——
         if not cur:
             yield event.plain_result(
-                "⚠️ 教父.com 影视 Cookie 未配置。\n"
+                "⚠️ 片库（新站）影视 Cookie 未配置。\n"
                 "📋 影视搜索将自动回退 a123tv 旧站（仅在线播放，无网盘资源）。\n"
                 "💡 配置方法：WebUI 插件设置 → movie 分组 → muliy_cookie 粘贴浏览器登录 Cookie；"
                 "或发送 /movie_cookie set <cookie>（需含 app_auth、PHPSESSID，忽略 browser_verified/browser_pow）。")
             return
 
-        yield event.plain_result("🔄 正在检测教父.com 影视 Cookie 状态（需 PoW 验证，约几秒）...")
+        yield event.plain_result("🔄 正在检测片库影视 Cookie 状态（需 PoW 验证，约几秒）...")
         try:
             client = MuliySiteClient(base_url="", cookies=cur)
             base = await asyncio.to_thread(client._get_base)
@@ -2529,13 +2538,13 @@ class MuliyResourcesPlugin(Star):
             return
         if ok:
             yield event.plain_result(
-                f"✅ 教父.com 影视 Cookie 有效 ✓\n"
+                f"✅ 片库影视 Cookie 有效 ✓\n"
                 f"🌐 当前使用站点：{base}\n"
                 f"🎬 试搜「流浪地球」返回 {len(ok)} 条结果\n"
-                f"🟢 影视搜索将使用教父.com 新站（在线播放+网盘资源）。")
+                f"🟢 影视搜索将使用片库新站（在线播放+网盘资源）。")
         else:
             yield event.plain_result(
-                f"❌ 教父.com 影视 Cookie 不可用（当前站点 {base} 搜索无结果）。\n"
+                f"❌ 片库影视 Cookie 不可用（当前站点 {base} 搜索无结果）。\n"
                 f"💡 可能原因：Cookie 过期 / 被站点风控。请重新登录浏览器后更新 Cookie，或等待 IP 风控解除。")
 
     async def _format_status_msg(self, state: str, detail: str = "") -> str:
@@ -5600,7 +5609,7 @@ class MuliyResourcesPlugin(Star):
 
     async def _movie_build_and_send(self, items: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
-        html = build_glass_html(items, date_label, source_label="教父.com")
+        html = build_glass_html(items, date_label, source_label="片库")
         font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
         config = self._get_config()
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
@@ -5639,7 +5648,7 @@ class MuliyResourcesPlugin(Star):
                     "desc": (it.get("synopsis") or "暂无简介")[:160],
                 })
             img_bytes = await self._report_pil_fallback(
-                cards, date_label, "教父.com", font_path, 720, "影视日报")
+                cards, date_label, "片库", font_path, 720, "影视日报")
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[影视日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
             img_bytes = self._compress_game_image(img_bytes)
@@ -5671,14 +5680,16 @@ class MuliyResourcesPlugin(Star):
             logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
             return
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
-        # movie_source 显式设为 a123tv 则强制旧站；否则按 cookie 自动切换
-        forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
+        # movie_source 支持关键字：a123tv 强制旧站；片库 强制新站；否则按 cookie 自动切换
+        ms = (config.get("movie_source") or "").strip()
+        forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
+        forced_new = ms == MV_SOURCE_KEYWORD_NEW
         mx = int(config.get("movie_report_max", 24) or 24)
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
-        # 自动选择影视源：配了教父.com Cookie 走新站，否则回退 a123tv 旧站（免登录）
+        # 自动选择影视源：配了片库 Cookie 走新站，否则回退 a123tv 旧站（免登录）
         use_cookie = "" if forced_a123 else cookie
-        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('教父.com' if cookie else 'a123tv(免登录)')}）")
+        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('片库' if cookie else 'a123tv(免登录)')}）")
         result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
         if not result["success"]:
             logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
@@ -5690,7 +5701,7 @@ class MuliyResourcesPlugin(Star):
         # 缓存 zip 供面板回看
         try:
             date_label = datetime.date.today().strftime("%Y年%m月%d日")
-            src_label = result.get("source", "教父.com")
+            src_label = result.get("source", "片库")
             html = build_glass_html(items, date_label, source_label=src_label)
             zp = await asyncio.to_thread(gen_movie_report_zip, items, html, ts)
             if zp:
@@ -5711,12 +5722,14 @@ class MuliyResourcesPlugin(Star):
     async def cmd_movie_report(self, event: AstrMessageEvent):
         config = self._get_config()
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
-        forced_a123 = (config.get("movie_source") or "").strip().lower() == "a123tv"
+        ms = (config.get("movie_source") or "").strip()
+        forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
+        forced_new = ms == MV_SOURCE_KEYWORD_NEW
         mx = int(config.get("movie_report_max", 24) or 24)
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
         use_cookie = "" if forced_a123 else cookie
-        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not cookie) else "教父.com 新站"
+        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not cookie) else "片库新站"
         yield event.plain_result(f"⏳ 正在抓取{src_hint}最近更新影视...")
         result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
         if not result["success"]:
@@ -5725,7 +5738,7 @@ class MuliyResourcesPlugin(Star):
         if not items:
             yield event.plain_result("📭 今日暂无影视更新。"); return
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
-        src_label = result.get("source", "教父.com")
+        src_label = result.get("source", "片库")
         html = build_glass_html(items, date_label, source_label=src_label)
         font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""

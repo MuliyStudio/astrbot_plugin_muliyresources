@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""影视日报（教父.com 新站 / a123tv 旧站，双源自动切换）相关函数。
+"""影视日报（片库新站 / a123tv 旧站，双源自动切换）相关函数。
 
 每天抓取影视站主页「最近更新」的电影 / 剧集 / 动漫，排版成【毛玻璃简约风格】
 HTML 后用 Playwright 渲染为图片发送。
 
 支持两个源（由 fetch_movie_daily_auto 自动选择）：
-  1) 教父.com 新站（需 muliy_cookie）：首页 _obj.inlist，含状态/豆瓣/IMDb/画质，
+  1) 片库新站（需 muliy_cookie）：首页 _obj.inlist，含状态/豆瓣/IMDb/画质，
      详情页 /{ty}/{id} 内联 _obj.d.summary 简介，封面 {MULIY_IMG_HOST}/img/{ty}/{id}/256.webp
   2) a123tv 旧站（免登录）：首页 w4-main 区块（电影/连续剧/动漫），含封面/类别·年份/
      画质(1080p/4K)，详情页抓简介；无 Cookie 也能出日报。
 
-主页数据结构（教父.com，关键，已实测）：
+主页数据结构（片库新站，关键，已实测）：
     _obj.inlist = [
       {"g":[状态...], "t":[标题...], "d":[豆瓣分...], "im":[IMDb分...],
        "i":[ID...], "q":[[画质]...], "ty":"mv", "ht":"最近更新的电影"}, ...
@@ -21,7 +21,7 @@ HTML 后用 Playwright 渲染为图片发送。
     fetch_movie_daily(cookie, base_url="", max_per_section=24, sections_filter=None, fetch_synopsis=True) -> dict
     fetch_movie_daily_a123tv(max_per_section=24, sections_filter=None, fetch_synopsis=True) -> dict
     fetch_movie_daily_auto(cookie="", base_url="", max_per_section=24, sections_filter=None, fetch_synopsis=True) -> dict
-    build_glass_html(items, date_label, source_label="教父.com") -> str
+    build_glass_html(items, date_label, source_label="片库") -> str
     render_glass_to_png(html, font_path="", width=720, channel="", exe="") -> bytes|None
     gen_report_zip(items, html_str, ts) -> str|None
 """
@@ -74,7 +74,7 @@ def _clean_cookie(cookie_str: str) -> str:
 
 # ==================== 主页抓取 ====================
 def _fetch_homepage_html(client: MuliySiteClient) -> str:
-    """带 PoW 预处理地抓取教父.com 主页 HTML（含 _obj.inlist）。失败返回空串。"""
+    """带 PoW 预处理地抓取片库主页 HTML（含 _obj.inlist）。失败返回空串。"""
     base = client._get_base()
     hdrs = {"Referer": base + "/", "User-Agent": MULIY_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
@@ -175,11 +175,11 @@ def _dl_and_b64(url: str, referer: str) -> str:
 
 def fetch_movie_daily(cookie: str = "", base_url: str = "", max_per_section: int = 24,
                       sections_filter: list = None, fetch_synopsis: bool = True) -> dict:
-    """抓取教父.com 影视日报（最近更新的电影/剧集/动漫）。
+    """抓取片库影视日报（最近更新的电影/剧集/动漫）。
 
     参数：
-      - cookie：教父.com 登录态 Cookie（与 muliy_cookie 同款；browser_verified 会被自动剔除并现场 PoW）
-      - base_url：留空则自动用教父.com 默认域名
+      - cookie：片库登录态 Cookie（与 muliy_cookie 同款；browser_verified 会被自动剔除并现场 PoW）
+      - base_url：留空则自动用片库默认域名
       - max_per_section：每个区块（电影/剧集/动漫）最多取多少部，<=0 表示不限制
       - sections_filter：只抓哪些类型，元素为 ty（"mv"/"tv"/"ac"）；None=全部
       - fetch_synopsis：是否逐个详情页抓简介（需更多请求；False 仅用主页信息）
@@ -239,7 +239,7 @@ from bs4 import BeautifulSoup  # noqa: E402
 
 # a123tv 首页区块(h3) -> 标准 ty
 _A123_CAT_TO_TY = {"电影": "mv", "连续剧": "tv", "电视剧": "tv", "动漫": "ac"}
-# a123tv 区块 -> 日报展示标题（与教父源一致，复用图标）
+# a123tv 区块 -> 日报展示标题（与片库源一致，复用图标）
 _A123_CAT_TO_TITLE = {
     "电影": "最近更新的电影",
     "连续剧": "最近更新的剧集",
@@ -356,21 +356,21 @@ def fetch_movie_daily_auto(cookie: str = "", base_url: str = "", max_per_section
                            sections_filter: list = None, fetch_synopsis: bool = True) -> dict:
     """自动选择影视源获取日报：
 
-    - 配置了教父.com Cookie → 优先教父.com 新站（登录态，含网盘/在线播放信息）；
-      教父抓取失败/空数据 → 自动回退 a123tv 旧站。
-    - 未配置 Cookie 或教父源不可用 → 直接用 a123tv（免登录）。
+    - 配置了片库 Cookie → 优先片库新站（登录态，含网盘/在线播放信息）；
+      片库抓取失败/空数据 → 自动回退 a123tv 旧站。
+    - 未配置 Cookie 或片库源不可用 → 直接用 a123tv（免登录）。
 
-    返回 dict 额外带 "source" 字段（"教父.com" / "a123tv"），供前端标注数据来源。
+    返回 dict 额外带 "source" 字段（"片库" / "a123tv"），供前端标注数据来源。
     """
     if cookie and cookie.strip():
         try:
             r = fetch_movie_daily(cookie, base_url, max_per_section, sections_filter, fetch_synopsis)
             if r.get("success") and r.get("items"):
-                r["source"] = "教父.com"
+                r["source"] = "片库"
                 return r
-            logger.warning(f"[影视日报] 教父源不可用，回退 a123tv：{r.get('error','')}")
+            logger.warning(f"[影视日报] 片库源不可用，回退 a123tv：{r.get('error','')}")
         except Exception as e:
-            logger.warning(f"[影视日报] 教父源异常，回退 a123tv：{e}")
+            logger.warning(f"[影视日报] 片库源异常，回退 a123tv：{e}")
     r = fetch_movie_daily_a123tv(max_per_section, sections_filter, fetch_synopsis)
     r.setdefault("source", "a123tv")
     return r
@@ -392,7 +392,7 @@ def _section_icon(title: str) -> str:
     return _svg("play", 22, "currentColor")
 
 
-def build_glass_html(items: list, date_label: str, source_label: str = "教父.com") -> str:
+def build_glass_html(items: list, date_label: str, source_label: str = "片库") -> str:
     """把影视日报条目排版成毛玻璃简约风格 HTML（图片已内联 base64，离线可渲染）。
 
     按 section_title 分组；每部作品：封面(左) + 名称/状态/评分/画质(右) + 简介。

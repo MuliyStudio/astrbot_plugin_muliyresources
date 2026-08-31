@@ -27,7 +27,7 @@
 
 | | 功能 | 说明 |
 |---|------|------|
-| 🎬 | **影视搜索（双源自动切换）** | 配置 `muliy_cookie` 走**教父.com 新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
+| 🎬 | **影视搜索（双源自动切换）** | 配置 `muliy_cookie` 走**片库新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
 | 🎮 | **游戏搜索** | 搜索 xdgame.com，返回多网盘下载链接（百度/夸克/阿里/123/天翼…） |
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
 | 📖 | **小说搜索与下载** | 基于 [so-novel](https://github.com/freeok/so-novel) 多源聚合，搜书名/作者 → 选源 → 选格式（txt/epub/html/pdf）→ 整本发送 |
@@ -61,7 +61,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 功能 | 装好即用？ | 备注 |
 |------|:---:|------|
-| 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到教父.com 新站 → 配 `muliy_cookie` |
+| 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到片库新站 → 配 `muliy_cookie` |
 | 🎮 游戏搜索 | ✅ | 默认走 xdgame，配账密后可用 `/game_cookie_refresh` 自动登录 |
 | 💿 软件搜索 | ✅ | |
 | 📰 软件 / 游戏 / 影视日报 | ✅ | 无浏览器也能出图（Pillow 兜底）；想更精美 → 装 Chromium（可选） |
@@ -109,7 +109,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 想用 | 需要配置 |
 |------|---------|
-| 教父.com 新站影视（网盘资源） | `movie` → `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
+| 片库新站影视（网盘资源） | `movie` → `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
 | 游戏自动登录刷新 Cookie | `game` → `xdgame_username` + `xdgame_password` |
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
@@ -125,7 +125,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `/找小说 <名称>` | 所有人 | 搜索小说（需 so-novel） |
 | `/game_cookie_refresh` | 管理员 | 自动登录 xdgame 刷新 Cookie |
 | `/game_cookie` | 所有人 | 查看游戏 Cookie 状态 |
-| `/movie_cookie` | 管理员 | 查看/检测/设置教父.com Cookie（`/movie_cookie set <cookie>`） |
+| `/movie_cookie` | 管理员 | 查看/检测/设置片库 Cookie（`/movie_cookie set <cookie>`） |
 | `/software_report` `/game_report` `/movie_report` | 可配置 | 手动触发日报 |
 | `/wyy <链接或ID>` | 所有人 | 手动解析网易云歌曲为语音 |
 | `/wyy_login` | 管理员 | 网易云扫码登录（自动写入会员 Cookie） |
@@ -165,9 +165,9 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 配置项 | 默认 | 说明 |
 |--------|------|------|
-| `muliy_cookie` | `""` | **教父.com 新站 Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW）。留空回退 a123tv |
-| `movie_source` | `""` | 留空自动；填 `a123tv` 强制旧站 |
-| `muliy_release_url` | `""` | 教父系发布页（默认挂了.com，留空即可） |
+| `muliy_cookie` | `""` | **片库新站 Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW）。留空回退 a123tv |
+| `movie_source` | `""` | 留空自动；填 `片库` 强制新站；填 `a123tv` 强制旧站 |
+| `muliy_release_url` | `""` | 片库系发布页（默认挂了.com，留空即可） |
 | `muliy_cache_ttl` | `3600` | 新站登录态缓存秒数 |
 | `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（mv电影·tv剧集·ac动漫） |
 
@@ -206,8 +206,9 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 ### 🎬 影视：双源自动切换
 
-- **配置了 `muliy_cookie`** → 走**教父.com 新站**：自动从发布页探测最低延迟节点、自动求解「浏览器安全验证」PoW，资源含**在线播放（多节点）+ 网盘下载（多网盘）**。
+- **配置了 `muliy_cookie`** → 走**片库新站**（最全最新的影视资源网站）：自动从发布页探测最低延迟节点、自动求解「浏览器安全验证」PoW，资源含**在线播放（多节点）+ 网盘下载（多网盘）**。
 - **未配置**（或 `movie_source=a123tv`）→ **a123tv 旧站**：免登录，仅在线播放切换线路。
+- `movie_source` 可填关键字强制指定源：`片库` 强制新站、`a123tv` 强制旧站。
 - 指令 `/找影视` 与 LLM「想看XX」统一走同一套源路由，无需手动切换。
 - `/movie_cookie` 命令可随时查看 / 检测 / 更新 Cookie。
 

@@ -6,7 +6,23 @@
 
 - **背景**：v1.12.8 / v1.12.9 因 AstrBot Cloud 审核流程问题未完整发布（版本号已被占用，无法重复提交），故启用全新版本号 **1.13.0** 重新提交云端发布。
 - **改动**：`metadata.yaml` 与 `main.py` 注册版本号 → `1.13.0`；创建对应 GitHub Release 并附完整更新日志。
-- **功能**：与 v1.12.9 完全一致——含移除调试埋点（过审安全检测）、`metadata.yaml` 补全 `repo`/`astrbot_version`/`social_link`/`tags`（修复 README 同步）、日报多平台降级发送、日报渲染三级降级（本地 Chromium → AstrBot 内置渲染 → Pillow）及全部既有功能。
+
+### 🔀 游戏源 Cookie 刷新动态路由
+
+- **背景**：游戏源设为 switch618 后，发送 `/game_cookie_refresh` 仍按 xdgame 账密流程更新 xdgame Cookie，未按当前游戏源动态调整。
+- **改动**（`main.py`）：`/game_cookie_refresh` 改为按 `_game_source()` 动态路由——游戏源为 switch618 时一律走 switch618 扫码登录流程（更新 `switch618_cookie`）；为 xdgame 时才走账密登录（更新 `cookie`）。未配置 xdgame 账密时给出明确提示，不再误路由。
+
+### 🎬 影视新站改名「片库」+ movie_source 关键字支持
+
+- **改名**：全插件（代码、配置、README、index.html）将新站影视源从「教父.com」统一改名为 **片库**（描述：**最全最新的影视资源网站**）。
+- **关键字**（`core/constants.py` 新增 `MV_SOURCE_KEYWORD_NEW`/`MV_SOURCE_KEYWORD_OLD`）：`movie_source` 配置现支持两个关键字强制指定源——
+  - 填 **`片库`** → 强制新站（片库）；
+  - 填 **`a123tv`** → 强制旧站（向后兼容）。
+- 影视搜索、`/找影视`、影视日报（`fetch_movie_daily_auto`）统一接入该关键字路由；`/movie_cookie` 相关文案同步改为「片库」。
+
+### 功能保持
+
+与 v1.12.9 一致——含移除调试埋点（过审安全检测）、`metadata.yaml` 补全 `repo`/`astrbot_version`/`social_link`/`tags`（修复 README 同步）、日报多平台降级发送、日报渲染三级降级及全部既有功能。
 
 ## v1.12.9 — 2026-08-31
 

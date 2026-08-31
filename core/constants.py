@@ -72,6 +72,9 @@ SW_HEADERS = {
 MV_BASE_URL = "https://a123tv.com"
 # a123tv 真搜索接口：/s/{URL编码关键词}.html（之前用的 /index.php?m=vod-search&wd= 返回首页热度列表，不是真搜索）
 MV_SEARCH_URL = MV_BASE_URL + "/s/{keyword}.html"
+# 影视源关键字：movie_source 配置可填这两个值强制指定源
+MV_SOURCE_KEYWORD_NEW = "片库"     # 新站（片库）关键字，描述：最全最新的影视资源网站
+MV_SOURCE_KEYWORD_OLD = "a123tv"   # 旧站关键字
 MV_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -81,12 +84,12 @@ MV_HEADERS = {
 # 单行展示用图标（仅一种资源类型：在线播放 → 切换线路）
 MV_SOURCE_ICON = "🎬"
 
-# ==================== 新站影视 (教父.com / 挂了.com) ====================
+# ==================== 新站影视 (片库 / 挂了.com) ====================
 # 挂了.com：域名存活监控站，check.js 里列出所有备用影视域名
 MULIY_GUALE_URL = "https://www.xn--ykq321c.com"
 # 封面图主机
 MULIY_IMG_HOST = "https://s.tutu.pm"
-# 默认固定域名（留空则自动从挂了.com 探测最低延迟）；教父.com 的 Punycode
+# 默认固定域名（留空则自动从挂了.com 探测最低延迟）；片库站点的 Punycode 域名
 MULIY_DEFAULT_DOMAIN = "https://www.xn--wcv59z.com"
 # 网盘类型图标
 MULIY_PAN_ICONS = {
