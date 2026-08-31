@@ -1,8 +1,13 @@
-playwright
-pillow
+requests
+beautifulsoup4
+apscheduler
+httpx
+aiohttp
+Pillow
 pycryptodome
 qrcode
-# 可选：安装 Chromium 可获得 HTML 高清渲染的日报图（playwright install chromium，国内可加
+playwright
+# 可选：安装 Chromium 可获得 HTML 高清渲染的日报图（国内可加
 # PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright 加速）。
 # 不安装也完全可用：日报会自动用 Pillow 纯 Python 渲染成卡片图，无需浏览器。
 
