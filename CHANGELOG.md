@@ -1,5 +1,21 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.9 — 2026-08-31
+
+### 🧹 清理：移除调试埋点（过审 AstrBot Cloud 安全检测）
+
+- **背景**：`main.py` 的 `_dbg_log` 与 `core/qr_login.py` 的 `_qr_dbg` 是一套带 `sessionId/hypothesisId/runId` 的调试埋点，会把登录 Cookie 的部分内容（`cookie_str[:200]`、`saved[:60]`、Cookie 键名）以 JSON 追加写入硬编码路径（`/AstrBot/...`、`/www/dk_project/...`、`C:\Users\Administrator\...`），被 AstrBot Cloud 的 LLM Guard 判定为「对用户敏感登录凭证的隐藏采集（疑似 RLHF 数据收集残留）」，导致插件版本被拒审。
+- **改动**：
+  - 移除 `main.py` 的 `_dbg_log`（含头注释「含 NDJSON 埋点」）。
+  - 移除 `core/qr_login.py` 的 `_qr_dbg`；`_wr` 调试日志改为默认关闭（不写文件、不记录 Cookie/会话内容）。
+  - 删除仓库根目录遗留的 `qr_login_*.log` 调试文件。
+- **实测**：`main.py` / `core/qr_login.py` 已无 `_dbg_log`/`_qr_dbg`/`c4a65f`/`sessionId` 等标记，语法通过。
+
+### 🌐 修复：metadata.yaml 补全 `repo` 等字段（AstrBot Cloud README 同步）
+
+- **背景**：AstrBot Cloud 插件页「文档」一直「暂未同步」，因 `metadata.yaml` 缺少 `repo` 字段——云端靠它定位 GitHub 仓库去拉取 `README.md`。
+- **改动**（`metadata.yaml`）：新增 `repo`、`astrbot_version`、`social_link`、`tags`，并修正 `support_platforms` 为真实可用平台集合。
+
 ## v1.12.8 — 2026-08-31
 
 ### 🐛 修复：日报手动指令在不支持「文件消息」的平台发送失败

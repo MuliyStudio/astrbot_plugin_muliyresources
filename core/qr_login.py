@@ -113,25 +113,6 @@ def _cap_solve_format2_batch(challenges: list) -> list:
             raise RuntimeError(f"未知 Cap 协议: {proto}")
     return out
 
-# === DEBUG INSTRUMENTATION (session c4a65f) ===
-def _qr_dbg(hid, msg, data):
-    try:
-        import pathlib
-        line = json.dumps({"sessionId":"c4a65f","location":f"qr_login.py:{_qr_dbg.__code__.co_firstlineno}","message":msg,"data":data,"hypothesisId":hid,"runId":"initial","timestamp":int(time.time()*1000)}, ensure_ascii=False) + "\n"
-        for target in ("/AstrBot/data/plugins/astrbot_plugin_muliyresources/debug-c4a65f.log",
-                       "/www/dk_project/dk_app/astrbot/astrbot_RLHF/data/plugins/astrbot_plugin_muliyresources/debug-c4a65f.log",
-                       r"C:\Users\Administrator\debug-c4a65f.log"):
-            try:
-                pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True)
-                with open(target, "a", encoding="utf-8") as f:
-                    f.write(line)
-                break
-            except Exception:
-                continue
-    except Exception:
-        pass
-# === END DEBUG INSTRUMENTATION ===
-
 XDGAME_BASE = "https://www.xdgame.com"
 XDGAME_LOGIN_PAGE = XDGAME_BASE + "/user/index.php"
 XDGAME_LOGIN_POST = XDGAME_BASE + "/user/index_do.php"
@@ -194,39 +175,20 @@ def _new_async_client():
 
 
 # ====================================================================
-#  调试日志
+#  调试日志（保留函数签名以兼容调用，但默认关闭，不写任何文件/不记录敏感信息）
 # ====================================================================
 
 _DEBUG_FILE = None
 
 
 def _debug_log_init():
-    global _DEBUG_FILE
-    if _DEBUG_FILE is not None:
-        return
-    try:
-        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "qr_debug_logs")
-        os.makedirs(d, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        _DEBUG_FILE = os.path.join(d, f"qr_login_{ts}.log")
-        _wr(f"[INIT] v14.0 纯HTTP 调试日志: {_DEBUG_FILE}")
-    except Exception as e:
-        _DEBUG_FILE = ""
-        logger.warning(f"[QR登录] 无法创建调试日志: {e}")
+    # 不再创建/写入调试日志文件（避免记录 Cookie 等敏感信息）
+    return
 
 
 def _wr(msg: str):
-    global _DEBUG_FILE
-    if _DEBUG_FILE is None:
-        _debug_log_init()
-    if _DEBUG_FILE:
-        try:
-            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:12]
-            with open(_DEBUG_FILE, "a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {msg}\n")
-                f.flush()
-        except Exception:
-            pass
+    # 调试日志已禁用：不写文件、不记录 Cookie/会话内容
+    pass
 
 
 # ====================================================================
@@ -397,7 +359,6 @@ async def _post_login_form(ctx: _SessionCtx, cap_token: str = "", vdcode: str = 
         return {"ok": False, "error": err[:200]}
 
     cookies = ctx._cookies_dict()
-    _qr_dbg("HTTP", "登录成功 cookies", {"n": len(cookies), "names": list(cookies.keys())})
     xd_nick = await _fetch_nickname(ctx)
     _wr(f"[昵称] 解析: {xd_nick!r}")
     try:
@@ -605,7 +566,6 @@ async def submit_captcha_async(captcha: str) -> dict:
             if resp_text == "success":
                 # 登录成功！
                 cookies = ctx._cookies_dict()
-                _qr_dbg("HTTP", "登录成功 cookies", {"n": len(cookies), "names": list(cookies.keys())})
                 _wr(f"[完成] 登录成功，共 {len(cookies)} 个 cookie: {list(cookies.keys())}")
 
                 # 拉一下登录后的页面，解析昵称（dede 用户中心可能有用户信息）
