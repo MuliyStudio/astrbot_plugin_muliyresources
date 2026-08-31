@@ -235,7 +235,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.9.17")
+          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.3")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -1918,7 +1918,8 @@ class MuliyResourcesPlugin(Star):
 
     @filter.command("找影视")
     async def cmd_movie_search(self, event: AstrMessageEvent):
-        """影视搜索（a123tv.com）— 自动登录态 + 一步走选节点。"""
+        """影视搜索 — 源自动切换：配置了 muliy_cookie → 教父.com 新站（在线+网盘）；
+        未配置或 movie_source=a123tv → 回退 a123tv 旧站（仅在线播放）。"""
         keyword = event.message_str.strip()
         keyword = re.sub(r"^/?找影视\s*", "", keyword)
         # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
@@ -1928,6 +1929,36 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"影视搜索: 关键词=[{keyword}]")
         if not keyword:
             yield event.plain_result("请发送：/找影视 <影视名>"); return
+
+        # —— 源自动切换：配了教父.com muliy_cookie → 新站（在线播放+网盘）；
+        #    movie_source 显式设为 "a123tv" 则强制旧站（向后兼容）——
+        cfg = self._get_config()
+        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == "a123tv"
+        client = self._get_muliy_client() if not forced_a123 else None
+        if client:
+            # ===== 教父.com 新站流程（与 llm_search_movie 一致，会话状态机处理后续选择） =====
+            tag = "【暮黎资源】"
+            try:
+                results = await asyncio.to_thread(client.search, keyword, 24)
+            except Exception as e:
+                logger.error(f"[暮黎资源] /找影视(新站,'{keyword}') 失败: {e}")
+                yield event.plain_result(f"{tag} 影视搜索失败：{str(e)[:120]}")
+                return
+            if not results:
+                yield event.plain_result(f"{tag} 未找到与「{keyword}」相关的影视。请换个关键词。")
+                return
+            self._movie_sessions_new.set(event, {
+                "stage": "select_movie_new", "keyword": keyword,
+                "results": results, "page": 0, "page_size": 8,
+                "_updated": time.time(), "_llm_handled": True,
+            })
+            t = len(results); pt = (t + 7) // 8
+            page_txt = format_movie_list_new(results, keyword, 0, 8)
+            yield event.plain_result(f"{tag} 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt)
+            logger.info(f"[暮黎资源] /找影视(新站,'{keyword}') → {len(results)}条")
+            return
+
+        # ===== 旧站 a123tv 流程（保留） =====
         if not requests:
             yield event.plain_result("❌ 缺少 requests"); return
         if not BeautifulSoup:
@@ -2382,6 +2413,66 @@ class MuliyResourcesPlugin(Star):
         await self.context.send_message(target, MessageChain([Plain(msg)]))
 
     # game_login 旧代码已移除
+
+    # ====================================================================
+    #  /movie_cookie — 教父.com 影视登录 Cookie 查看 / 设置 / 检测
+    # ====================================================================
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("movie_cookie")
+    async def cmd_movie_cookie(self, event: AstrMessageEvent):
+        """查看/设置/检测教父.com 影视登录 Cookie。
+        用法：
+          /movie_cookie            → 查看当前配置状态
+          /movie_cookie test       → 检测当前 Cookie 是否可用
+          /movie_cookie set <cookie> → 保存 Cookie 并立即重建客户端（重启后仍生效）
+        """
+        config = self._get_config()
+        cur = (config.get("muliy_cookie") or "").strip()
+        raw = (event.message_str or "").strip()
+        parts = [p.strip() for p in raw.split(" ", 2) if p.strip()]
+
+        # —— 设置新 Cookie ——
+        if len(parts) >= 2 and parts[0].lower() == "set":
+            new_cookie = parts[1]
+            if not new_cookie or "=" not in new_cookie:
+                yield event.plain_result("⚠️ Cookie 格式不正确。请粘贴整串 k=v;k2=v2 形式的 Cookie。")
+                return
+            await self._update_config("muliy_cookie", new_cookie)
+            self._muliy_client = None  # 强制下次 _get_muliy_client 重建
+            cur = new_cookie
+            yield event.plain_result(f"✅ 教父.com Cookie 已保存（{len(new_cookie)} 字符），正在检测...")
+        elif len(parts) == 2 and parts[0].lower() == "set":
+            yield event.plain_result("⚠️ 请提供 Cookie 内容。用法：/movie_cookie set <cookie>")
+            return
+
+        # —— 状态 / 检测 ——
+        if not cur:
+            yield event.plain_result(
+                "⚠️ 教父.com 影视 Cookie 未配置。\n"
+                "📋 影视搜索将自动回退 a123tv 旧站（仅在线播放，无网盘资源）。\n"
+                "💡 配置方法：WebUI 插件设置 → movie 分组 → muliy_cookie 粘贴浏览器登录 Cookie；"
+                "或发送 /movie_cookie set <cookie>（需含 app_auth、PHPSESSID，忽略 browser_verified/browser_pow）。")
+            return
+
+        yield event.plain_result("🔄 正在检测教父.com 影视 Cookie 状态（需 PoW 验证，约几秒）...")
+        try:
+            client = MuliySiteClient(base_url="", cookies=cur)
+            base = await asyncio.to_thread(client._get_base)
+            ok = await asyncio.to_thread(client.search, "流浪地球", 3)
+        except Exception as e:
+            yield event.plain_result(f"❌ 检测异常：{str(e)[:120]}")
+            return
+        if ok:
+            yield event.plain_result(
+                f"✅ 教父.com 影视 Cookie 有效 ✓\n"
+                f"🌐 当前使用站点：{base}\n"
+                f"🎬 试搜「流浪地球」返回 {len(ok)} 条结果\n"
+                f"🟢 影视搜索将使用教父.com 新站（在线播放+网盘资源）。")
+        else:
+            yield event.plain_result(
+                f"❌ 教父.com 影视 Cookie 不可用（当前站点 {base} 搜索无结果）。\n"
+                f"💡 可能原因：Cookie 过期 / 被站点风控。请重新登录浏览器后更新 Cookie，或等待 IP 风控解除。")
 
     async def _format_status_msg(self, state: str, detail: str = "") -> str:
         """根据轮询状态返回提示文字"""

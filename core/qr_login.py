@@ -18,8 +18,100 @@ v14.0 — 纯 HTTP 实现（httpx），无 Playwright 无浏览器
   - JS 里的 $.ajax({...}) 在浏览器里就是 XMLHttpRequest，curl 一样能复现
   - 服务器用 server_session_ab24c166 cookie 关联验证码会话，httpx cookie jar 自动处理
 """
-import os, time, datetime, json, asyncio, re
+import os, time, datetime, json, asyncio, re, hashlib
 from .constants import logger
+
+# ——— Cap「人机验证」求解器（xdgame 2026-08 起登录页新增 cap-widget 行为验证） ———
+#
+# 原理（来自 /static/cap/cap.brandless_20260805.js，v20260805）：
+#   1. POST {cap-api}/challenge → {challenge:{c,s,d}, token, expires}（format 1）
+#      或 {format:2, challenges:[{protocol,payload},...], token}（format 2）
+#   2. format 1：生成 c 组 (salt, target)：
+#        salt   = d(token+i, s)     （FNV1a 播种的 xorshift PRNG 输出 s 位 hex）
+#        target = d(token+i+'d', d) （同上，d 位 hex，为 SHA-256 前缀目标）
+#      求解 = 对每组找 nonce，使 SHA256(salt+nonce) 前 len(target)/2 字节 == target
+#   3. format 2：按 protocol 求解：
+#        sha256-pow   → 同上，payload={salt,target}
+#        rsw          → y = x^(2^t) mod N（大整数模平方链）
+#        instrumentation → 浏览器沙箱内执行 blob，纯 HTTP 无法复现（留空尝试）
+#   4. POST {cap-api}/redeem {token, solutions} → {success, token, expires}
+#     redeem 返回的 token 即登录表单里的 cap_token 字段
+#
+# 全程纯 Python 实现，无需浏览器/Playwright，仅在「管理员手动刷新 Cookie」时执行
+# 一次（约 3-5s 纯 CPU 计算），不影响日常搜索。
+
+_MASK32 = 0xFFFFFFFF
+
+
+def _cap_i32(v: int) -> int:
+    """模拟 JS 32 位有符号整数（位运算后强制 int32）。"""
+    v &= _MASK32
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+
+def _cap_fnv1a(s: str) -> int:
+    """FNV-1a 32bit（与 cap.js 一致，输入按 JS charCodeAt 处理，ASCII 等价 UTF-8 字节）。"""
+    h = 2166136261  # 0x811C9DC5
+    for b in s.encode("utf-8"):
+        t = _cap_i32(h) ^ b
+        t += _cap_i32(t << 1) + _cap_i32(t << 4) + _cap_i32(t << 7) + _cap_i32(t << 8) + _cap_i32(t << 24)
+        h = t
+    return _cap_i32(h) & _MASK32
+
+
+def _cap_prng(seed: int) -> int:
+    """cap.js 的 xorshift 步进：i ^= i<<13; i ^= i>>>17; i ^= i<<5; return i>>>0"""
+    i = seed
+    i = _cap_i32(i) ^ _cap_i32(_cap_i32(i) << 13)
+    i = _cap_i32(i) ^ ((i & _MASK32) >> 17)
+    i = _cap_i32(i) ^ _cap_i32(_cap_i32(i) << 5)
+    return _cap_i32(i) & _MASK32
+
+
+def cap_gen(prefix: str, target_len: int) -> str:
+    """cap.js 的 d(prefix, target)：FNV1a 播种 PRNG，产出 target_len 位 hex 字符串。"""
+    i = _cap_fnv1a(prefix)
+    out = ""
+    while len(out) < target_len:
+        i = _cap_prng(i)
+        out += f"{i:08x}"
+    return out[:target_len]
+
+
+def cap_solve_pow_single(salt: str, target_hex: str) -> int:
+    """sha256-pow：找 nonce 使 SHA256(salt+nonce) 前 len(target)/2 字节 == target。"""
+    target = target_hex + ("0" if len(target_hex) % 2 else "")
+    want = bytes.fromhex(target)
+    a = len(want)
+    sb = salt.encode("utf-8")
+    n = 0
+    while True:
+        if hashlib.sha256(sb + str(n).encode("utf-8")).digest()[:a] == want:
+            return n
+        n += 1
+
+
+def _cap_solve_batch(pairs: list) -> list:
+    """批量求解 format 1 的 (salt, target) 对，返回 nonce 列表。纯 CPU，供 to_thread。"""
+    return [cap_solve_pow_single(salt, tgt) for salt, tgt in pairs]
+
+
+def _cap_solve_format2_batch(challenges: list) -> list:
+    """批量求解 format 2 的 challenges，返回 solutions 列表（含 rsw/instrumentation）。"""
+    out = []
+    for c2 in challenges:
+        p = c2.get("payload") or {}
+        proto = c2.get("protocol")
+        if proto == "sha256-pow":
+            out.append({"nonce": cap_solve_pow_single(p["salt"], p["target"])})
+        elif proto == "rsw":
+            y = pow(int(p["x"], 16), 1 << int(p["t"]), int(p["N"], 16))
+            out.append({"y": format(y, "x")})
+        elif proto == "instrumentation":
+            out.append({"instr": {}})  # 纯 HTTP 无法执行沙箱，空提交尝试
+        else:
+            raise RuntimeError(f"未知 Cap 协议: {proto}")
+    return out
 
 # === DEBUG INSTRUMENTATION (session c4a65f) ===
 def _qr_dbg(hid, msg, data):
@@ -199,6 +291,20 @@ class _SessionCtx:
                 content = await r.read()
                 return r.status, content, dict(r.headers)
 
+    async def post_json(self, url: str, data: dict) -> tuple:
+        """POST JSON（Cap 验证接口用），返回 (status_code, content_bytes, headers_dict)"""
+        headers = {
+            "Content-Type": "application/json",
+            "Referer": XDGAME_LOGIN_PAGE,
+        }
+        if self.backend == "httpx":
+            r = await self.client.post(url, json=data, headers=headers)
+            return r.status_code, r.content, dict(r.headers)
+        else:
+            async with self.client.post(url, json=data, headers=headers) as r:
+                content = await r.read()
+                return r.status, content, dict(r.headers)
+
     def _log_cookies(self):
         """记录所有 cookie 到调试日志"""
         try:
@@ -218,16 +324,135 @@ _CURRENT_LOCK = asyncio.Lock()
 
 
 # ====================================================================
-#  步骤1：拉登录页 + 验证码图
+#  步骤1：拉登录页 + 验证码图（自动优先 Cap 人机验证）
 # ====================================================================
+
+async def _cap_solve_for_login(ctx: _SessionCtx, ep: str) -> str:
+    """在 ctx 会话上求解 Cap 人机验证，返回 redeem token（即 cap_token）。
+
+    ep 形如 '/cap-test-api/fbb1c42b54/'（相对路径，自动拼到 xdgame 域名）。
+    求解（SHA-256 PoW）放到线程池执行，避免阻塞事件循环。
+    """
+    if not ep:
+        raise RuntimeError("Cap endpoint 为空")
+    base = ep if ep.startswith("http") else XDGAME_BASE + ep
+    base = base.rstrip("/")
+
+    # 1) 取挑战
+    status, content, headers = await ctx.post_json(base + "/challenge", {})
+    if status != 200:
+        raise RuntimeError(f"Cap challenge HTTP {status}")
+    j = json.loads(content.decode("utf-8", errors="ignore") or "{}")
+    token = j.get("token", "")
+    ch = j.get("challenge")
+    challenges_v2 = j.get("challenges")
+    if not token:
+        raise RuntimeError(f"Cap challenge 无 token: {str(j)[:120]}")
+
+    # 2) 求解（纯 CPU，在线程池执行）
+    if isinstance(challenges_v2, list) and j.get("format") == 2:
+        solutions = await asyncio.to_thread(_cap_solve_format2_batch, challenges_v2)
+    elif isinstance(ch, dict) and "c" in ch:
+        pairs = [(cap_gen(token + str(i), ch["s"]),
+                  cap_gen(token + str(i) + "d", ch["d"]))
+                 for i in range(1, int(ch["c"]) + 1)]
+        solutions = await asyncio.to_thread(_cap_solve_batch, pairs)
+    else:
+        raise RuntimeError(f"未知 Cap challenge 格式: {str(j)[:200]}")
+
+    # 3) 赎回
+    status, content, headers = await ctx.post_json(
+        base + "/redeem", {"token": token, "solutions": solutions})
+    if status != 200:
+        raise RuntimeError(f"Cap redeem HTTP {status}")
+    rj = json.loads(content.decode("utf-8", errors="ignore") or "{}")
+    if not rj.get("success") or not rj.get("token"):
+        raise RuntimeError(f"Cap redeem 失败: {str(rj)[:160]}")
+    return rj["token"]
+
+
+async def _post_login_form(ctx: _SessionCtx, cap_token: str = "", vdcode: str = "") -> dict:
+    """提交登录表单，返回统一结果 dict（成功时清理 ctx 并置空 _CURRENT_CTX）。"""
+    global _CURRENT_CTX
+    form_data = {
+        "fmdo": "login", "dopost": "login", "gourl": "",
+        "cap_token": cap_token,
+        "userid": ctx.username, "pwd": ctx.password,
+        "vdcode": vdcode,
+    }
+    status, content, headers = await ctx.post(XDGAME_LOGIN_POST, data=form_data)
+    _wr(f"[POST 登录] status={status} bytes={len(content)}")
+    resp_text = content.decode("utf-8", errors="ignore").strip()
+    _wr(f"[POST 登录] resp: {resp_text!r}")
+    ctx._log_cookies()
+
+    if resp_text != "success":
+        err = resp_text or "未知错误"
+        if "验证码" in err:
+            err = f"验证码错误：{err}"
+        elif "密码" in err:
+            err = f"密码错误：{err}"
+        elif "账号" in err or "用户" in err:
+            err = f"账号问题：{err}"
+        return {"ok": False, "error": err[:200]}
+
+    cookies = ctx._cookies_dict()
+    _qr_dbg("HTTP", "登录成功 cookies", {"n": len(cookies), "names": list(cookies.keys())})
+    xd_nick = await _fetch_nickname(ctx)
+    _wr(f"[昵称] 解析: {xd_nick!r}")
+    try:
+        await ctx.close()
+    except Exception:
+        pass
+    _CURRENT_CTX = None
+    has_dede = "DedeUserID" in cookies or "PHPSESSID" in cookies
+    if not has_dede:
+        _wr(f"[WARN] 服务器未返回 DedeUserID/PHPSESSID — 但 resp_text='success'，按服务器回应信任")
+    return {
+        "ok": True,
+        "cookies": cookies,
+        "xd_nick": xd_nick,
+        "nickname": xd_nick,
+    }
+
+
+async def _setup_image_captcha(ctx: _SessionCtx) -> dict:
+    """回退流程：拉取图片验证码，返回 needs_captcha=True 交用户输入。"""
+    import random as _rnd
+    cap_url = f"{XDGAME_CAPTCHA_IMG}?tag={int(time.time() * 1000)}{_rnd.randint(100,999)}"
+    try:
+        status, content, headers = await ctx.get(cap_url)
+    except Exception as e:
+        _wr(f"[GET 验证码] 异常: {e}")
+        await ctx.close()
+        return {"ok": False, "error": f"拉取验证码失败: {str(e)[:100]}"}
+    ct = headers.get("content-type", headers.get("Content-Type", "?"))[:40]
+    _wr(f"[GET 验证码] status={status} bytes={len(content)} ct={ct}")
+    if status != 200 or len(content) < 100:
+        await ctx.close()
+        return {"ok": False, "error": f"验证码图异常 (HTTP {status}, {len(content)}B, ct={ct})"}
+    png_magic = content[:4] == b"\x89PNG"
+    jpg_magic = content[:3] == b"\xff\xd8\xff"
+    if not png_magic and not jpg_magic:
+        _wr(f"[GET 验证码] 非图片格式，前 16 字节: {content[:16]!r}")
+        await ctx.close()
+        return {"ok": False, "error": f"验证码图格式异常 (ct={ct}, len={len(content)})"}
+    _wr(f"[验证码] 拉取成功 {len(content)} bytes")
+    _notify("captcha", "")
+    return {"ok": True, "needs_captcha": True, "captcha_image": content}
+
 
 async def login_with_password_async(username: str, password: str) -> dict:
     """
-    初始化登录流程：
-    - GET /user/index.php  → 服务器种 server_session_ab24c166 cookie
-    - GET /include/vdimgck.php  → 拉验证码 PNG
+    初始化登录流程（v14.1 — 支持 Cap 人机验证自动求解）：
+    - GET /user/index.php → 解析 Cap 验证 API 地址（data-cap-api-endpoint）
+    - 优先自动求解 Cap（纯 Python 复现 cap.js 的 FNV1a+xorshift+SHA-256 PoW），
+      成功后直接 POST 登录，返回 {"ok": True, "cookies": {...}, "xd_nick": ...}
+    - Cap 求解/登录失败 → 回退图片验证码（vdimgck.php），返回
+      {"ok": True, "needs_captcha": True, "captcha_image": bytes}
 
     返回：
+      {"ok": True, "cookies": {...}, "xd_nick": str}
       {"ok": True, "needs_captcha": True, "captcha_image": bytes}
       {"ok": False, "error": str}
     """
@@ -243,7 +468,7 @@ async def login_with_password_async(username: str, password: str) -> dict:
             _CURRENT_CTX = None
 
         _debug_log_init()
-        _wr(f"=== login_with_password_async() v14.0 开始 ===")
+        _wr(f"=== login_with_password_async() v14.1 开始 ===")
 
         try:
             ctx = _SessionCtx(username, password)
@@ -263,49 +488,49 @@ async def login_with_password_async(username: str, password: str) -> dict:
                 await ctx.close()
                 return {"ok": False, "error": f"登录页 HTTP {status}"}
 
-            # 记录 captcha session cookie
             cookies = ctx._cookies_dict()
             for nm, vl in cookies.items():
                 _wr(f"[Cookie] 收到: {nm}={vl[:30]}... ")
                 if nm == "server_session_ab24c166":
                     ctx.captcha_session_cookie = vl
-
             if not ctx.captcha_session_cookie:
                 _wr("[WARN] 未拿到 server_session_ab24c166 cookie — 验证码可能失效")
 
-            # === 2. GET 验证码图 ===
-            # 加时间戳避免缓存（与浏览器 JS 里 Math.random() 行为一致）
-            import random as _rnd
-            cap_url = f"{XDGAME_CAPTCHA_IMG}?tag={int(time.time() * 1000)}{_rnd.randint(100,999)}"
-            try:
-                status, content, headers = await ctx.get(cap_url)
-                ct = headers.get("content-type", headers.get("Content-Type", "?"))[:40]
-                _wr(f"[GET 验证码] status={status} bytes={len(content)} ct={ct}")
-            except Exception as e:
-                _wr(f"[GET 验证码] 异常: {e}")
-                await ctx.close()
-                return {"ok": False, "error": f"拉取验证码失败: {str(e)[:100]}"}
+            # === 2. 解析 Cap 验证 API 地址 ===
+            html = content.decode("utf-8", errors="ignore")
+            cap_ep = ""
+            m = re.search(r'data-cap-api-endpoint="([^"]+)"', html)
+            if m:
+                cap_ep = m.group(1)
+                _wr(f"[Cap] 检测到验证 API: {cap_ep}")
 
-            if status != 200 or len(content) < 100:
-                _wr(f"[GET 验证码] 返回异常 content_len={len(content)}")
-                await ctx.close()
-                return {"ok": False, "error": f"验证码图异常 (HTTP {status}, {len(content)}B, ct={ct})"}
+            # === 3. 优先 Cap 自动登录（最多重试 2 次） ===
+            if cap_ep:
+                cap_err = ""
+                for attempt in range(2):
+                    try:
+                        _wr(f"[Cap] 第 {attempt+1} 次求解...")
+                        cap_token = await _cap_solve_for_login(ctx, cap_ep)
+                        _wr(f"[Cap] 求解成功 token={cap_token[:30]}...")
+                        login = await _post_login_form(ctx, cap_token=cap_token)
+                        if login.get("ok"):
+                            return login
+                        cap_err = login.get("error", "")
+                        _wr(f"[Cap] 登录未成功: {cap_err}")
+                        # 若被认定为验证码错误 → 重新求解重试；账号/密码类错误直接返回
+                        if "验证码" not in cap_err:
+                            await ctx.close()
+                            _CURRENT_CTX = None
+                            return login
+                    except Exception as e:
+                        cap_err = str(e)[:120]
+                        _wr(f"[Cap] 求解/登录异常: {e}")
+                # 两次 Cap 均失败 → 回退图片验证码（保留 ctx）
+                logger.warning(f"[QR登录] Cap 自动登录失败({cap_err})，回退图片验证码")
+                return await _setup_image_captcha(ctx)
 
-            # dede vdimgck.php 可能是 JPEG 或 PNG，校验魔数
-            png_magic = content[:4] == b"\x89PNG"
-            jpg_magic = content[:3] == b"\xff\xd8\xff"
-            if not png_magic and not jpg_magic:
-                _wr(f"[GET 验证码] 非图片格式，前 16 字节: {content[:16]!r}")
-                await ctx.close()
-                return {"ok": False, "error": f"验证码图格式异常 (ct={ct}, len={len(content)})"}
-
-            _wr(f"[验证码] 拉取成功 {len(content)} bytes")
-            _notify("captcha", "")
-            return {
-                "ok": True,
-                "needs_captcha": True,
-                "captcha_image": content,
-            }
+            # === 4. 无 Cap 验证 → 直接图片验证码回退 ===
+            return await _setup_image_captcha(ctx)
 
         except Exception as e:
             _wr(f"[异常] login_with_password_async: {e}")
@@ -355,6 +580,7 @@ async def submit_captcha_async(captcha: str) -> dict:
                 "fmdo": "login",
                 "dopost": "login",
                 "gourl": "",
+                "cap_token": "",  # 回退流程走图片验证码（vdcode），cap_token 留空
                 "userid": ctx.username,
                 "pwd": ctx.password,
                 "vdcode": captcha,

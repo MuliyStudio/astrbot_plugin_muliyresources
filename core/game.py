@@ -24,40 +24,49 @@ def _game_session(cookie_str: str = "") -> requests.Session:
 
 
 def check_cookie(cookie_str: str) -> tuple:
-    """检测 Cookie 有效性。返回 (status, message)"""
+    """检测 Cookie 有效性。返回 (status, message)
+
+    2026-08 起 xdgame 首页头部改由 JS 渲染登录态（action=logout//space/uid- 已消失），
+    改为直接访问用户中心 /user/：返回登录页（diyform 表单）＝未登录，否则已登录。
+    已登录后顺带抽一个下载链接探测「免费下载次数」上限（limit）状态。
+    """
     if not cookie_str or "DedeUserID" not in cookie_str:
         return False, "Cookie 未配置或缺少 DedeUserID"
     s = _game_session(cookie_str)
     try:
-        resp = s.get(GAME_BASE_URL, timeout=15)
-        resp.encoding = "utf-8"; text = resp.text
-        if 'class="index-login"' in text and "登录免费享受更多权限" in text:
-            soup = BeautifulSoup(text, "html.parser")
-            today_section = soup.select_one(".index-new-list")
-            links = []
-            if today_section:
-                for a in today_section.select('a[href*="/game/"]'):
-                    h = a.get("href", "")
-                    if h: links.append(GAME_BASE_URL + h if h.startswith("/") else h)
-            if not links: links = [GAME_BASE_URL + "/game/13641.html"]
-            try:
-                r2 = s.get(links[0], timeout=10); r2.encoding = "utf-8"
+        # 1) 用户中心页判断登录态
+        resp = s.get(GAME_BASE_URL + "/user/", timeout=15, allow_redirects=True)
+        resp.encoding = "utf-8"
+        text = resp.text
+        if "diyform" in text or "会员登录" in text or "cap_token" in text:
+            return False, "Cookie 已失效"
+        # 2) 顺带探测免费下载次数上限（limit）
+        try:
+            home = s.get(GAME_BASE_URL, timeout=12)
+            home.encoding = "utf-8"
+            soup = BeautifulSoup(home.text, "html.parser")
+            links = [a.get("href") for a in soup.select('a[href*="/game/"]') if a.get("href")]
+            if links:
+                detail_url = GAME_BASE_URL + links[0] if links[0].startswith("/") else links[0]
+                r2 = s.get(detail_url, timeout=12)
+                r2.encoding = "utf-8"
                 btn = BeautifulSoup(r2.text, "html.parser").select_one("a.downbtn[data-url]")
                 if btn:
                     u = btn.get("data-url", "")
                     u = GAME_BASE_URL + u if u.startswith("/") else GAME_BASE_URL + "/" + u
-                    r3 = s.get(u, timeout=10, allow_redirects=True); r3.encoding = "utf-8"; t3 = r3.text
+                    r3 = s.get(u, timeout=12, allow_redirects=True)
+                    r3.encoding = "utf-8"; t3 = r3.text
                     for d in GAME_PAN_DOMAINS:
-                        if d in r3.url or d in t3: return True, "Cookie 有效"
-                    if "登录签到" in t3 or "下载次数" in t3:
-                        m = re.search(r"下载次数已到达(\d+)次", t3)
+                        if d in r3.url or d in t3:
+                            return True, "Cookie 有效"
+                    if "下载次数已到达" in t3 or "已达到" in t3:
+                        m = re.search(r"(?:下载次数已到达|已达到)(\d+)次", t3)
                         return "limit", f"已达{m.group(1)}次" if m else "已达上限"
-                    if "请先登录" in t3: return False, "Cookie 已失效"
-            except: pass
-            return False, "Cookie 已失效"
-        for sig in ["action=logout", "/space/uid-"]:
-            if sig in text: return True, "Cookie 有效"
-        return None, "无法确认"
+                    if "请先登录" in t3:
+                        return False, "Cookie 已失效"
+        except Exception:
+            pass
+        return True, "Cookie 有效"
     except Exception as e:
         return False, f"检测失败: {e}"
 
@@ -74,11 +83,17 @@ def search_games(keyword: str, max_results: int = 32) -> list:
     soup = BeautifulSoup(resp.text, "html.parser")
     results = []; skipped = 0
     for li in soup.find_all("li"):
-        a = li.find("a", href=re.compile(r"/game/\d+\.html"))
-        if not a: continue
-        if not li.find("time"): skipped += 1; continue
+        anchors = li.find_all("a", href=re.compile(r"/game/\d+\.html"))
+        if not anchors:
+            continue
+        if not li.find("time"):
+            skipped += 1; continue
+        # 新版搜索列表：第一个 a 是缩略图链接（无文字），标题在 .tit 链接里。
+        # 优先取带文字（标题）的那个，取不到再退回第一个。
+        a = next((x for x in anchors if x.get_text(strip=True)), anchors[0])
         href, name = a.get("href", ""), a.get_text(strip=True)
-        if not href or not name: continue
+        if not href or not name:
+            continue
         m = re.search(r"/game/(\d+)\.html", href)
         if not m: continue
         gid = m.group(1)

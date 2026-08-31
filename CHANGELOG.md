@@ -1,5 +1,34 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.3 — 2026-08-31
+
+### 🐛 修复：xdgame.com 登录（新增 Cap「人机验证」PoW 自动求解）
+
+- **背景**：2026-08 起 xdgame 登录页新增 `cap-widget` 行为验证（`/static/cap/cap.brandless_20260805.js`），登录 POST 需要 `cap_token` 字段，旧版纯图片验证码流程在部分情况下无法完成登录；且首页头部登录态改为 JS 渲染，旧的 `check_cookie` 依据 `action=logout` / `/space/uid-` 失效，导致「登录成功仍提示更新 Cookie」。
+- **改动**（`core/qr_login.py`）：
+  - 纯 Python 复现 cap.js 的验证算法：FNV-1a 播种 xorshift PRNG 生成 `(salt, target)`，再对每组做 SHA-256 前缀 PoW（`cap_solve_pow_single`），POST `/challenge` → 求解 → POST `/redeem` 换取 `cap_token`，自动完成登录（无需浏览器/验证码人工输入，约 3-5s）。
+  - 兼容 format 2（`sha256-pow` / `rsw` / `instrumentation`）。
+  - Cap 求解失败自动回退原图片验证码流程（vdimgck.php），不影响可用性。
+- **改动**（`core/game.py`）：
+  - `check_cookie` 改为访问用户中心 `/user/`：含 `diyform` 登录表单＝未登录，否则已登录（并顺带探测免费下载次数上限）。
+  - `search_games` 适配新版搜索列表：第一个链接是缩略图（无文字），标题在 `.tit` 链接，取带文字链接避免漏结果。
+
+### ✨ 新增：`/movie_cookie` 命令（教父.com 影视 Cookie 查看 / 设置 / 检测）
+
+- `/movie_cookie`：查看当前影视 Cookie 配置状态。
+- `/movie_cookie test`：检测 Cookie 是否可用（走 PoW + 试搜）。
+- `/movie_cookie set <cookie>`：保存 Cookie 并立即重建客户端（重启后仍生效）。
+- 避免「WebUI 改配置后运行中的插件未重新加载仍走旧站」的问题。
+
+### 🐛 修复：`/找影视` 指令始终走 a123tv 旧站
+
+- **根因**：`/找影视` 指令的 `cmd_movie_search` 硬编码走 `_run_movie_search_flow`（a123tv `search_movies`），完全没有判配置，导致配置了 `muliy_cookie` 仍用旧站搜索。
+- **改动**（`main.py`）：`/找影视` 与 `llm_search_movie`（LLM/「想看XX」意图）统一源路由——配置了 `muliy_cookie`（且 `movie_source` 非 `a123tv`）走教父.com 新站（`_movie_sessions_new` 会话状态机处理选片/选集/线路/网盘），否则回退 a123tv 旧站。
+
+### 🔧 修复：影视新站配置加载
+
+- 修复因运行中插件实例配置未刷新导致配置了 `muliy_cookie` 仍回退 a123tv 旧站的问题（重启 / `/movie_cookie set` 均可即时生效）。
+
 ## v1.12.2 — 2026-07-28
 
 ### 🐛 修复：教父.com 影视详情页 / 播放页「浏览器安全验证」(PoW) 拦截，导致影视详情与播放直链取不到
