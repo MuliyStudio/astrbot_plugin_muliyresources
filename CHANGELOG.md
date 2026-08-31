@@ -1,5 +1,15 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.4 — 2026-08-31
+
+### 🛡️ 适配：合并聊天记录（合并转发）仅 OneBot v11 支持，其余平台自动降级
+
+- **背景**：游戏/软件/影视（新站+a123）/VIP 解析的结果原本在群聊里一律用「合并聊天记录」（AstrBot `Nodes`/`Node`）转发；而按 AstrBot 文档该消息类型**当前仅 OneBot v11（aiocqhttp）适配**，企业微信/个人微信（clawbot 等）/Telegram/飞书/Slack/Discord 上会发送失败或静默丢弃，导致私人 Bot 收不到资源。
+- **改动**（`main.py` / `metadata.yaml`）：
+  - 新增 `_supports_merged_forward(event)`：按平台名/ID 判断是否支持合并转发（当前仅 aiocqhttp/onebot）。
+  - 全部 `Nodes` 合并转发出口（`_send_sw_merged`、`_send_game_group_msg`、`_send_movie_merged`、软件/影视群聊流程、VIP 解析、`on_any_message` 游戏/软件）统一改为：支持合并转发 → 原样合并转发；不支持 → 降级发送「普通文本 + 截图/封面」（新增 `_send_text_with_images` 助手，下载截图组链发送，失败再降纯文本）。
+  - `metadata.yaml` `support_platforms` 修正为插件真正可用的平台集合：aiocqhttp / telegram / slack / lark / discord / wecom / wecom_ai_bot / weixin_oc / qq_official。
+
 ## v1.12.3 — 2026-08-31
 
 ### 🐛 修复：xdgame.com 登录（新增 Cap「人机验证」PoW 自动求解）
