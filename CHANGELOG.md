@@ -1,5 +1,16 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.6 — 2026-08-31
+
+### 🖼️ 新增：日报图片 Pillow 纯 Python 渲染兜底（不再强依赖 Chromium）
+
+- **背景**：软件/游戏/影视日报原本用 Playwright 把 HTML 渲染成图片，需要 `playwright install chromium` 下载约 115MB 浏览器（国内网络还常被墙）。未安装/安装失败时日报只能降级为纯文字。
+- **改动**：
+  - 新增 `core/report_pil.py`：`render_pil_report()` 用 **Pillow** 直接把日报条目数据画成卡片式图片（封面缩略图 + 标题 + 标签 + 简介 + 页脚），中文用插件自带思源黑体，无需浏览器。
+  - 软件/游戏/影视三条日报路径统一加兜底：Playwright 渲染返回 None（Chromium 缺失/系统库缺失）→ 自动走 Pillow 渲染，日报照常出图。
+  - `requirements.txt` 注释更新：Chromium 现为可选项，不装也能出图（仅渲染样式简化为 Pillow 卡片）。
+- **实测**：服务器无 Chromium 时 `render_html_to_png` 返回 None，Pillow 兜底成功生成约 40KB 日报图片。
+
 ## v1.12.5 — 2026-08-31
 
 ### 🎨 优化：资源结果发送三级升级（合并转发 → Markdown 排版 → 文本+图片）

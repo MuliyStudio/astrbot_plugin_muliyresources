@@ -93,6 +93,10 @@ from .core.movie_daily import (
     fetch_movie_daily, fetch_movie_daily_auto, build_glass_html,
     render_glass_to_png, gen_report_zip as gen_movie_report_zip
 )
+try:
+    from .core.report_pil import render_pil_report
+except ImportError:
+    render_pil_report = None
 from .core.movie import (
     search_movies, get_movie_detail,
     format_movie_list, format_episodes, format_sources,
@@ -235,7 +239,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.5")
+          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.6")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -2601,6 +2605,25 @@ class MuliyResourcesPlugin(Star):
         }
         return msg_map.get(state, detail)
 
+    async def _report_pil_fallback(self, cards: list, date_label: str, source_label: str,
+                                   font_path: str, width: int, tag: str) -> bytes | None:
+        """Playwright/Chromium 渲染失败时的兜底：用 Pillow 纯 Python 直接把日报数据画成图片。
+
+        无需 playwright install chromium。cards 每项：{cover, title, chips, desc}。
+        """
+        if not render_pil_report:
+            logger.warning(f"[{tag}] Pillow 渲染模块不可用，跳过图片兜底")
+            return None
+        try:
+            img_bytes = await asyncio.to_thread(
+                render_pil_report, cards, date_label, source_label, font_path, width)
+            if img_bytes:
+                logger.info(f"[{tag}] Pillow 兜底渲染完成，体积 {len(img_bytes)//1024}KB")
+            return img_bytes
+        except Exception as e:
+            logger.error(f"[{tag}] Pillow 兜底渲染异常: {e}")
+            return None
+
     async def _sw_render_image(self, sws: list) -> bytes | None:
         """软件日报：下载封面 → 橙色夏日风 HTML → Playwright 渲染为图片（压缩到 ≤2MB）。
 
@@ -2620,9 +2643,30 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[软件日报] 开始渲染，共 {len(sws)} 款，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 720, channel, exe)
-            logger.info(f"[软件日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
+            logger.info(f"[软件日报] 渲染完成" + (f"，原始图片体积 {len(img_bytes)//1024}KB" if img_bytes else "，但未返回图片(将用兜底渲染)"))
         except Exception as e:
             logger.error(f"[软件日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        if not img_bytes:
+            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
+            logger.info("[软件日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            cards = []
+            for sw in sws:
+                chips = []
+                ut = (sw.get("update_time") or "").replace("时间：", "").strip()
+                if ut:
+                    chips.append("🕒 " + ut)
+                if sw.get("downloads"):
+                    chips.append("⬇️ " + str(sw["downloads"]))
+                if sw.get("images"):
+                    chips.append(f"📷 {len(sw['images'])}图")
+                cards.append({
+                    "cover": sw.get("cover_b64") or "",
+                    "title": sw.get("title") or sw.get("name") or "未知",
+                    "chips": chips,
+                    "desc": (sw.get("description") or "暂无简介")[:200],
+                })
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, "小刀娱乐网", font_path, 720, "软件日报")
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[软件日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
             img_bytes = self._compress_game_image(img_bytes)
@@ -5592,9 +5636,33 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[影视日报] 开始渲染，共 {len(items)} 部，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_glass_to_png, html, font_path, 720, channel, exe)
-            logger.info(f"[影视日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
+            logger.info(f"[影视日报] 渲染完成" + (f"，原始图片体积 {len(img_bytes)//1024}KB" if img_bytes else "，但未返回图片(将用兜底渲染)"))
         except Exception as e:
             logger.error(f"[影视日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        if not img_bytes:
+            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
+            logger.info("[影视日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            cards = []
+            for it in items:
+                chips = []
+                if it.get("status"):
+                    chips.append(str(it["status"]))
+                db = it.get("douban", "")
+                if db and str(db) not in ("0", "0.0", ""):
+                    chips.append("豆瓣 " + str(db))
+                im = it.get("imdb", "")
+                if im and str(im) not in ("0", "0.0", ""):
+                    chips.append("IMDb " + str(im))
+                for q in (it.get("quality") or []):
+                    chips.append(str(q))
+                cards.append({
+                    "cover": it.get("cover_b64") or "",
+                    "title": it.get("title") or "未知",
+                    "chips": chips,
+                    "desc": (it.get("synopsis") or "暂无简介")[:160],
+                })
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, "教父.com", font_path, 720, "影视日报")
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[影视日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
             img_bytes = self._compress_game_image(img_bytes)
@@ -5939,9 +6007,29 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[游戏日报] 开始渲染，共 {len(games)} 款游戏，html 长度 {len(html)} 字符，浏览器 channel={channel!r} exe={exe!r}")
         try:
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
-            logger.info(f"[游戏日报] 渲染完成，原始图片体积 {len(img_bytes)//1024}KB")
+            logger.info(f"[游戏日报] 渲染完成" + (f"，原始图片体积 {len(img_bytes)//1024}KB" if img_bytes else "，但未返回图片(将用兜底渲染)"))
         except Exception as e:
             logger.error(f"[游戏日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        if not img_bytes:
+            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
+            logger.info("[游戏日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            cards = []
+            for g in games:
+                chips = []
+                if g.get("category"):
+                    chips.append(str(g["category"]))
+                if g.get("rank"):
+                    chips.append("排行 " + str(g["rank"]))
+                if g.get("size"):
+                    chips.append(str(g["size"]))
+                cards.append({
+                    "cover": g.get("cover_b64") or "",
+                    "title": g.get("title") or "未知",
+                    "chips": chips,
+                    "desc": (g.get("intro") or "暂无简介")[:200],
+                })
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, src_label, font_path, 720, "游戏日报")
         # 体积过大（24 款×封面+截图常达数 MB）会被平台静默拒收，先压缩到安全上限
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[游戏日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
@@ -6079,6 +6167,24 @@ class MuliyResourcesPlugin(Star):
         try:
             img_bytes = await asyncio.to_thread(render_html_to_png, html, font_path, 700, channel, exe)
         except Exception as e: logger.error(f"[游戏日报] 渲染异常: {e}")
+        if not img_bytes:
+            # Chromium 未安装/渲染失败 → Pillow 纯 Python 兜底（无需浏览器）
+            logger.info("[游戏日报] Playwright 渲染不可用，尝试 Pillow 兜底渲染")
+            cards = []
+            for g in games:
+                chips = []
+                if g.get("category"):
+                    chips.append(str(g["category"]))
+                if g.get("size"):
+                    chips.append(str(g["size"]))
+                cards.append({
+                    "cover": g.get("cover_b64") or "",
+                    "title": g.get("title") or "未知",
+                    "chips": chips,
+                    "desc": (g.get("intro") or "暂无简介")[:200],
+                })
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, src_label, font_path, 720, "游戏日报")
         # 体积过大（如 24 款×封面+截图常达数 MB）会被平台拒收，先压缩到安全上限
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[游戏日报] 渲染图 {len(img_bytes)//1024}KB，超过 2MB，尝试压缩...")
