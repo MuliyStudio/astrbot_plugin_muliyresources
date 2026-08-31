@@ -1,5 +1,19 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.12.5 — 2026-08-31
+
+### 🎨 优化：资源结果发送三级升级（合并转发 → Markdown 排版 → 文本+图片）
+
+- **背景**：v1.12.4 把不支持合并转发的平台降级成了「纯文本+图片」。经核对 AstrBot 各平台适配器源码，部分平台原生支持 **Markdown 渲染** / JSON 卡片，纯文本浪费了高级排版能力。
+- **各平台能力实测（读取 astrbot/core/platform/sources 源码确认）**：
+  - **合并转发**：仅 `aiocqhttp`(OneBot v11)。
+  - **Markdown 渲染**：`qq_official`(QQ官方, `use_markdown_`→msg_type=2)、`dingtalk`(钉钉, sampleMarkdown)、`telegram`(原生 MarkdownV2 自动转换)、`lark`(飞书, Plain→markdown 元素)、`kook`(KMarkdown)、`slack`(mrkdwn block)、`wecom`/`wecom_ai_bot`(企微 markdown/markdown_v2)。
+  - **仅文本+图片**：`weixin_oc`(个人微信)、`discord` 等。
+- **改动**（`main.py`）：
+  - 新增 `_supports_markdown(event)` 平台判定 + `_mdify(text)`（首行标题加粗、URL 反引号代码样式）。
+  - 新增统一出口 `_send_resource_result(event, text, images, referer, source_name)`，发送优先级：**合并转发 → Markdown(use_markdown_=True) → 文本+图片**，任一级失败自动降级。
+  - 全部群聊资源结果出口（游戏/软件/影视新站+a123/VIP解析/on_any_message 游戏与软件）统一接入该函数，彻底移除各处的重复 Nodes/文本分支。
+
 ## v1.12.4 — 2026-08-31
 
 ### 🛡️ 适配：合并聊天记录（合并转发）仅 OneBot v11 支持，其余平台自动降级

@@ -235,7 +235,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.4")
+          "暮黎资源聚合 - 影视搜索(教父.com新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.12.5")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -1392,18 +1392,29 @@ class MuliyResourcesPlugin(Star):
 
         return f"{tag} 未知会话状态，请重新搜索。"
 
-    # ——— 合并聊天记录（合并转发）平台适配 ———
+    # ——— 消息发送：合并转发 / Markdown 排版 / 文本+图片 三级降级 ———
     # AstrBot 文档：Node/Nodes 合并转发「大多数平台都不支持，当前适配情况：OneBot v11」。
-    # 因此仅 aiocqhttp(OneBot v11) 走合并转发；企业微信/个人微信/Telegram/飞书/Slack/Discord
-    # 等平台一律降级为「普通文本 + 截图/封面」，保证私人 Bot 也能收到完整资源信息。
+    # 因此发送顺序（优先级从高到低）：
+    #   1) 合并聊天记录(合并转发) —— 仅 aiocqhttp(OneBot v11) 群聊
+    #   2) Markdown 排版渲染 —— QQ官方/钉钉/Telegram/飞书/KOOK/Slack/企微 等原生渲染 markdown
+    #   3) 普通文本 + 截图/封面 —— 个人微信等其余平台最后兜底
+    # 实现：全部「群聊资源结果」出口统一走 _send_resource_result，避免每处重复实现。
     _MERGED_FORWARD_PLATFORMS = {"aiocqhttp", "onebot", "onebot11"}
+    # 原生渲染 Markdown 的平台（MessageChain.use_markdown_ 或 Plain→markdown 自动转换）
+    _MD_RENDER_PLATFORMS = {
+        "qq_official", "dingtalk", "telegram", "lark", "kook", "slack",
+        "wecom", "wecom_ai_bot",
+    }
+
+    def _platform_name(self, event: AstrMessageEvent) -> str:
+        try:
+            return (event.get_platform_name() or "").strip().lower()
+        except Exception:
+            return ""
 
     def _supports_merged_forward(self, event: AstrMessageEvent) -> bool:
         """当前平台是否支持「合并聊天记录/合并转发」(Node/Nodes)。"""
-        try:
-            name = (event.get_platform_name() or "").strip().lower()
-        except Exception:
-            name = ""
+        name = self._platform_name(event)
         if name in self._MERGED_FORWARD_PLATFORMS:
             return True
         try:
@@ -1412,31 +1423,59 @@ class MuliyResourcesPlugin(Star):
             pid = ""
         return pid in self._MERGED_FORWARD_PLATFORMS
 
+    def _supports_markdown(self, event: AstrMessageEvent) -> bool:
+        """当前平台是否支持 Markdown 渲染。"""
+        name = self._platform_name(event)
+        if name in self._MD_RENDER_PLATFORMS:
+            return True
+        try:
+            pid = (event.get_platform_id() or "").strip().lower()
+        except Exception:
+            pid = ""
+        return pid in self._MD_RENDER_PLATFORMS
+
+    @staticmethod
+    def _mdify(text: str) -> str:
+        """把普通文本转成兼容多平台 Markdown 的排版：
+        - 首行标题加粗（首行较短时）
+        - URL 用反引号包成代码样式（QQ官方/Telegram/KOOK/Slack/飞书/钉钉均支持行内代码）
+        """
+        lines = (text or "").split("\n")
+        if lines and 0 < len(lines[0].strip()) <= 60:
+            lines[0] = f"**{lines[0].strip()}**"
+        md = "\n".join(lines)
+        md = re.sub(r"(https?://\S+)", r"`\1`", md)
+        return md
+
+    def _download_image(self, url: str, referer: str = "") -> str | None:
+        """下载一张图片到临时文件，返回本地路径；失败返回 None。"""
+        if not url or not requests:
+            return None
+        try:
+            if not referer and url.startswith("http"):
+                referer = "/".join(url.split("/")[:3]) + "/"
+            ir = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": referer},
+                              timeout=15)
+            if ir.status_code == 200:
+                fd, ip = tempfile.mkstemp(suffix=".jpg", prefix="mly_")
+                os.close(fd)
+                with open(ip, "wb") as f:
+                    f.write(ir.content)
+                return ip
+        except Exception:
+            pass
+        return None
+
     async def _send_text_with_images(self, event: AstrMessageEvent, text: str,
                                      images: list, referer: str = ""):
-        """降级发送：普通文本 + 若干截图/封面（合并转发不可用的平台用）。发完清理临时文件。
-
-        发送失败再降级为纯文本，尽量保证用户能拿到核心信息（下载链接/播放直链）。
-        """
+        """兜底发送：普通文本 + 若干截图/封面。发送失败再降级为纯文本。发完清理临时文件。"""
         chain = [Plain(text)]
         temp_files = []
         for u in (images or [])[:6]:
-            if not u or not requests:
-                continue
-            try:
-                if not referer:
-                    referer = "/".join(u.split("/")[:3]) + "/" if u.startswith("http") else ""
-                ir = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": referer},
-                                  timeout=15)
-                if ir.status_code == 200:
-                    fd, ip = tempfile.mkstemp(suffix=".jpg", prefix="mly_")
-                    os.close(fd)
-                    with open(ip, "wb") as f:
-                        f.write(ir.content)
-                    temp_files.append(ip)
-                    chain.append(ImageComponent(file=ip))
-            except Exception:
-                pass
+            ip = self._download_image(u, referer)
+            if ip:
+                temp_files.append(ip)
+                chain.append(ImageComponent(file=ip))
         try:
             await event.send(MessageChain(chain))
         except Exception as e:
@@ -1451,18 +1490,71 @@ class MuliyResourcesPlugin(Star):
             except Exception:
                 pass
 
+    async def _send_resource_result(self, event: AstrMessageEvent, *, text: str,
+                                    images: list = None, referer: str = "",
+                                    source_name: str = "暮黎资源"):
+        """统一资源结果发送（优先级从高到低）：
+        1. 合并聊天记录/合并转发 —— 仅 OneBot v11 (aiocqhttp) 群聊
+        2. Markdown 排版渲染 —— QQ官方/钉钉/Telegram/飞书/KOOK/Slack/企微
+        3. 普通文本 + 截图/封面 —— 最后兜底（个人微信等）
+
+        text 为纯文本版（无 markdown 标记，用于兜底）；markdown 版由 _mdify 生成。
+        """
+        images = images or []
+        # 1) 合并转发（仅 OneBot v11 群聊）
+        if event.get_group_id() and self._supports_merged_forward(event) and Nodes and Node:
+            try:
+                sid = event.get_self_id()
+                nd = Nodes([])
+                nd.nodes.append(Node(uin=sid, name=source_name, content=[Plain(text)]))
+                temp_files = []
+                for u in images[:6]:
+                    ip = self._download_image(u, referer)
+                    if ip:
+                        temp_files.append(ip)
+                        nd.nodes.append(Node(uin=sid, name=source_name,
+                                             content=[ImageComponent(file=ip)]))
+                await event.send(MessageChain([nd]))
+                logger.info(f"[暮黎资源] 合并转发已发送 ({source_name}) +{len(temp_files)}图")
+                for p in temp_files:
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                logger.warning(f"[暮黎资源] 合并转发失败，降级重发: {e}")
+        # 2) Markdown 渲染平台
+        if self._supports_markdown(event):
+            md = self._mdify(text)
+            chain = [Plain(md)]
+            temp_files = []
+            for u in images[:6]:
+                ip = self._download_image(u, referer)
+                if ip:
+                    temp_files.append(ip)
+                    chain.append(ImageComponent(file=ip))
+            try:
+                await event.send(MessageChain(chain=chain, use_markdown_=True))
+                logger.info(f"[暮黎资源] Markdown 消息已发送 ({source_name}) +{len(temp_files)}图")
+                for p in temp_files:
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                logger.warning(f"[暮黎资源] Markdown 发送失败，降级普通文本: {e}")
+        # 3) 普通文本 + 图片（兜底）
+        await self._send_text_with_images(event, text, images, referer)
+
     async def _send_movie_merged(self, event: AstrMessageEvent, detail: dict,
                                  link: str, link_label: str):
-        """新站影视合并转发：标题+封面+简介+链接。群聊用 Nodes，私聊降级文本+图片。
-
-        封面图先 HEAD 验证可达性，404 则跳过避免拖垮整个合并转发；
-        合并转发整体 try-except，失败降级纯文本。
-        """
+        """新站影视结果发送：标题+封面+简介+链接。统一走 _send_resource_result
+        （合并转发→Markdown→文本+图片 三级降级）。"""
         text = build_merged_text(detail, link, link_label)
         cover = detail.get("cover", "")
-        gid = event.get_group_id()
-        sid = event.get_self_id()
-        # 封面可达性验证（HEAD 不可靠，用 GET stream；避免 404 拖垮合并转发）
+        # 封面可达性验证（GET stream，404 则跳过，避免拖垮发送）
         if cover and requests:
             try:
                 _r = requests.get(cover, timeout=6, verify=False, stream=True)
@@ -1474,23 +1566,9 @@ class MuliyResourcesPlugin(Star):
             except Exception as e:
                 logger.warning(f"[暮黎资源] 封面验证失败: {e}，跳过封面")
                 cover = ""
-        if gid and self._supports_merged_forward(event) and Nodes and Node:
-            nd = Nodes([])
-            nd.nodes.append(Node(uin=sid, name="暮黎影视", content=[Plain(text)]))
-            if cover:
-                nd.nodes.append(Node(uin=sid, name="暮黎影视", content=[ImageComponent(file=cover)]))
-            try:
-                await event.send(MessageChain([nd]))
-                logger.info(f"[暮黎资源] 新站影视合并转发已发送 (gid={gid} cover={'有' if cover else '无'})")
-            except Exception as e:
-                # 合并转发失败 → 降级纯文本（可能图片节点导致）
-                logger.error(f"[暮黎资源] 合并转发失败，降级纯文本: {e}")
-                try:
-                    await event.send(MessageChain([Plain(text)]))
-                except Exception as e2:
-                    logger.error(f"[暮黎资源] 降级纯文本也失败: {e2}")
-        else:
-            await self._send_text_with_images(event, text, [cover] if cover else [], "")
+        await self._send_resource_result(event, text=text,
+                                         images=[cover] if cover else [],
+                                         referer="", source_name="暮黎影视")
 
     async def _get_play_link(self, client, node_i: str, ep: int) -> str:
         """健壮获取播放直链：先取，失败则强制刷新登录再取一次。
@@ -1863,33 +1941,15 @@ class MuliyResourcesPlugin(Star):
         return f"{tag} 当前没有活跃的下载选择会话。请先搜索并选择资源，或回复0取消。"
 
     async def _send_sw_merged(self, event, name: str, detail: dict, link: dict, icons: dict, referer: str, source_name: str, gid: str, prefix: str):
-        """合并转发：标题文字 + 截图列表（仅 OneBot v11），其余平台降级普通文本+截图。私聊用 HTML 文件。"""
-        tag = "【暮黎资源】"
-        t2 = (tag + " 📦 " + name + "\n📖 " + (detail.get("desc","暂无简介") or "暂无简介")[:400] +
-              "\n📥 " + icons.get(link["pan"],"📥") + " " + link["pan"] +
-              "\n🔗 " + (link.get("real_url") or link.get("url","")))
-        if link.get("code"): t2 += "\n🔑 提取码: " + link["code"]
-        if self._supports_merged_forward(event) and Nodes and Node:
-            sid = event.get_self_id(); nd = Nodes([]); nd.nodes.append(Node(uin=sid, name=source_name, content=[Plain(t2)]))
-            imgs = []
-            for u in (detail.get("screenshots") or []):
-                try:
-                    ir = requests.get(u, headers={"User-Agent":"Mozilla/5.0","Referer":referer+"/"}, timeout=15)
-                    if ir.status_code == 200:
-                        fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix=prefix); os.close(fd2)
-                        with open(ip,"wb") as f: f.write(ir.content)
-                        imgs.append(ip)
-                        nd.nodes.append(Node(uin=sid, name=source_name, content=[ImageComponent(file=ip)]))
-                except Exception: pass
-            logger.info(f"[暮黎资源] 合并转发 +{len(imgs)}张截图")
-            await event.send(MessageChain([nd]))
-            for p in imgs:
-                try: os.unlink(p)
-                except Exception: pass
-        else:
-            await self._send_text_with_images(event, t2,
-                                              detail.get("screenshots") or [],
-                                              referer + "/")
+        """群聊资源结果发送（合并转发→Markdown→文本+图片 三级降级）。私聊用 HTML 文件。"""
+        t2 = ("【暮黎资源】 📦 " + name + "\n📖 " + (detail.get("desc", "暂无简介") or "暂无简介")[:400] +
+              "\n📥 " + icons.get(link["pan"], "📥") + " " + link["pan"] +
+              "\n🔗 " + (link.get("real_url") or link.get("url", "")))
+        if link.get("code"):
+            t2 += "\n🔑 提取码: " + link["code"]
+        await self._send_resource_result(event, text=t2,
+                                         images=detail.get("screenshots") or [],
+                                         referer=referer + "/", source_name=source_name)
 
     def _parse_selection(self, selection: str, links: list) -> int:
         """解析用户选择：数字/中文序数/网盘名 → 1-based index。0=取消, -1=无效"""
@@ -2961,35 +3021,11 @@ class MuliyResourcesPlugin(Star):
             yield event.plain_result("⏰ 选择超时，已自动取消。")
 
     async def _send_game_group_msg(self, event, gn, detail, rlink, text_content):
-        """在群聊中发送游戏下载信息（合并转发或普通文本+截图）"""
-        if self._supports_merged_forward(event) and Nodes and Node:
-            sid = event.get_self_id()
-            nd = Nodes([])
-            nd.nodes.append(Node(uin=sid, name="暮黎游戏搜索", content=[Plain(text_content)]))
-            imgs = []
-            for u in (detail.get("screenshots") or []):
-                try:
-                    ir = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": GAME_BASE_URL + "/"}, timeout=15)
-                    if ir.status_code == 200:
-                        fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix="g_")
-                        os.close(fd2)
-                        with open(ip, "wb") as f:
-                            f.write(ir.content)
-                        imgs.append(ip)
-                        nd.nodes.append(Node(uin=sid, name="暮黎游戏搜索", content=[ImageComponent(file=ip)]))
-                except Exception:
-                    pass
-            logger.info(f"[执行] 群聊合并转发 +{len(imgs)}张截图")
-            await event.send(MessageChain([nd]))
-            for p in imgs:
-                try:
-                    os.unlink(p)
-                except Exception:
-                    pass
-        else:
-            await self._send_text_with_images(event, text_content,
-                                              detail.get("screenshots") or [],
-                                              GAME_BASE_URL + "/")
+        """在群聊中发送游戏下载信息（合并转发→Markdown→文本+截图 三级降级）"""
+        await self._send_resource_result(event, text=text_content,
+                                         images=detail.get("screenshots") or [],
+                                         referer=GAME_BASE_URL + "/",
+                                         source_name="暮黎游戏搜索")
 
     async def _send_game_private_msg(self, event, gn, detail, rlink, keyword, safe_name, uid):
         """在私聊中发送游戏 HTML 文件"""
@@ -3205,34 +3241,10 @@ class MuliyResourcesPlugin(Star):
                 t2 = ("📦 " + sn + "\n📖 " + (sw_detail.get("desc", "暂无简介") or "暂无简介")[:400] +
                       "\n📥 " + SW_DISK_ICONS.get(sl["pan"], "📥") + " " + sl["pan"] +
                       "\n" + (sl.get("url", "")))
-                if self._supports_merged_forward(ev) and Nodes and Node:
-                    sid = ev.get_self_id()
-                    nd = Nodes([])
-                    nd.nodes.append(Node(uin=sid, name="暮黎软件搜索", content=[Plain(t2)]))
-                    imgs = []
-                    for u in (sw_detail.get("screenshots") or []):
-                        try:
-                            ir = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": SW_BASE_URL + "/"}, timeout=15)
-                            if ir.status_code == 200:
-                                fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix="sw_")
-                                os.close(fd2)
-                                with open(ip, "wb") as f:
-                                    f.write(ir.content)
-                                imgs.append(ip)
-                                nd.nodes.append(Node(uin=sid, name="暮黎软件搜索", content=[ImageComponent(file=ip)]))
-                        except Exception:
-                            pass
-                    logger.info(f"[执行] 群聊合并转发 +{len(imgs)}张截图")
-                    await ev.send(MessageChain([nd]))
-                    for p in imgs:
-                        try:
-                            os.unlink(p)
-                        except Exception:
-                            pass
-                else:
-                    await self._send_text_with_images(ev, t2,
-                                                      sw_detail.get("screenshots") or [],
-                                                      SW_BASE_URL + "/")
+                await self._send_resource_result(ev, text=t2,
+                                                 images=sw_detail.get("screenshots") or [],
+                                                 referer=SW_BASE_URL + "/",
+                                                 source_name="暮黎软件搜索")
             elif uid:
                 hc = await asyncio.to_thread(
                     generate_search_html, sn,
@@ -3662,41 +3674,13 @@ class MuliyResourcesPlugin(Star):
                 + (f"📖 {desc[:200]}\n" if desc else "")
                 + f"🔗 {chosen_url}"
             )
-            if self._supports_merged_forward(event) and Nodes and Node:
-                sid = event.get_self_id()
-                nd = Nodes([])
-                nd.nodes.append(Node(uin=sid, name="暮黎影视搜索", content=[Plain(t2)]))
-                # 封面图（依然从 detail 拿，跟原流程一致）
-                detail_obj = self._movie_sessions.get(event)
-                detail = detail_obj.get("detail", {}) if detail_obj else {}
-                cover = detail.get("cover") or ""
-                if cover:
-                    try:
-                        ir = requests.get(cover, headers={"User-Agent": "Mozilla/5.0",
-                                                          "Referer": MV_BASE_URL + "/"}, timeout=15)
-                        if ir.status_code == 200:
-                            fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix="mv_")
-                            os.close(fd2)
-                            with open(ip, "wb") as f:
-                                f.write(ir.content)
-                            nd.nodes.append(Node(uin=sid, name="暮黎影视搜索",
-                                                 content=[ImageComponent(file=ip)]))
-                            await event.send(MessageChain([nd]))
-                            try: os.unlink(ip)
-                            except Exception: pass
-                        else:
-                            await event.send(MessageChain([Plain(t2)]))
-                    except Exception:
-                        await event.send(MessageChain([Plain(t2)]))
-                else:
-                    await event.send(MessageChain([Plain(t2)]))
-            else:
-                # 不支持合并转发的平台：普通文本 + 封面图
-                detail_obj = self._movie_sessions.get(event)
-                detail = detail_obj.get("detail", {}) if detail_obj else {}
-                cover = detail.get("cover") or ""
-                await self._send_text_with_images(event, t2, [cover] if cover else [],
-                                                  MV_BASE_URL + "/")
+            detail_obj = self._movie_sessions.get(event)
+            detail = detail_obj.get("detail", {}) if detail_obj else {}
+            cover = detail.get("cover") or ""
+            await self._send_resource_result(event, text=t2,
+                                             images=[cover] if cover else [],
+                                             referer=MV_BASE_URL + "/",
+                                             source_name="暮黎影视搜索")
         elif uid:
             safe_name = re.sub(r'[\\/:*?"<>|]', "_", name)[:30]
             link = {"pan": "在线播放", "url": chosen_url, "real_url": chosen_url}
@@ -4074,12 +4058,10 @@ class MuliyResourcesPlugin(Star):
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[VIP] OG 补抓失败(非致命): {e}")
 
-        # 直接发送解析结果（不做浏览器验证 — 接口就是 url+视频链接，验证没意义且慢）
+        # 统一发送（合并转发→Markdown→文本+图片 三级降级）
         title = pending.get("title", "")
         desc = pending.get("desc", "")
         poster = pending.get("poster_url") or pending.get("poster_path")
-        sid = event.get_self_id()
-        gid = event.get_group_id()
         tlines = [
             "✅ VIP 解析完成",
             f"🎬 标题：{title}" if title else "🎬 标题：（未知）",
@@ -4087,28 +4069,11 @@ class MuliyResourcesPlugin(Star):
         if desc:
             tlines.append(f"📝 简介：{desc[:300]}")
         tlines.append(f"🛰️ 接口：{name}")
-        tlines.append(f"🎞️ 解析直链（浏览器/播放器打开即看）：")
+        tlines.append("🎞️ 解析直链（浏览器/播放器打开即看）：")
         tlines.append(play_url)
-        text_node = Plain("\n".join(tlines))
-
-        # 合并转发（聊天记录格式）：文本 + 封面图（仅 OneBot v11 支持）
-        if gid and self._supports_merged_forward(event) and Nodes and Node and poster:
-            nd = Nodes([])
-            nd.nodes.append(Node(uin=sid, name="暮黎影视解析", content=[text_node]))
-            nd.nodes.append(Node(uin=sid, name="暮黎影视解析", content=[ImageComponent(file=poster)]))
-            try:
-                await event.send(MessageChain([nd]))
-                return
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"[VIP] 合并转发失败，降级普通消息: {e}")
-        # 降级：普通消息（文本 + 图片）
-        chain = [text_node]
-        if poster:
-            try:
-                chain.append(ImageComponent(file=poster))
-            except Exception:
-                pass
-        await event.send(MessageChain(chain))
+        await self._send_resource_result(event, text="\n".join(tlines),
+                                         images=[poster] if poster else [],
+                                         referer="", source_name="暮黎影视解析")
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=5)
     async def on_netease_voice(self, event: AstrMessageEvent):
@@ -4874,30 +4839,10 @@ class MuliyResourcesPlugin(Star):
                 logger.info(f"[执行] 游戏 {gn} gid={gid} uid={uid}")
                 if gid:
                     t2 = "📦 " + gn + "\n📖 " + detail.get("desc", "暂无简介")[:400] + "\n📥 " + GAME_PAN_ICONS.get(rlink["pan"], "📥") + " " + rlink["pan"] + "\n" + rlink.get("real_url", "") + ((" 提取码:" + rlink.get("code", "")) if rlink.get("code") else "")
-                    if self._supports_merged_forward(event) and Nodes and Node:
-                        sid = event.get_self_id(); nd = Nodes([])
-                        nd.nodes.append(Node(uin=sid, name="暮黎游戏搜索", content=[Plain(t2)]))
-                        imgs = []
-                        for u in detail.get("screenshots", []):
-                            try:
-                                # 用截图自身域名作为 Referer（兼容 xdgame / switch618 两种源），避免跨域 403
-                                _ref = ("/".join(u.split("/")[:3]) + "/") if u.startswith("http") else GAME_BASE_URL + "/"
-                                ir = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": _ref}, timeout=15)
-                                if ir.status_code == 200:
-                                    fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix="g_"); os.close(fd2)
-                                    with open(ip, "wb") as f: f.write(ir.content); imgs.append(ip)
-                                    nd.nodes.append(Node(uin=sid, name="暮黎游戏搜索", content=[ImageComponent(file=ip)]))
-                            except Exception:
-                                pass
-                        logger.info(f"[执行] 群聊+{len(imgs)}张截图")
-                        await event.send(MessageChain([nd]))
-                        for p2 in imgs:
-                            try: os.unlink(p2)
-                            except Exception: pass
-                    else:
-                        await self._send_text_with_images(event, t2,
-                                                          detail.get("screenshots", []),
-                                                          GAME_BASE_URL + "/")
+                    await self._send_resource_result(event, text=t2,
+                                                     images=detail.get("screenshots", []),
+                                                     referer=GAME_BASE_URL + "/",
+                                                     source_name="暮黎游戏搜索")
                 elif uid:
                     hc = await asyncio.to_thread(generate_game_html, gn, detail.get("desc", ""), detail.get("cover", ""), detail.get("screenshots", []), rlink, ses.get("keyword", ""))
                     fd, tp = tempfile.mkstemp(suffix=f"_{safe}.html", prefix="g_"); os.close(fd)
@@ -5004,28 +4949,10 @@ class MuliyResourcesPlugin(Star):
                 logger.info(f"[执行] 软件 {sn} gid={gid} uid={uid}")
                 if gid:
                     t2 = "📦 " + sn + "\n📖 " + (detail.get("desc") or "暂无简介")[:400] + "\n📥 " + SW_DISK_ICONS.get(sl["pan"], "📥") + " " + sl["pan"] + "\n" + (sl.get("url") or "")
-                    if self._supports_merged_forward(event) and Nodes and Node:
-                        sid = event.get_self_id(); nd = Nodes([])
-                        nd.nodes.append(Node(uin=sid, name="暮黎软件搜索", content=[Plain(t2)]))
-                        imgs = []
-                        for u in detail.get("screenshots", []):
-                            try:
-                                ir = requests.get(u, headers={"User-Agent": "Mozilla/5.0", "Referer": SW_BASE_URL + "/"}, timeout=15)
-                                if ir.status_code == 200:
-                                    fd2, ip = tempfile.mkstemp(suffix=".jpg", prefix="sw_"); os.close(fd2)
-                                    with open(ip, "wb") as f: f.write(ir.content); imgs.append(ip)
-                                    nd.nodes.append(Node(uin=sid, name="暮黎软件搜索", content=[ImageComponent(file=ip)]))
-                            except Exception:
-                                pass
-                        logger.info(f"[执行] 群聊+{len(imgs)}张截图")
-                        await event.send(MessageChain([nd]))
-                        for p2 in imgs:
-                            try: os.unlink(p2)
-                            except Exception: pass
-                    else:
-                        await self._send_text_with_images(event, t2,
-                                                          detail.get("screenshots", []),
-                                                          SW_BASE_URL + "/")
+                    await self._send_resource_result(event, text=t2,
+                                                     images=detail.get("screenshots", []),
+                                                     referer=SW_BASE_URL + "/",
+                                                     source_name="暮黎软件搜索")
                 elif uid:
                     hc = await asyncio.to_thread(generate_search_html, sn, detail.get("desc") or "", detail.get("cover") or "", detail.get("screenshots") or [], sl, ses2.get("keyword", ""))
                     fd, tp = tempfile.mkstemp(suffix=f"_{safe}.html", prefix="sw_"); os.close(fd)
