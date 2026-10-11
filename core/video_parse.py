@@ -21,14 +21,13 @@ VIP 解析成功时，返回的「直链」是真实可播放流（.m3u8 / .mp4�
 依赖：requests（插件已依赖）。
 """
 import json
-import logging
 import re
 import html as _html
 from urllib.parse import urlparse, urljoin
 
 import requests
 
-logger = logging.getLogger("astrbot_plugin_muliyresources.video_parse")
+from astrbot.api import logger
 
 _VIDEO_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -252,7 +251,7 @@ def parse_video_url(url: str) -> dict:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9",
             },
-            timeout=15, verify=False)
+            timeout=15)
         # ⚠️ 关键：requests 在响应未声明 charset 时默认按 ISO-8859-1(latin1) 解码，
         # 而爱奇艺等页面是 UTF-8，直接 r.text 会把中文解成 ç­å¥èº 这类乱码。
         # 一律按 UTF-8 解码（失败用 replace 兜底），从根上消除乱码。

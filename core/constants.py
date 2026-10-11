@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """常量定义"""
-import logging
-
-logger = logging.getLogger("astrbot_plugin_muliyresources")
+from astrbot.api import logger
 
 # ==================== 游戏搜索常量 ====================
 GAME_BASE_URL = "https://www.xdgame.com"

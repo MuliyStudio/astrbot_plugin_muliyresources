@@ -33,7 +33,6 @@ import json
 import base64
 import tempfile
 import zipfile
-import logging
 
 import requests
 from PIL import Image
@@ -82,13 +81,13 @@ def _fetch_homepage_html(client: MuliySiteClient) -> str:
     try:
         # 1) 先 GET / 触发 browser_pow 挑战，再 solve_pow 解出 browser_verified
         try:
-            client._session.get(base + "/", headers=hdrs, timeout=25, verify=False)
+            client._session.get(base + "/", headers=hdrs, timeout=25)
             solve_pow(client._session, base)
         except Exception as e:
             logger.warning(f"[影视日报] PoW 预处理异常: {e}")
         # 2) 取真页；若仍回到验证页则再解一次 PoW 后重试
         for _ in range(2):
-            r = client._session.get(base + "/", headers=hdrs, timeout=25, verify=False)
+            r = client._session.get(base + "/", headers=hdrs, timeout=25)
             if "_obj.inlist" in r.text:
                 return r.text
             try:
@@ -151,7 +150,7 @@ def _dl_and_b64(url: str, referer: str) -> str:
     try:
         r = requests.get(url, headers={"User-Agent": MULIY_UA, "Referer": referer,
                                        "Accept": "image/webp,image/*,*/*;q=0.8"},
-                         timeout=15, verify=False)
+                         timeout=15)
         if r.status_code != 200:
             return ""
         img = Image.open(io.BytesIO(r.content))

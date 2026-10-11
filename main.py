@@ -210,7 +210,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.1")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.2")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -1451,7 +1451,7 @@ class MuliyResourcesPlugin(Star):
         chain = [Plain(text)]
         temp_files = []
         for u in (images or [])[:6]:
-            ip = self._download_image(u, referer)
+            ip = await asyncio.to_thread(self._download_image, u, referer)
             if ip:
                 temp_files.append(ip)
                 chain.append(ImageComponent(file=ip))
@@ -1488,7 +1488,7 @@ class MuliyResourcesPlugin(Star):
                 nd.nodes.append(Node(uin=sid, name=source_name, content=[Plain(text)]))
                 temp_files = []
                 for u in images[:6]:
-                    ip = self._download_image(u, referer)
+                    ip = await asyncio.to_thread(self._download_image, u, referer)
                     if ip:
                         temp_files.append(ip)
                         nd.nodes.append(Node(uin=sid, name=source_name,
@@ -1509,7 +1509,7 @@ class MuliyResourcesPlugin(Star):
             chain = [Plain(md)]
             temp_files = []
             for u in images[:6]:
-                ip = self._download_image(u, referer)
+                ip = await asyncio.to_thread(self._download_image, u, referer)
                 if ip:
                     temp_files.append(ip)
                     chain.append(ImageComponent(file=ip))
@@ -1536,11 +1536,15 @@ class MuliyResourcesPlugin(Star):
         # 封面可达性验证（GET stream，404 则跳过，避免拖垮发送）
         if cover and requests:
             try:
-                _r = requests.get(cover, timeout=6, verify=False, stream=True)
-                _ok = _r.status_code == 200 and "image" in (_r.headers.get("content-type", ""))
-                _r.close()
-                if not _ok:
-                    logger.warning(f"[暮黎资源] 封面不可达 {cover} status={_r.status_code}，跳过封面")
+                def _probe_cover():
+                    r = requests.get(cover, timeout=6, stream=True)
+                    ct = r.headers.get("content-type", "")
+                    code = r.status_code
+                    r.close()
+                    return code, ct
+                _code, _ct = await asyncio.to_thread(_probe_cover)
+                if not (_code == 200 and "image" in _ct):
+                    logger.warning(f"[暮黎资源] 封面不可达 {cover} status={_code}，跳过封面")
                     cover = ""
             except Exception as e:
                 logger.warning(f"[暮黎资源] 封面验证失败: {e}，跳过封面")
@@ -2066,7 +2070,9 @@ class MuliyResourcesPlugin(Star):
     async def cmd_movie_status(self, event: AstrMessageEvent):
         """检查 a123tv.com 是否可达 + 当前搜索状态。"""
         try:
-            r = requests.get(MV_BASE_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+            r = await asyncio.to_thread(
+                requests.get, MV_BASE_URL,
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
             ok = r.status_code == 200 and "A123TV" in r.text
             if ok:
                 yield event.plain_result(
@@ -4010,7 +4016,7 @@ class MuliyResourcesPlugin(Star):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
                 "Accept-Language": "zh-CN,zh;q=0.9",
-            }, timeout=10, verify=False, proxies=proxies)
+            }, timeout=10, proxies=proxies)
             html = r.content.decode("utf-8", "replace") or ""
             import re as _re
             import html as _html

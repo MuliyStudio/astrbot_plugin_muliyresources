@@ -18,7 +18,6 @@ import time
 import datetime
 import tempfile
 import zipfile
-import logging
 
 import requests
 from bs4 import BeautifulSoup

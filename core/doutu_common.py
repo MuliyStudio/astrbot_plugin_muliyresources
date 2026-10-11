@@ -16,10 +16,9 @@ fabric.js + gif.js **纯前端生成**、无服务端接口，因此本模块在
 import os
 import io
 import re
-import logging
 import tempfile
 
-logger = logging.getLogger("astrbot_plugin_muliyresources")
+from astrbot.api import logger
 
 # ==================== Pillow 可选导入 ====================
 try:

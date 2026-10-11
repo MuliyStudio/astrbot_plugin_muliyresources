@@ -7,12 +7,11 @@
 """
 
 import asyncio
-import logging
 import os
 import shutil
 import subprocess
 
-logger = logging.getLogger("astrbot_plugin_muliyresources.audioclip")
+from astrbot.api import logger
 
 
 def ffmpeg_available() -> bool:

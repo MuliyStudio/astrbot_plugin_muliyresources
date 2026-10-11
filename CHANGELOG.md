@@ -1,5 +1,17 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.13.2 — 2026-10-11
+
+### 🛡️ 过审修复：统一 Logger / 消除事件循环阻塞 / 启用 TLS 证书校验
+
+针对 AstrBot Cloud 自动安全审查（LLM Guard）反馈的三类问题整改：
+
+1. **日志记录规范**：多个 `core/` 模块此前用 `import logging` + `logging.getLogger(...)` 自建 logger，统一改为 `from astrbot.api import logger`（`constants.py` / `netease.py` / `doutu_common.py` / `petpet.py` / `video_parse.py` / `vip_capture.py` / `audio_clip.py`），并移除 `movie_daily.py` / `game_daily.py` 中未使用的 `import logging`。日志统一走 AstrBot 接口，才会在控制台与 Web 日志页正确显示。
+2. **消除网络 I/O 同步阻塞**：`main.py` 中遗漏的同步 `requests` 调用改为 `asyncio.to_thread` 包裹——`_download_image()` 的三处异步调用点（`_send_text_with_images` / `_send_resource_result` 的合并转发与 Markdown 分支）、`_send_movie_merged` 的封面可达性探测、`cmd_movie_status` 的 a123tv 可达性检查。避免长时间阻塞事件循环。
+3. **TLS 证书校验**：移除全部 `verify=False`（`main.py` / `core/muliy_site.py` / `core/movie_daily.py` / `core/video_parse.py`），恢复 requests 默认的 HTTPS 证书校验。
+
+> 无功能行为变化，仅为过审合规整改。
+
 ## v1.13.1 — 2026-10-11
 
 ### 🐛 修复：xdgame `/game_cookie_refresh` 更新 Cookie 后仍提示「已失效」

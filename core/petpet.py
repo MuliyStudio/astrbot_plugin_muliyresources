@@ -14,14 +14,13 @@ PetPet 摸头杀 GIF 生成模块
 
 import os
 import io
-import logging
 import tempfile
 from typing import List, Tuple, Union, Optional
 from collections import defaultdict
 from random import randrange
 from itertools import chain
 
-logger = logging.getLogger("astrbot_plugin_muliyresources")
+from astrbot.api import logger
 
 # Pillow 可选导入（插件运行环境需安装 pillow）
 try:

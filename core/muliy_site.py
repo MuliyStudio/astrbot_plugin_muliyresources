@@ -75,8 +75,8 @@ def set_release_url(url: str):
 def _guale_get_checkjs(session: requests.Session, release_url: str = None) -> str:
     """访问发布页：先 /auth?count=1 拿 cookie，再取 check.js 文本。"""
     base = (release_url or _RELEASE_URL).rstrip("/")
-    session.get(base + "/auth?count=1", timeout=12, verify=False)
-    r = session.get(base + "/check.js?25", timeout=12, verify=False)
+    session.get(base + "/auth?count=1", timeout=12)
+    r = session.get(base + "/check.js?25", timeout=12)
     return r.text
 
 
@@ -90,7 +90,7 @@ def _probe_latency(url: str) -> int | None:
     """测一个域名的首字节延迟(ms)，失败返回 None。"""
     try:
         t0 = time.time()
-        r = requests.get(url + "/", timeout=7, verify=False,
+        r = requests.get(url + "/", timeout=7,
                          allow_redirects=False, stream=True)
         r.close()
         ms = round((time.time() - t0) * 1000)
@@ -174,9 +174,9 @@ def solve_pow(session: requests.Session, base: str) -> bool:
     """
     try:
         # 先 GET 首页拿 browser_pow cookie，服务器才下发挑战
-        session.get(base + "/", timeout=15, verify=False)
+        session.get(base + "/", timeout=15)
         time.sleep(0.3)
-        chal = session.get(base + "/res/pow", timeout=15, verify=False).json()
+        chal = session.get(base + "/res/pow", timeout=15).json()
     except Exception as e:
         logger.error(f"[muliy_site] 获取 PoW 挑战失败: {e}")
         return False
@@ -205,7 +205,7 @@ def solve_pow(session: requests.Session, base: str) -> bool:
 
     try:
         vr = session.post(base + "/res/pow", data={"y": format(y, "x")},
-                          timeout=15, verify=False)
+                          timeout=15)
         rj = vr.json()
         if rj.get("success"):
             logger.info("[muliy_site] PoW 验证通过")
@@ -244,7 +244,7 @@ def account_login(session: requests.Session, base: str, username: str, password:
     try:
         # 1) 先访问登录页 + 求解 PoW（未验证会话会被安全验证页拦截）
         try:
-            session.get(base + MULIY_LOGIN_PATH, headers=headers, timeout=15, verify=False)
+            session.get(base + MULIY_LOGIN_PATH, headers=headers, timeout=15)
         except Exception:
             pass
         solve_pow(session, base)
@@ -255,7 +255,7 @@ def account_login(session: requests.Session, base: str, username: str, password:
             "cookietime": 10506240, "siteid": 1, "dosubmit": 1, "code": "",
         }
         r = session.post(base + MULIY_LOGIN_PATH, data=data, headers=headers,
-                         timeout=20, verify=False)
+                         timeout=20)
         try:
             j = r.json()
         except Exception:
@@ -552,7 +552,7 @@ class MuliySiteClient:
             for inner in range(2):
                 try:
                     r = self._session.get(base + path, headers=hdrs,
-                                          timeout=15, verify=False)
+                                          timeout=15)
                 except Exception as e:
                     # 连接级异常（超时/拒绝/重置）→ 当前域名失效，切换
                     logger.error(f"[muliy_site] GET {path} 请求异常@{base}: {e}")
@@ -721,7 +721,7 @@ class MuliySiteClient:
                 r = self._session.get(
                     base + f"/{dir_}/{id_}",
                     headers={"Referer": base + "/"},
-                    timeout=15, verify=False,
+                    timeout=15,
                 )
                 txt = r.text
                 if "_obj.d" not in txt:
@@ -844,7 +844,7 @@ class MuliySiteClient:
                 r = self._session.get(
                     base + f"/py/{node_i}/{ep}",
                     headers={"Referer": base + "/"},
-                    timeout=15, verify=False,
+                    timeout=15,
                 )
                 txt = r.text
                 # 有效播放页必须含 _obj.player；否则一律视为未登录/安全验证页
@@ -900,7 +900,7 @@ class MuliySiteClient:
             rr = requests.get(
                 url,
                 headers={"User-Agent": MULIY_UA, "Referer": (base + "/")},
-                timeout=15, verify=False, allow_redirects=True, stream=True,
+                timeout=15, allow_redirects=True, stream=True,
             )
             final = rr.url
             rr.close()
@@ -964,7 +964,7 @@ def _vip_core(video_url: str, client: "MuliySiteClient", base_url: str) -> dict:
         get_url = page + "?url=" + encoded
         logger.info(f"[muliy_site] VIP 解析 GET {get_url[:120]}")
         r = client._session.get(get_url, headers=headers,
-                                timeout=20, verify=False, allow_redirects=True)
+                                timeout=20, allow_redirects=True)
         html = r.text or ""
         raw = html[:1200]
         logger.info(f"[muliy_site] VIP 解析 GET 结果 status={r.status_code} len={len(html)} final_url={r.url[:100]}")
@@ -977,7 +977,7 @@ def _vip_core(video_url: str, client: "MuliySiteClient", base_url: str) -> dict:
         if not candidates:
             logger.info(f"[muliy_site] VIP 解析 POST {page} data=url={video_url[:60]}")
             rp = client._session.post(page, data={"url": video_url}, headers=headers,
-                                      timeout=20, verify=False, allow_redirects=True)
+                                      timeout=20, allow_redirects=True)
             html2 = rp.text or ""
             raw = (raw + "\n--POST--\n" + html2[:1200])
             logger.info(f"[muliy_site] VIP 解析 POST 结果 status={rp.status_code} len={len(html2)} final_url={rp.url[:100]}")
@@ -1003,8 +1003,7 @@ def _vip_core(video_url: str, client: "MuliySiteClient", base_url: str) -> dict:
         if u.startswith("http") and re.search(r"jx|parse|api|/zjx|player|vip", u, re.I):
             try:
                 logger.info(f"[muliy_site] VIP 解析追一层 {u[:120]}")
-                rr = client._session.get(u, headers={"Referer": page}, timeout=20,
-                                         verify=False, allow_redirects=True)
+                rr = client._session.get(u, headers={"Referer": page}, timeout=20, allow_redirects=True)
                 deeper = _extract_vip_media_urls(rr.text or "")
                 media_deeper = [d for d in deeper if _M3U8_MP4_RE.search(d)]
                 logger.info(f"[muliy_site] VIP 解析追一层 candidates={deeper}")

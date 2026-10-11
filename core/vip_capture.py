@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 import os
 import re
 import tempfile
@@ -32,7 +31,7 @@ import urllib.parse
 from collections import Counter
 from contextlib import asynccontextmanager
 
-logger = logging.getLogger("astrbot_plugin_muliyresources.vip_capture")
+from astrbot.api import logger
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")

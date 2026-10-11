@@ -19,14 +19,13 @@ import base64
 import codecs
 import hashlib
 import json
-import logging
 import os
 import random
 import re
 import tempfile
 from typing import Optional
 
-logger = logging.getLogger("astrbot_plugin_muliyresources.netease")
+from astrbot.api import logger
 
 try:
     import aiohttp
