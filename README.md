@@ -27,7 +27,7 @@
 
 | | 功能 | 说明 |
 |---|------|------|
-| 🎬 | **影视搜索（双源自动切换）** | 配置 `muliy_cookie` 走**片库新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
+| 🎬 | **影视搜索（双源自动切换）** | 配置片库**账号密码**（`muliy_username`/`muliy_password`，插件自动登录）或 `muliy_cookie` 走**片库新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
 | 🎮 | **游戏搜索** | 搜索 xdgame.com，返回多网盘下载链接（百度/夸克/阿里/123/天翼…） |
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
 | 📖 | **小说搜索与下载** | 基于 [so-novel](https://github.com/freeok/so-novel) 多源聚合，搜书名/作者 → 选源 → 选格式（txt/epub/html/pdf）→ 整本发送 |
@@ -61,7 +61,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 功能 | 装好即用？ | 备注 |
 |------|:---:|------|
-| 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到片库新站 → 配 `muliy_cookie` |
+| 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到片库新站 → 配 `muliy_username` + `muliy_password`（或 `muliy_cookie`） |
 | 🎮 游戏搜索 | ✅ | 默认走 xdgame，配账密后可用 `/game_cookie_refresh` 自动登录 |
 | 💿 软件搜索 | ✅ | |
 | 📰 软件 / 游戏 / 影视日报 | ✅ | 无浏览器也能出图（Pillow 兜底）；想更精美 → 装 Chromium（可选） |
@@ -109,7 +109,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 想用 | 需要配置 |
 |------|---------|
-| 片库新站影视（网盘资源） | `movie` → `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
+| 片库新站影视（网盘资源） | `movie` → `muliy_username` + `muliy_password`（账号密码，插件自动登录）或 `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
 | 游戏自动登录刷新 Cookie | `game` → `xdgame_username` + `xdgame_password` |
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
@@ -165,7 +165,8 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 | 配置项 | 默认 | 说明 |
 |--------|------|------|
-| `muliy_cookie` | `""` | **片库新站 Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW）。留空回退 a123tv |
+| `muliy_username` / `muliy_password` | `""` | **片库新站账号密码**（推荐）：填了插件自动登录获取登录态，无需手动搬运 Cookie |
+| `muliy_cookie` | `""` | **片库新站 Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。与账号密码二选一，两者都填时 Cookie 优先。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW）。留空回退 a123tv |
 | `movie_source` | `""` | 留空自动；填 `片库` 强制新站；填 `a123tv` 强制旧站 |
 | `muliy_release_url` | `""` | 片库系发布页（默认挂了.com，留空即可） |
 | `muliy_cache_ttl` | `3600` | 新站登录态缓存秒数 |
@@ -206,11 +207,11 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 
 ### 🎬 影视：双源自动切换
 
-- **配置了 `muliy_cookie`** → 走**片库新站**（最全最新的影视资源网站）：自动从发布页探测最低延迟节点、自动求解「浏览器安全验证」PoW，资源含**在线播放（多节点）+ 网盘下载（多网盘）**。
+- **配置了片库登录**（`muliy_username`+`muliy_password` 账号密码，**推荐**；或 `muliy_cookie`）→ 走**片库新站**（最全最新的影视资源网站）：自动从发布页探测最低延迟节点、自动求解「浏览器安全验证」PoW；账号密码模式下插件自动 POST 登录换登录态，无需手动复制 Cookie。资源含**在线播放（多节点）+ 网盘下载（多网盘）**。
 - **未配置**（或 `movie_source=a123tv`）→ **a123tv 旧站**：免登录，仅在线播放切换线路。
 - `movie_source` 可填关键字强制指定源：`片库` 强制新站、`a123tv` 强制旧站。
 - 指令 `/找影视` 与 LLM「想看XX」统一走同一套源路由，无需手动切换。
-- `/movie_cookie` 命令可随时查看 / 检测 / 更新 Cookie。
+- `/movie_cookie` 命令可随时查看 / 检测登录态（Cookie 或账号密码）。
 
 ### 🔐 游戏 Cookie 刷新
 

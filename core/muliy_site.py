@@ -217,6 +217,63 @@ def solve_pow(session: requests.Session, base: str) -> bool:
         return False
 
 
+# ==================== 账号密码登录（替代手动搬运 Cookie） ====================
+# 登录接口（来自站点 login-*.js）：
+#   POST {base}/user/login  form: username / password / cookietime / siteid=1 / dosubmit=1 / code(验证码)
+#   成功 → {"code":200}，并在会话写入 app_auth / PHPSESSID（即 muliy_cookie 所需字段）
+#   失败 → {"code":x,"msg":...,"captcha":2}（captcha=2 表示需要图形验证码）
+# 登录前必须先过「浏览器安全验证」PoW，否则被拦截。
+MULIY_LOGIN_PATH = "/user/login"
+
+
+def account_login(session: requests.Session, base: str, username: str, password: str) -> tuple:
+    """用账号密码登录片库，成功返回 (True, "")；失败返回 (False, 错误说明)。
+
+    成功后 session 内即持有 app_auth / PHPSESSID 登录态（无需再手动注入 Cookie）。
+    """
+    username = (username or "").strip()
+    password = (password or "").strip()
+    if not username or not password:
+        return False, "未配置账号或密码"
+    base = (base or MULIY_DEFAULT_DOMAIN).rstrip("/")
+    headers = {
+        "User-Agent": MULIY_UA,
+        "Referer": base + MULIY_LOGIN_PATH,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    try:
+        # 1) 先访问登录页 + 求解 PoW（未验证会话会被安全验证页拦截）
+        try:
+            session.get(base + MULIY_LOGIN_PATH, headers=headers, timeout=15, verify=False)
+        except Exception:
+            pass
+        solve_pow(session, base)
+
+        # 2) 提交登录表单
+        data = {
+            "username": username, "password": password,
+            "cookietime": 10506240, "siteid": 1, "dosubmit": 1, "code": "",
+        }
+        r = session.post(base + MULIY_LOGIN_PATH, data=data, headers=headers,
+                         timeout=20, verify=False)
+        try:
+            j = r.json()
+        except Exception:
+            return False, f"登录响应非 JSON（HTTP {r.status_code}）"
+        if j.get("code") == 200:
+            if "app_auth" in session.cookies or "PHPSESSID" in session.cookies:
+                logger.info("[muliy_site] 账号密码登录成功")
+            else:
+                logger.warning("[muliy_site] 登录返回 code=200 但未拿到 app_auth/PHPSESSID")
+            return True, ""
+        if j.get("captcha"):
+            return False, "登录触发图形验证码，请改用 muliy_cookie 登录"
+        return False, (j.get("msg") or f"登录失败(code={j.get('code')})")[:120]
+    except Exception as e:
+        logger.error(f"[muliy_site] 账号密码登录异常: {e}")
+        return False, f"登录请求异常: {str(e)[:100]}"
+
+
 # ==================== 详情页 _obj.d 解析 ====================
 
 def _extract_balanced(s: str, start: int) -> str:
@@ -292,7 +349,7 @@ class MuliySiteClient:
     """
 
     def __init__(self, base_url: str = "", cache_ttl: int = 3600, cookies: str = "",
-                 exclude_domains: set = None):
+                 exclude_domains: set = None, username: str = "", password: str = ""):
         # base_url 为空 → 首次 _get_base() 时从发布页探测所有可用域名并选最低延迟，
         # 支持多站点 + 失效自动切换（跨站点共享同一份 cookie）。
         # base_url 非空 → 固定使用指定域名（用于测试或强制单一源），跳过探测。
@@ -311,11 +368,19 @@ class MuliySiteClient:
         # cookie 模式：直接注入浏览器登录态，跨同源所有影视域名通用，
         # 因此切换域名时只需基于新域名重新设 domain 即可复用同一份 cookie。
         self._cookie_str = cookies or ""
+        # 账号密码模式：Cookie 为空时，用账号密码自动登录获取 app_auth/PHPSESSID。
+        self._username = (username or "").strip()
+        self._password = (password or "").strip()
         if self._cookie_str and self.base_url:
             # 仅当显式指定固定域名时预注入；空 base_url 由 _get_base 首次选点后注入
             self._apply_cookies(self._cookie_str)
             self._logged_in = True
             self._login_ts = time.time()
+
+    @property
+    def has_credentials(self) -> bool:
+        """是否具备任一登录手段（Cookie 或账号密码）。"""
+        return bool(self._cookie_str) or bool(self._username and self._password)
 
     # ---------- 会话与多站点管理 ----------
     def _get_base(self) -> str:
@@ -350,11 +415,14 @@ class MuliySiteClient:
                 # 跨站点共享同一 Cookie：清空旧域名 cookie，用同一份值注入新域名
                 self._session.cookies.clear()
                 self._apply_cookies(self._cookie_str)
+            elif self._username:
+                # 账号模式：cookie 是登录时按域名下发、无法跨站点复用，清掉后重登
+                self._session.cookies.clear()
             self._logged_in = bool(self._cookie_str)
             self._login_ts = time.time()
             if switched:
                 logger.info(f"[muliy_site] 已切换到域名 {new_base}"
-                            f"{'（跨站点复用同一 Cookie）' if self._cookie_str else ''}")
+                            f"{'（跨站点复用同一 Cookie）' if self._cookie_str else ('（账号模式，将重新登录）' if self._username else '')}")
         return self.base_url
 
     def _mark_current_domain_failed(self, reason: str = ""):
@@ -370,7 +438,13 @@ class MuliySiteClient:
         self._login_ts = 0.0
 
     def ensure_session(self) -> bool:
-        """确保已注入有效 cookie。线程安全。cookie 过期则重灌。"""
+        """确保当前会话可访问（已注入 Cookie 或已账号登录）。线程安全，过期则重登。
+
+        优先级：已有生效登录态 → 复用；否则 Cookie 注入；再否则账号密码登录。
+        """
+        # 先确保已选点（_get_base 内部自带锁，须在持锁前调用，避免死锁）
+        if not self.base_url:
+            self._get_base()
         with self._lock:
             if self._logged_in and (time.time() - self._login_ts < self.cache_ttl):
                 return True
@@ -378,10 +452,23 @@ class MuliySiteClient:
                 self._logged_in = True
                 self._login_ts = time.time()
                 return True
+            if self._username and self._password and self.base_url:
+                return self._login_with_account(self.base_url)
             return False
 
+    def _login_with_account(self, base: str) -> bool:
+        """在当前域名上用账号密码登录，成功则缓存登录态。"""
+        ok, err = account_login(self._session, base, self._username, self._password)
+        if ok:
+            self._logged_in = True
+            self._login_ts = time.time()
+            self._pow_ts = time.time()  # 登录前已跑过 PoW，browser_verified 新鲜
+            return True
+        logger.error(f"[muliy_site] 账号密码登录失败@{base}: {err}")
+        return False
+
     def _relogin_on_fail(self) -> bool:
-        """失效后重灌 cookie 一次。"""
+        """失效后重新获取登录态一次（Cookie 重灌 / 账号重登）。"""
         self._logged_in = False
         return self.ensure_session()
 

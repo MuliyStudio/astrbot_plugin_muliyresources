@@ -189,7 +189,7 @@ _CONF_GROUPS = {
         "movie_source", "muliy_cache_ttl",
         "movie_report_enabled", "movie_report_max",
         "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections",
-        "muliy_cookie",
+        "muliy_username", "muliy_password", "muliy_cookie",
     ],
     "music": [
         "wyy_auto_parse", "wyy_backend", "wyy_music_type", "wyy_custom_url",
@@ -210,7 +210,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.0")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.1")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -299,29 +299,40 @@ class MuliyResourcesPlugin(Star):
             release_url = (cfg.get("muliy_release_url") or "").strip()
             if release_url:
                 set_release_url(release_url)
-            # 影视源：cookie 登录模式（绕过 PoW+验证码），否则回退 a123tv 旧站
+            # 影视源：配置了 Cookie 或账号密码 → 片库新站（自动登录），否则回退 a123tv 旧站
             cookies = (cfg.get("muliy_cookie") or "").strip()
+            username = (cfg.get("muliy_username") or "").strip()
+            password = (cfg.get("muliy_password") or "").strip()
             ttl = int(cfg.get("muliy_cache_ttl") or 3600)
-            if cookies:
-                self._muliy_client = MuliySiteClient(base_url="", cache_ttl=ttl, cookies=cookies)
-                logger.info("[暮黎资源] 影视源=片库新站 (cookie登录模式)")
+            if cookies or (username and password):
+                self._muliy_client = MuliySiteClient(
+                    base_url="", cache_ttl=ttl, cookies=cookies,
+                    username=username, password=password)
+                logger.info(f"[暮黎资源] 影视源=片库新站 ({'cookie' if cookies else '账号密码'}登录模式)")
             else:
-                logger.warning("[暮黎资源] 未配置片库 Cookie，影视搜索回退 a123tv 旧站")
+                logger.warning("[暮黎资源] 未配置片库 Cookie/账号密码，影视搜索回退 a123tv 旧站")
                 self._muliy_client = None
         except Exception as e:
             logger.warning(f"[暮黎资源] 客户端初始化失败: {e}")
             self._muliy_client = None
 
     def _get_muliy_client(self) -> MuliySiteClient | None:
-        """获取新站客户端；cookie 配置变更则重建。"""
+        """获取新站客户端；Cookie / 账号密码配置变更则重建。"""
         try:
             cfg = self._get_config()
             cookies = (cfg.get("muliy_cookie") or "").strip()
-            if not cookies:
+            username = (cfg.get("muliy_username") or "").strip()
+            password = (cfg.get("muliy_password") or "").strip()
+            if not cookies and not (username and password):
                 return None
-            if self._muliy_client is None or self._muliy_client._cookie_str != cookies:
+            if (self._muliy_client is None
+                    or self._muliy_client._cookie_str != cookies
+                    or self._muliy_client._username != username
+                    or self._muliy_client._password != password):
                 ttl = int(cfg.get("muliy_cache_ttl") or 3600)
-                self._muliy_client = MuliySiteClient(base_url="", cache_ttl=ttl, cookies=cookies)
+                self._muliy_client = MuliySiteClient(
+                    base_url="", cache_ttl=ttl, cookies=cookies,
+                    username=username, password=password)
         except Exception:
             return None
         return self._muliy_client
@@ -2494,14 +2505,17 @@ class MuliyResourcesPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("movie_cookie")
     async def cmd_movie_cookie(self, event: AstrMessageEvent):
-        """查看/设置/检测片库影视登录 Cookie。
+        """查看/设置/检测片库影视登录（Cookie 或账号密码）。
         用法：
           /movie_cookie            → 查看当前配置状态
-          /movie_cookie test       → 检测当前 Cookie 是否可用
+          /movie_cookie test       → 检测当前 Cookie/账号密码是否可用
           /movie_cookie set <cookie> → 保存 Cookie 并立即重建客户端（重启后仍生效）
         """
         config = self._get_config()
         cur = (config.get("muliy_cookie") or "").strip()
+        uname = (config.get("muliy_username") or "").strip()
+        upwd = (config.get("muliy_password") or "").strip()
+        has_account = bool(uname and upwd)
         raw = (event.message_str or "").strip()
         parts = [p.strip() for p in raw.split(" ", 2) if p.strip()]
 
@@ -2520,17 +2534,21 @@ class MuliyResourcesPlugin(Star):
             return
 
         # —— 状态 / 检测 ——
-        if not cur:
+        if not cur and not has_account:
             yield event.plain_result(
-                "⚠️ 片库（新站）影视 Cookie 未配置。\n"
+                "⚠️ 片库（新站）影视登录未配置。\n"
                 "📋 影视搜索将自动回退 a123tv 旧站（仅在线播放，无网盘资源）。\n"
-                "💡 配置方法：WebUI 插件设置 → movie 分组 → muliy_cookie 粘贴浏览器登录 Cookie；"
-                "或发送 /movie_cookie set <cookie>（需含 app_auth、PHPSESSID，忽略 browser_verified/browser_pow）。")
+                "💡 配置方法（二选一）：\n"
+                "  • WebUI 插件设置 → movie 分组 → 填 muliy_username / muliy_password（推荐，免手动搬 Cookie）；\n"
+                "  • 填 muliy_cookie 粘贴浏览器登录 Cookie（需含 app_auth、PHPSESSID，忽略 browser_verified/browser_pow）；\n"
+                "  或发送 /movie_cookie set <cookie>。")
             return
 
-        yield event.plain_result("🔄 正在检测片库影视 Cookie 状态（需 PoW 验证，约几秒）...")
+        mode = "Cookie" if cur else "账号密码"
+        yield event.plain_result(f"🔄 正在检测片库影视登录（{mode}，需 PoW 验证，约几秒）...")
         try:
-            client = MuliySiteClient(base_url="", cookies=cur)
+            client = MuliySiteClient(base_url="", cookies=cur,
+                                     username=uname, password=upwd)
             base = await asyncio.to_thread(client._get_base)
             ok = await asyncio.to_thread(client.search, "流浪地球", 3)
         except Exception as e:
@@ -2538,14 +2556,14 @@ class MuliyResourcesPlugin(Star):
             return
         if ok:
             yield event.plain_result(
-                f"✅ 片库影视 Cookie 有效 ✓\n"
+                f"✅ 片库影视登录有效（{mode}）✓\n"
                 f"🌐 当前使用站点：{base}\n"
                 f"🎬 试搜「流浪地球」返回 {len(ok)} 条结果\n"
                 f"🟢 影视搜索将使用片库新站（在线播放+网盘资源）。")
         else:
             yield event.plain_result(
-                f"❌ 片库影视 Cookie 不可用（当前站点 {base} 搜索无结果）。\n"
-                f"💡 可能原因：Cookie 过期 / 被站点风控。请重新登录浏览器后更新 Cookie，或等待 IP 风控解除。")
+                f"❌ 片库影视登录不可用（{mode}，当前站点 {base} 搜索无结果）。\n"
+                f"💡 可能原因：Cookie 过期 / 账号密码错误 / 被站点风控。请检查配置或等待 IP 风控解除。")
 
     async def _format_status_msg(self, state: str, detail: str = "") -> str:
         """根据轮询状态返回提示文字"""
@@ -5680,17 +5698,23 @@ class MuliyResourcesPlugin(Star):
             logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
             return
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
-        # movie_source 支持关键字：a123tv 强制旧站；片库 强制新站；否则按 cookie 自动切换
+        username = (config.get("muliy_username", "") or "") if isinstance(config, dict) else ""
+        password = (config.get("muliy_password", "") or "") if isinstance(config, dict) else ""
+        # movie_source 支持关键字：a123tv 强制旧站；片库 强制新站；否则按 cookie/账号自动切换
         ms = (config.get("movie_source") or "").strip()
         forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
         forced_new = ms == MV_SOURCE_KEYWORD_NEW
         mx = int(config.get("movie_report_max", 24) or 24)
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
-        # 自动选择影视源：配了片库 Cookie 走新站，否则回退 a123tv 旧站（免登录）
+        # 自动选择影视源：配了片库 Cookie 或账号密码走新站，否则回退 a123tv 旧站（免登录）
         use_cookie = "" if forced_a123 else cookie
-        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('片库' if cookie else 'a123tv(免登录)')}）")
-        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
+        use_user = "" if forced_a123 else username
+        use_pass = "" if forced_a123 else password
+        _has_login = bool(cookie or (username and password))
+        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('片库' if _has_login else 'a123tv(免登录)')}）")
+        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True,
+                                         use_user, use_pass)
         if not result["success"]:
             logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
             return
@@ -5722,6 +5746,8 @@ class MuliyResourcesPlugin(Star):
     async def cmd_movie_report(self, event: AstrMessageEvent):
         config = self._get_config()
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
+        username = (config.get("muliy_username", "") or "") if isinstance(config, dict) else ""
+        password = (config.get("muliy_password", "") or "") if isinstance(config, dict) else ""
         ms = (config.get("movie_source") or "").strip()
         forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
         forced_new = ms == MV_SOURCE_KEYWORD_NEW
@@ -5729,9 +5755,13 @@ class MuliyResourcesPlugin(Star):
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
         use_cookie = "" if forced_a123 else cookie
-        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not cookie) else "片库新站"
+        use_user = "" if forced_a123 else username
+        use_pass = "" if forced_a123 else password
+        _has_login = bool(cookie or (username and password))
+        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not _has_login) else "片库新站"
         yield event.plain_result(f"⏳ 正在抓取{src_hint}最近更新影视...")
-        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True)
+        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True,
+                                         use_user, use_pass)
         if not result["success"]:
             yield event.plain_result(f"⚠️ {result.get('error','未知')}"); return
         items = result.get("items", [])

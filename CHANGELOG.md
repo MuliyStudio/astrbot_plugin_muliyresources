@@ -1,5 +1,24 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.13.1 — 2026-10-11
+
+### 🐛 修复：xdgame `/game_cookie_refresh` 更新 Cookie 后仍提示「已失效」
+
+- **根因**（`core/qr_login.py`）：登录成功后保存 Cookie 时，`extract_xdgame_cookies()` 的 `xd_keys` 白名单遗漏了新版 xdgame 的**真实鉴权 Cookie `DedeMemberAuth`**——它既不在白名单、也不以 `Dede` 之外的其它前缀出现，导致写入配置的 Cookie 缺了鉴权核心字段。于是「登录成功、Cookie 也写入了」，但 `/game_cookie` 检测与游戏下载始终判定「已失效」。
+- **改动**：`extract_xdgame_cookies()` 把 `DedeMemberAuth`（及 `DedeMemberID`）加入白名单，并改为**保留所有 `Dede*` 系 Cookie**，杜绝再次漏字段。
+- **实测**：修复后 `/game_cookie_refresh` 保存的 Cookie 通过 `/game_cookie` 检测（`check_cookie` 返回「Cookie 有效」）。
+
+### ✨ 新增：片库新站支持「账号密码」登录（无需手动搬运 Cookie）
+
+- **背景**：此前片库（新站）影视源仅支持 `muliy_cookie`（浏览器登录态 Cookie），需手动 F12 复制、且会过期。
+- **改动**：
+  - `_conf_schema.json` 新增 `muliy_username` / `muliy_password`（movie 分组）。
+  - `core/muliy_site.py` 新增 `account_login()`：求解「浏览器安全验证」PoW → `POST /user/login`（`username`/`password`/`cookietime`/`siteid`/`dosubmit`/`code`）→ 成功即写入 `app_auth` / `PHPSESSID` 登录态；`MuliySiteClient` 新增 `username`/`password` 参数，`ensure_session()` 在 Cookie 为空时自动走账号登录并支持多站点失效后**重新登录**。
+  - `core/movie_daily.py`：`fetch_movie_daily` / `fetch_movie_daily_auto` 增加 `username`/`password` 参数；主页抓取前调用 `ensure_session()`。
+  - `main.py`：`initialize` / `_get_muliy_client` 在「配了账号密码」时也启用片库新站客户端；影视搜索、`/找影视`、`/movie_report`、影视日报均传入账号密码；`/movie_cookie` 状态/检测兼容账号密码模式。
+- **优先级**：`muliy_cookie` 与账号密码任一配置即启用片库新站；两者都配置时 Cookie 优先，Cookie 为空才走账号密码登录。
+- **实测**：账号密码模式下 `ensure_session` 成功、搜索「流浪地球」返回结果、影视日报抓取成功（`source=片库`）。
+
 ## v1.13.0 — 2026-09-01
 
 ### 🚀 版本调整：版本号升至 1.13.0

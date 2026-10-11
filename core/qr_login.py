@@ -670,15 +670,22 @@ def format_cookie_string(cookies: dict) -> str:
 
 
 def extract_xdgame_cookies(cookies: dict) -> dict:
-    """只提取 xdgame 站点的关键 cookie"""
+    """只提取 xdgame 站点的关键 cookie。
+
+    注意：必须保留 DedeMemberAuth（新版 xdgame 的真实鉴权 Cookie）。
+    早期版本遗漏了它，导致登录成功、Cookie 也写入配置，但 /game_cookie_status
+    与游戏下载始终判定「已失效」——因为缺了鉴权核心字段。
+    """
     xd_keys = {
         "night", "Hm_lvt_1905089d52b6f08f01b437535400116c",
         "HMACCOUNT", "PHPSESSID", "DedeUserID",
         "DedeUserID__ckMd5", "DedeLoginTime", "DedeLoginTime__ckMd5",
+        "DedeMemberAuth", "DedeMemberID",
         "Hm_lpvt_1905089d52b6f08f01b437535400116c",
         "server_session_ab24c166",
     }
-    result = {k: v for k, v in cookies.items() if k in xd_keys}
+    # 关键：Dede 系的鉴权 Cookie（含 DedeMemberAuth）全部保留，避免再次漏字段
+    result = {k: v for k, v in cookies.items() if k in xd_keys or k.startswith("Dede")}
     if result:
         return result
     return {k: v for k, v in cookies.items()

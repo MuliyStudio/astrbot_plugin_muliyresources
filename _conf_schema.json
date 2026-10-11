@@ -180,11 +180,23 @@
         "default": "",
         "hint": "选填。片库各备用域名由发布页（默认挂了.com = https://www.xn--ykq321c.com）动态列出。插件会访问发布页获取当前所有可用影视域名，测延迟后自动选最低延迟站点连接与登录，而非固定单一源。\n仅当默认发布页不可用时，才需要在此填入其它可用的发布页地址（须为同样列出 check.js 域名列表的片库系发布页）。留空即用默认发布页。"
       },
+      "muliy_username": {
+        "type": "string",
+        "description": "片库（新站）账号",
+        "default": "",
+        "hint": "选填。填了「账号 + 密码」后，插件会自动登录片库新站并以登录态访问（无需再手动填 muliy_cookie）。\n登录流程：自动求解「浏览器安全验证」PoW → POST /user/login → 自动取得 app_auth / PHPSESSID 登录态。\n优先级：muliy_username/muliy_password 与 muliy_cookie 任一配置即启用片库新站；两者都配置时以 Cookie 优先（Cookie 为空时才走账号密码登录）。"
+      },
+      "muliy_password": {
+        "type": "string",
+        "description": "片库（新站）密码",
+        "default": "",
+        "hint": "选填。与 muliy_username 搭配，用于自动登录片库新站（无需手动搬运 Cookie）。"
+      },
       "muliy_cookie": {
         "type": "text",
-        "description": "片库（新站）登录态 Cookie",
+        "description": "片库（新站）登录态 Cookie（选填，可用账号密码替代）",
         "default": "",
-        "hint": "选填（想用片库新站影视时）。片库登录态 Cookie，用于以账号态访问影视源（新站额外提供网盘下载资源）。\n需包含账号态字段（至少）：app_auth、PHPSESSID，各字段以英文分号 ; 隔开整串粘贴。\n⚠️ 请勿填写 browser_verified / browser_pow：这两个是「浏览器安全验证」会话态，与 IP/域名绑定、极易失效；插件会自动重新求解 PoW 获取有效验证，手动填入反而会导致详情页/播放页始终被「浏览器安全验证」页拦截、拿不到影视详情与播放直链。\n获取方式：登陆后按F12，在「应用/网络」页复制各个带字段名 cookie 粘贴进来，用 ; 隔开（忽略 browser_verified/browser_pow 即可）。\n⚠️⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新。\n💡 留空也没关系：影视日报与影视搜索都会自动回退 a123tv 旧站（免登录，仅在线播放），照常出日报。"
+        "hint": "选填（想用片库新站影视时）。片库登录态 Cookie，用于以账号态访问影视源（新站额外提供网盘下载资源）。\n需包含账号态字段（至少）：app_auth、PHPSESSID，各字段以英文分号 ; 隔开整串粘贴。\n💡 现在也可以直接在「muliy_username / muliy_password」填写账号密码，由插件自动登录，无需手动复制 Cookie。\n⚠️ 请勿填写 browser_verified / browser_pow：这两个是「浏览器安全验证」会话态，与 IP/域名绑定、极易失效；插件会自动重新求解 PoW 获取有效验证，手动填入反而会导致详情页/播放页始终被「浏览器安全验证」页拦截、拿不到影视详情与播放直链。\n获取方式：登陆后按F12，在「应用/网络」页复制各个带字段名 cookie 粘贴进来，用 ; 隔开（忽略 browser_verified/browser_pow 即可）。\n⚠️⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新。\n💡 留空也没关系：影视日报与影视搜索都会自动回退 a123tv 旧站（免登录，仅在线播放），照常出日报。"
       }
     }
   },

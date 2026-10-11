@@ -76,6 +76,7 @@ def _clean_cookie(cookie_str: str) -> str:
 def _fetch_homepage_html(client: MuliySiteClient) -> str:
     """带 PoW 预处理地抓取片库主页 HTML（含 _obj.inlist）。失败返回空串。"""
     base = client._get_base()
+    client.ensure_session()  # Cookie 模式注入登录态；账号模式在此自动登录
     hdrs = {"Referer": base + "/", "User-Agent": MULIY_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
     try:
@@ -174,11 +175,13 @@ def _dl_and_b64(url: str, referer: str) -> str:
 
 
 def fetch_movie_daily(cookie: str = "", base_url: str = "", max_per_section: int = 24,
-                      sections_filter: list = None, fetch_synopsis: bool = True) -> dict:
+                      sections_filter: list = None, fetch_synopsis: bool = True,
+                      username: str = "", password: str = "") -> dict:
     """抓取片库影视日报（最近更新的电影/剧集/动漫）。
 
     参数：
       - cookie：片库登录态 Cookie（与 muliy_cookie 同款；browser_verified 会被自动剔除并现场 PoW）
+      - username/password：片库账号密码（Cookie 为空时用于自动登录，二选一即可）
       - base_url：留空则自动用片库默认域名
       - max_per_section：每个区块（电影/剧集/动漫）最多取多少部，<=0 表示不限制
       - sections_filter：只抓哪些类型，元素为 ty（"mv"/"tv"/"ac"）；None=全部
@@ -189,7 +192,8 @@ def fetch_movie_daily(cookie: str = "", base_url: str = "", max_per_section: int
     """
     res = {"success": False, "items": [], "error": ""}
     try:
-        client = MuliySiteClient(base_url=base_url, cookies=_clean_cookie(cookie))
+        client = MuliySiteClient(base_url=base_url, cookies=_clean_cookie(cookie),
+                                 username=username, password=password)
         base = client._get_base()
         html = _fetch_homepage_html(client)
         if not html:
@@ -353,18 +357,21 @@ def fetch_movie_daily_a123tv(max_per_section: int = 24, sections_filter: list = 
 
 
 def fetch_movie_daily_auto(cookie: str = "", base_url: str = "", max_per_section: int = 24,
-                           sections_filter: list = None, fetch_synopsis: bool = True) -> dict:
+                           sections_filter: list = None, fetch_synopsis: bool = True,
+                           username: str = "", password: str = "") -> dict:
     """自动选择影视源获取日报：
 
-    - 配置了片库 Cookie → 优先片库新站（登录态，含网盘/在线播放信息）；
+    - 配置了片库 Cookie 或账号密码 → 优先片库新站（登录态，含网盘/在线播放信息）；
       片库抓取失败/空数据 → 自动回退 a123tv 旧站。
-    - 未配置 Cookie 或片库源不可用 → 直接用 a123tv（免登录）。
+    - 未配置任何登录凭证或片库源不可用 → 直接用 a123tv（免登录）。
 
     返回 dict 额外带 "source" 字段（"片库" / "a123tv"），供前端标注数据来源。
     """
-    if cookie and cookie.strip():
+    has_login = bool((cookie and cookie.strip()) or (username and password))
+    if has_login:
         try:
-            r = fetch_movie_daily(cookie, base_url, max_per_section, sections_filter, fetch_synopsis)
+            r = fetch_movie_daily(cookie, base_url, max_per_section, sections_filter,
+                                  fetch_synopsis, username, password)
             if r.get("success") and r.get("items"):
                 r["source"] = "片库"
                 return r
