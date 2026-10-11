@@ -31,6 +31,38 @@ def _fix_url(url: str) -> str:
 
 # ==================== 软件日报 ====================
 
+# 文章配图采集时要跳过的站点元素（logo/头图/头像/验证码/加载占位等非正文图）
+_SW_SKIP_IMG_MARKERS = (
+    "logo.", "headtxt", "default_head_img", "vdimgck", "loader.gif",
+    "avatar", "/static/", "/plus/shane-comment/img/",
+    "qrcode", "weixin", "erweima", "blank.gif", "spacer",
+)
+
+
+def _collect_article_images(article) -> list:
+    """从正文容器采集真实配图（截图/封面），去重保序。
+
+    关键：x6d 详情页配图是懒加载「占位图 + 真图」成对出现——
+    占位 `<img src="data:image/gif;base64,..." data-src="真图URL">`，其后紧跟真图 `<img src="真图URL">`。
+    因此必须优先取 data-src / data-original，并跳过 data: 占位与站点 logo 等非正文图，
+    否则会把占位图当成第一张图（此前正是它被当成封面，导致封面/截图双双出错）。
+    """
+    out = []
+    if not article:
+        return out
+    for img in article.find_all("img"):
+        src = (img.get("data-src") or img.get("data-original") or img.get("src") or "").strip()
+        if not src or src.startswith("data:"):
+            continue
+        low = src.lower()
+        if any(k in low for k in _SW_SKIP_IMG_MARKERS):
+            continue
+        u = _fix_url(src)
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
 def _extract_description(article):
     if not article: return []
     sections = []; cur_title = None; cur_content = []
@@ -80,12 +112,7 @@ def get_detail(sw: dict) -> dict:
         sw["sections"] = sections
         ft = "\n\n".join(f"{s['title']}\n\n{s['content']}" for s in sections)
         sw["description"] = ft[:1500] if len(ft) > 1500 else ft
-    images = []
-    if article:
-        for img in article.find_all("img"):
-            src = img.get("src","") or img.get("data-original","")
-            if src: src = _fix_url(src); images.append(src)
-    sw["images"] = images[:10]
+    sw["images"] = _collect_article_images(article)[:12]
     downloads = []
     for a in soup.find_all("a", attrs={"data-url": True}):
         du = a.get("data-url","")
@@ -332,10 +359,13 @@ def download_summer_assets(softwares: list) -> None:
     fail_tracker = {}
     for sw in softwares:
         imgs = sw.get("images", []) or []
-        cover_src = imgs[0] if imgs else sw.get("cover_img", "")
+        # 封面/logo 优先用列表页缩略图（站点为每条资源选定的代表图，游戏即其封面图）；
+        # 列表缩略图缺失时才退回正文首图。避免把正文第一张截图误当 logo。
+        cover_src = (sw.get("cover_img", "") or "").strip() or (imgs[0] if imgs else "")
         sw["cover_b64"] = _dl_b64_sw(cover_src, 360, fail_tracker) if cover_src else ""
+        # 正文配图全部作为截图（不再跳过第一张）
         shots = []
-        for u in imgs[1:3]:
+        for u in imgs[:3]:
             b = _dl_b64_sw(u, 480, fail_tracker)
             if b:
                 shots.append(b)
@@ -523,12 +553,7 @@ def get_search_detail(url: str) -> dict:
     if not desc:
         md=soup.find("meta",attrs={"name":"description"})
         if md: desc=md.get("content","")[:500]
-    shots=[]
-    if article:
-        for img in article.find_all("img"):
-            src=img.get("src") or img.get("data-original") or ""
-            if src: src=_fix_url(src); shots.append(src)
-    shots=shots[:6]; cover=shots[0] if shots else ""
+    shots=_collect_article_images(article)[:6]; cover=shots[0] if shots else ""
     links=[]
     for a in soup.find_all("a",attrs={"data-url":True}):
         du=a.get("data-url","").strip()
