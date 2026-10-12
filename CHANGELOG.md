@@ -1,5 +1,16 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.13.4 — 2026-10-12
+
+### 🛡️ 过审修复：停止改写 system_prompt / 持久化数据迁出插件目录
+
+针对 AstrBot Cloud 自动安全审查（LLM Guard）反馈的两处「不予上架」项整改：
+
+1. **上下文注入方式**（`main.py` `on_llm_request`）：原先直接 `req.system_prompt += instruction` 改写系统提示词，会破坏上游模型的上下文缓存命中率。现改为把指令作为**临时用户内容块**追加到用户消息之后——`req.extra_user_content_parts.append(TextPart(text=...).mark_as_temp())`，仅在本次请求对模型可见、不写入会话历史，`system_prompt` 保持原样。（极旧版本无该字段时退化为在用户 prompt 末尾追加，同样不改写 system_prompt。）
+2. **数据持久化位置**（`main.py`）：调度调试日志 `debug_logs/scheduler_debug.log` 与日报缓存 `reports/*.zip` 原写入插件安装目录（`os.path.dirname(__file__)`），不符合「持久化数据必须保存到 `data/plugin_data/<plugin_name>`」。现统一改到 `data/plugin_data/astrbot_plugin_muliyresources/` 下，并新增 `_plugin_data_dir()` 复用同一目录解析（`config_override.json` 也改由它定位）；同时加入**一次性迁移**：启动时把旧版遗留在插件目录内的 `debug_logs` / `reports` 自动挪到新位置。
+
+> 无功能行为变化，仅为过审合规整改。
+
 ## v1.13.3 — 2026-10-11
 
 ### 🐛 修复：软件日报资源截图 / 封面（logo）获取错误

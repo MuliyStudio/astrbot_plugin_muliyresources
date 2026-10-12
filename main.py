@@ -210,7 +210,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.3")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.4")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -551,7 +551,25 @@ class MuliyResourcesPlugin(Star):
 - 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
 - 搜索结果出来后，只需提醒用户：回复“序号”选择、说“下一页/上一页”翻页、选网盘回复“网盘名或序号”；这些由系统直接处理，严禁编造列表或链接。
 - 严禁使用 markdown 表格（QQ 会乱码）。"""
-        req.system_prompt += "\n" + instruction
+        # 上架规范：严禁直接改写 system_prompt（会破坏上游模型上下文缓存命中率）。
+        # 改为把指令作为「临时用户内容块」追加到用户消息之后——只在本次请求对模型可见、
+        # 不写入会话历史（_no_save），从而不影响历史上下文与缓存。
+        try:
+            from astrbot.core.agent.message import TextPart
+            _part = TextPart(text=instruction)
+            for _mark in ("mark_as_temp", "make_as_temp"):
+                _fn = getattr(_part, _mark, None)
+                if callable(_fn):
+                    _part = _fn()
+                    break
+        except Exception:
+            _part = {"type": "text", "text": instruction, "_no_save": True}
+        _parts = getattr(req, "extra_user_content_parts", None)
+        if isinstance(_parts, list):
+            _parts.append(_part)
+        else:
+            # 极旧版本无该字段：退化为在用户 prompt 末尾追加（同样不改写 system_prompt）
+            req.prompt = f"{req.prompt or ''}\n\n{instruction}"
         logger.debug(f"[暮黎资源] LLM请求拦截，注入工具调用指令 text_len={len(text)}")
 
     # ==================== LLM 响应拦截：禁用 LLM 中间总结 ====================
@@ -714,12 +732,13 @@ class MuliyResourcesPlugin(Star):
         mod = self.__class__.__module__  # 形如 astrbot_plugin_muliyresources.main
         return mod.split(".")[0] if "." in mod else str(mod)
 
-    def _config_file_path(self) -> str:
-        """Cookie 等敏感配置的兜底文件路径。
+    def _plugin_data_dir(self) -> str:
+        """插件持久化数据目录：<AstrBot data>/plugin_data/astrbot_plugin_muliyresources。
 
-        关键：必须放在【插件目录之外】的 AstrBot data 目录下，
-        否则「卸载/覆盖重装插件」会把插件目录一起删掉，兜底文件也跟着没了
-        （这正是之前 switch618_cookie 重装必丢的根因）。
+        上架规范：持久化数据（Cookie 兜底、日报缓存 zip、调度调试日志等）必须放在
+        插件目录【之外】的 AstrBot data 目录下；插件目录在卸载/覆盖重装时会被删除，
+        否则会造成用户数据丢失、也无法参与数据迁移与审计。
+        返回空字符串表示未能定位（调用方自行兜底）。
         """
         import os
         base = os.path.dirname(os.path.abspath(__file__))
@@ -730,21 +749,33 @@ class MuliyResourcesPlugin(Star):
             if not dd and isinstance(gcfg, dict):
                 dd = gcfg.get("data_dir")
             if dd and os.path.isdir(dd):
-                return os.path.join(dd, "plugin_data", "astrbot_plugin_muliyresources",
-                                    "config_override.json")
+                return os.path.join(dd, "plugin_data", "astrbot_plugin_muliyresources")
         except Exception:
             pass
         # 兜底：从插件目录向上找包含 plugins/ 的目录（即 AstrBot data 目录）
         cur = base
         for _ in range(6):
             if os.path.isdir(os.path.join(cur, "plugins")):
-                return os.path.join(cur, "plugin_data", "astrbot_plugin_muliyresources",
-                                    "config_override.json")
+                return os.path.join(cur, "plugin_data", "astrbot_plugin_muliyresources")
             parent = os.path.dirname(cur)
             if parent == cur:
                 break
             cur = parent
+        return ""
+
+    def _config_file_path(self) -> str:
+        """Cookie 等敏感配置的兜底文件路径。
+
+        关键：必须放在【插件目录之外】的 AstrBot data 目录下，
+        否则「卸载/覆盖重装插件」会把插件目录一起删掉，兜底文件也跟着没了
+        （这正是之前 switch618_cookie 重装必丢的根因）。
+        """
+        import os
+        d = self._plugin_data_dir()
+        if d:
+            return os.path.join(d, "config_override.json")
         # 最终兜底：插件目录内（覆盖重装会丢，仅作最后的兼容）
+        base = os.path.dirname(os.path.abspath(__file__))
         return os.path.join(base, "data", "plugin_config_override.json")
 
     def _persist_config_file(self, cfg: dict):
@@ -5436,12 +5467,31 @@ class MuliyResourcesPlugin(Star):
             self._fallback_task.cancel()
         self._fallback_task = asyncio.create_task(self._sw_fallback(), name="sw_fallback")
         logger.info("[暮黎资源] 兜底守护任务已启动（机器人恢复上线后补发今日日报）")
+        # 持久化数据统一放到 AstrBot data 目录下（不得写入插件安装目录，
+        # 否则卸载/覆盖重装时插件目录被删会导致日报缓存与调试日志丢失）。
+        _pd = self._plugin_data_dir() or os.path.dirname(__file__)
+        # 一次性迁移：把旧版遗留在插件目录内的 debug_logs / reports 挪到新位置
         try:
-            d = os.path.join(os.path.dirname(__file__),"debug_logs"); os.makedirs(d,exist_ok=True)
+            _legacy = os.path.dirname(__file__)
+            if os.path.abspath(_legacy) != os.path.abspath(_pd):
+                import shutil
+                for _name in ("debug_logs", "reports"):
+                    _old = os.path.join(_legacy, _name)
+                    _new = os.path.join(_pd, _name)
+                    if os.path.isdir(_old) and not os.path.exists(_new):
+                        try:
+                            os.makedirs(os.path.dirname(_new), exist_ok=True)
+                            shutil.move(_old, _new)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+        try:
+            d = os.path.join(_pd,"debug_logs"); os.makedirs(d,exist_ok=True)
             self._debug_log_path = os.path.join(d,"scheduler_debug.log")
         except Exception: pass
         try:
-            self._reports_dir = os.path.join(os.path.dirname(__file__),"reports"); os.makedirs(self._reports_dir,exist_ok=True)
+            self._reports_dir = os.path.join(_pd,"reports"); os.makedirs(self._reports_dir,exist_ok=True)
             self._sw_cleanup_reports()
         except Exception: pass
 
