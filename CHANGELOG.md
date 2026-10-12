@@ -1,5 +1,16 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.13.5 — 2026-10-12
+
+### 🛡️ 过审修复：VIP 解析路径消除同步网络阻塞 / 数据目录兜底不再写插件安装目录
+
+针对 AstrBot Cloud 自动安全审查（LLM Guard）反馈的整改：
+
+1. **消除事件循环阻塞**（`main.py` `_handle_vip_link`）：`resolve_iqiyi_share()` 与 `normalize_video_url()` 内部底层走 `urllib.request` 同步网络（`follow_video_redirect`，超时 10~15s），此前在事件循环线程里直接调用，命中爱奇艺/芒果/优酷/腾讯链接时会阻塞整个事件循环最长十余秒。现两处均改为 `await asyncio.to_thread(...)`，与文件内其余网络调用保持一致。
+2. **持久化兜底收紧**（`main.py`）：`_plugin_data_dir()` / `_config_file_path()` 在无法定位 AstrBot data 目录时，原先会兜底写入插件安装目录。现最终兜底改为用户主目录（`~/.astrbot_plugin_muliyresources`），**任何情况下都不再写入插件安装目录**，彻底避免卸载/覆盖重装丢数据。
+
+> 无功能行为变化，仅为过审合规整改。
+
 ## v1.13.4 — 2026-10-12
 
 ### 🛡️ 过审修复：停止改写 system_prompt / 持久化数据迁出插件目录

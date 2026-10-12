@@ -210,7 +210,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.4")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.5")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -738,7 +738,7 @@ class MuliyResourcesPlugin(Star):
         上架规范：持久化数据（Cookie 兜底、日报缓存 zip、调度调试日志等）必须放在
         插件目录【之外】的 AstrBot data 目录下；插件目录在卸载/覆盖重装时会被删除，
         否则会造成用户数据丢失、也无法参与数据迁移与审计。
-        返回空字符串表示未能定位（调用方自行兜底）。
+        定位不到 AstrBot data 目录时，最终兜底到用户主目录（也绝不写入插件安装目录）。
         """
         import os
         base = os.path.dirname(os.path.abspath(__file__))
@@ -761,22 +761,18 @@ class MuliyResourcesPlugin(Star):
             if parent == cur:
                 break
             cur = parent
-        return ""
+        # 最终兜底：用户主目录下的稳定位置（不写插件安装目录，避免卸载/重装丢数据）
+        return os.path.join(os.path.expanduser("~"), ".astrbot_plugin_muliyresources")
 
     def _config_file_path(self) -> str:
         """Cookie 等敏感配置的兜底文件路径。
 
-        关键：必须放在【插件目录之外】的 AstrBot data 目录下，
+        关键：必须放在【插件目录之外】（AstrBot data 目录或用户主目录），
         否则「卸载/覆盖重装插件」会把插件目录一起删掉，兜底文件也跟着没了
         （这正是之前 switch618_cookie 重装必丢的根因）。
         """
         import os
-        d = self._plugin_data_dir()
-        if d:
-            return os.path.join(d, "config_override.json")
-        # 最终兜底：插件目录内（覆盖重装会丢，仅作最后的兼容）
-        base = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(base, "data", "plugin_config_override.json")
+        return os.path.join(self._plugin_data_dir(), "config_override.json")
 
     def _persist_config_file(self, cfg: dict):
         import os, json
@@ -3953,7 +3949,8 @@ class MuliyResourcesPlugin(Star):
         # ── 1) 爱奇艺分享卡片：优先 API 转换（最快最可靠）──
         if is_iqiyi_share_url and is_iqiyi_share_url(link) and resolve_iqiyi_share:
             try:
-                r = resolve_iqiyi_share(link, proxy=proxy)
+                # resolve_iqiyi_share 内部走 urllib.request 同步网络，必须放到线程避免阻塞事件循环
+                r = await asyncio.to_thread(resolve_iqiyi_share, link, proxy=proxy)
                 if r.get("ok") and r.get("clean_url"):
                     link = r["clean_url"]
                     if not title:
@@ -3968,7 +3965,8 @@ class MuliyResourcesPlugin(Star):
 
         # ── 2) 多平台 URL 规范化（重定向跟随 + 格式标准化）──
         try:
-            normalized = normalize_video_url(link, proxy=proxy)
+            # normalize_video_url 内部走 urllib.request 同步网络（follow_video_redirect），放入线程执行
+            normalized = await asyncio.to_thread(normalize_video_url, link, proxy=proxy)
             if normalized and normalized != link:
                 logger.info(f"[VIP] URL 规范化: {link[:60]} -> {normalized[:60]}")
                 link = normalized
@@ -5469,7 +5467,7 @@ class MuliyResourcesPlugin(Star):
         logger.info("[暮黎资源] 兜底守护任务已启动（机器人恢复上线后补发今日日报）")
         # 持久化数据统一放到 AstrBot data 目录下（不得写入插件安装目录，
         # 否则卸载/覆盖重装时插件目录被删会导致日报缓存与调试日志丢失）。
-        _pd = self._plugin_data_dir() or os.path.dirname(__file__)
+        _pd = self._plugin_data_dir()
         # 一次性迁移：把旧版遗留在插件目录内的 debug_logs / reports 挪到新位置
         try:
             _legacy = os.path.dirname(__file__)
