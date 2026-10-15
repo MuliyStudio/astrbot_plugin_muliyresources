@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://img.shields.io/github/v/release/MuliyStudio/astrbot_plugin_muliyresources?color=2B7FD8&label=版本&style=flat-square" alt="版本"></a>
+  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://img.shields.io/badge/版本-v1.14.6-2B7FD8?style=flat-square" alt="版本"></a>
   <img src="https://img.shields.io/badge/AstrBot-v4.20%2B-F4D758?style=flat-square" alt="AstrBot 版本">
   <img src="https://img.shields.io/badge/平台-aiocqhttp%2F企微%2FTG%2F飞书%2F...-2EC4FF?style=flat-square" alt="支持平台">
   <img src="https://img.shields.io/badge/小说-so--novel-orange?style=flat-square" alt="so-novel">

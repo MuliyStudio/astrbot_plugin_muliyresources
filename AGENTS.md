@@ -3,7 +3,7 @@
 ## 仓库约定
 
 - **每次更新后必须提交并推送到 GitHub**：改动完成后运行 `git add` → `git commit`（按仓库风格写中文 commit，如 `fix(1.13.1): ...`）→ `git push origin main`。
-- 发布/版本变更时同步更新：`metadata.yaml` 的 `version`、`main.py` 里 `@register(...)` 的版本号、`CHANGELOG.md` 顶部新增条目、README 相关说明。
+- 发布/版本变更时同步更新：`metadata.yaml` 的 `version`、`main.py` 里 `@register(...)` 的版本号、`README.md` 顶部的**静态版本徽章**（`https://img.shields.io/badge/版本-vX.Y.Z-...`）、`CHANGELOG.md` 顶部新增条目，并创建对应的 GitHub Release。
 - 配置项改动需同步 `_conf_schema.json` 与 `main.py` 的 `_CONF_GROUPS`（`_KEY_TO_GROUP` 自动生成）。
 
 ## 环境注意（本机 Windows）
