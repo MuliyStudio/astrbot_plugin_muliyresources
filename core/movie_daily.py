@@ -399,13 +399,12 @@ def _section_icon(title: str) -> str:
 
 
 def build_glass_html(items: list, date_label: str, source_label: str = "片库") -> str:
-    """把影视日报条目排版成毛玻璃简约风格 HTML（图片已内联 base64，离线可渲染）。
+    """把影视日报条目排版成毛玻璃风格 HTML（离线可渲染，图片已内联 base64）。
 
-    按 section_title 分组；每部作品：封面(左) + 名称/状态/评分/画质(右) + 简介。
-    背景铺满整页（不使用 background-attachment:fixed，避免整页截图时下方露白），
-    并叠加装饰光斑层与更强的毛玻璃质感，排版更灵动。
+    排版设计（v1.15）：
+      - 按 section_title 分组，组内卡片统一结构：左封面 + 右标题/标签，**简介单独一行**（最多 4 行截断）。
+      - 所有卡片高度规整、间距紧凑，整图更短更整齐；简介用 CSS 行数截断（而非按字数硬切）。
     """
-    # 分组
     groups = {}
     order = []
     for it in items:
@@ -414,6 +413,21 @@ def build_glass_html(items: list, date_label: str, source_label: str = "片库")
             groups[key] = []
             order.append(key)
         groups[key].append(it)
+
+    def _chips_of(g):
+        chips = []
+        status = (g.get("status") or "").strip()
+        if status:
+            chips.append(f'<span class="chip st">{_esc(status)}</span>')
+        db = g.get("douban", "")
+        if db and str(db) not in ("0", "0.0", ""):
+            chips.append(f'<span class="chip db">{_svg("star", 12, "currentColor")} 豆瓣 {_esc(str(db))}</span>')
+        im = g.get("imdb", "")
+        if im and str(im) not in ("0", "0.0", ""):
+            chips.append(f'<span class="chip im">{_svg("star", 12, "currentColor")} IMDb {_esc(str(im))}</span>')
+        for q in (g.get("quality") or []):
+            chips.append(f'<span class="chip q">{_esc(str(q))}</span>')
+        return "".join(chips)
 
     cards_blocks = []
     for key in order:
@@ -424,34 +438,15 @@ def build_glass_html(items: list, date_label: str, source_label: str = "片库")
             cover_html = (
                 f'<img class="cover" src="{cover}" alt="封面">'
                 if cover else
-                f'<div class="cover noimg">{_svg("movie", 40, "currentColor")}</div>'
+                f'<div class="cover noimg">{_svg("movie", 34, "currentColor")}</div>'
             )
             title = _esc(g.get("title", "") or "未知")
-            # 状态徽标
-            status = (g.get("status") or "").strip()
-            status_html = f'<span class="badge">{_esc(status)}</span>' if status else ""
-
-            # 评分 / 画质 小标签
-            chips = []
-            db = g.get("douban", "")
-            im = g.get("imdb", "")
-            if db and str(db) not in ("0", "0.0", ""):
-                chips.append(f'<span class="chip db">{_svg("star", 12, "currentColor")} 豆瓣 {_esc(str(db))}</span>')
-            if im and str(im) not in ("0", "0.0", ""):
-                chips.append(f'<span class="chip im">{_svg("star", 12, "currentColor")} IMDb {_esc(str(im))}</span>')
-            for q in (g.get("quality") or []):
-                chips.append(f'<span class="chip q">{_esc(str(q))}</span>')
-            chips_html = f'<div class="chips">{"" .join(chips)}</div>' if chips else ""
-
-            syn = _esc(g.get("synopsis", "") or "暂无简介")
-            if len(syn) > 140:
-                syn = syn[:140] + "…"
-            syn_html = "".join(f"<p>{ln}</p>" for ln in syn.split("\n") if ln.strip()) or "<p>暂无简介</p>"
-
+            chips = _chips_of(g)
+            chips_html = f'<div class="chips">{chips}</div>' if chips else ""
+            syn = _esc(g.get("synopsis", "") or "暂无简介").replace("\n", "<br>")
             sec_html.append(f'''
 <div class="card">
   <div class="idx">{idx:02d}</div>
-  {status_html}
   <div class="card-head">
     <div class="cover-wrap">{cover_html}</div>
     <div class="head-right">
@@ -459,7 +454,7 @@ def build_glass_html(items: list, date_label: str, source_label: str = "片库")
       {chips_html}
     </div>
   </div>
-  <div class="synopsis">{syn_html}</div>
+  <div class="syn"><span class="syn-tag">简介</span><span class="syn-txt">{syn}</span></div>
 </div>''')
         block = (
             f'<div class="section">'
@@ -482,16 +477,14 @@ def build_glass_html(items: list, date_label: str, source_label: str = "片库")
 *{{margin:0;padding:0;box-sizing:border-box}}
 html{{background:#160a33;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif;
-  color:#f2f2f7;line-height:1.65;
+  color:#f2f2f7;line-height:1.6;
   background:
     radial-gradient(900px 600px at 8% 4%, rgba(139,92,246,0.55), transparent 60%),
     radial-gradient(800px 560px at 96% 10%, rgba(56,189,248,0.40), transparent 60%),
     radial-gradient(900px 700px at 92% 88%, rgba(236,72,153,0.42), transparent 60%),
     radial-gradient(760px 560px at 4% 92%, rgba(16,185,129,0.34), transparent 60%),
     linear-gradient(160deg,#1a0f3a 0%,#241248 38%,#102033 100%);
-  background-color:#160a33;
-  padding:26px 16px 36px}}
-/* 装饰光斑层：随文档流铺满整页，整页截图不会露白 */
+  background-color:#160a33;padding:24px 14px 32px}}
 .bg{{position:absolute;inset:0;overflow:hidden;z-index:0;pointer-events:none}}
 .bg i{{position:absolute;border-radius:50%;filter:blur(60px);opacity:0.5}}
 .bg i:nth-child(1){{width:320px;height:320px;left:-80px;top:120px;background:radial-gradient(circle,#a855f7,transparent 70%)}}
@@ -499,61 +492,64 @@ body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC',
 .bg i:nth-child(3){{width:360px;height:360px;left:30%;top:1500px;background:radial-gradient(circle,#ec4899,transparent 70%)}}
 .bg i:nth-child(4){{width:260px;height:260px;right:10%;top:2400px;background:radial-gradient(circle,#34d399,transparent 70%)}}
 .wrap{{position:relative;z-index:2;max-width:740px;margin:0 auto}}
-.header{{position:relative;border-radius:28px;padding:32px 24px 30px;text-align:center;overflow:hidden;
+.header{{position:relative;border-radius:26px;padding:26px 22px 24px;text-align:center;overflow:hidden;
   background:linear-gradient(135deg,rgba(255,255,255,0.16),rgba(255,255,255,0.06));
   backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);
   border:1px solid rgba(255,255,255,0.25);
   box-shadow:0 14px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.35)}}
 .header::before{{content:"";position:absolute;left:-30%;top:0;width:160%;height:3px;
   background:linear-gradient(90deg,transparent,#f0abfc,#67e8f9,#a5b4fc,transparent)}}
-.header .logo{{font-size:34px;line-height:1;margin-bottom:8px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))}}
-.header h1{{font-size:32px;font-weight:800;letter-spacing:4px;
+.header .logo{{font-size:30px;line-height:1;margin-bottom:6px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))}}
+.header h1{{font-size:28px;font-weight:800;letter-spacing:3px;
   background:linear-gradient(90deg,#c4b5fd,#f0abfc,#67e8f9,#a5f3fc);-webkit-background-clip:text;
   background-clip:text;color:transparent}}
-.header .date{{margin-top:12px;display:inline-block;background:rgba(255,255,255,0.16);
-  padding:7px 22px;border-radius:22px;font-size:16px;font-weight:700;
+.header .date{{margin-top:10px;display:inline-block;background:rgba(255,255,255,0.16);
+  padding:5px 18px;border-radius:20px;font-size:14px;font-weight:700;
   border:1px solid rgba(255,255,255,0.3)}}
-.header .sub{{margin-top:10px;font-size:13px;opacity:0.85;letter-spacing:1px}}
-.count{{text-align:center;margin:20px 0 4px;font-size:15px;font-weight:700;opacity:0.95;
+.header .sub{{margin-top:8px;font-size:12px;opacity:0.82;letter-spacing:1px}}
+.count{{text-align:center;margin:16px 0 2px;font-size:14px;font-weight:700;opacity:0.95;
   text-shadow:0 2px 8px rgba(0,0,0,.4)}}
-.section{{margin-top:26px}}
-.sec-head{{display:flex;align-items:center;gap:10px;margin-bottom:12px}}
-.sec-ico{{font-size:22px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4))}}
-.sec-title{{font-size:19px;font-weight:800;letter-spacing:1px;
+.section{{margin-top:20px}}
+.sec-head{{display:flex;align-items:center;gap:9px;margin-bottom:10px}}
+.sec-ico{{font-size:20px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4))}}
+.sec-title{{font-size:18px;font-weight:800;letter-spacing:1px;
   background:linear-gradient(90deg,#fff,#e9d5ff);-webkit-background-clip:text;background-clip:text;color:transparent}}
-.sec-line{{height:2px;margin:-6px 0 14px;border-radius:2px;
+.sec-line{{height:2px;margin:-4px 0 12px;border-radius:2px;
   background:linear-gradient(90deg,rgba(244,114,182,0.8),rgba(168,85,247,0.5),transparent)}}
-.card{{position:relative;display:flex;flex-direction:column;gap:12px;align-items:stretch;
+.card{{position:relative;
   background:linear-gradient(135deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05));
   backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);
-  border:1px solid rgba(255,255,255,0.2);border-radius:22px;
-  padding:16px 16px 16px 18px;margin-bottom:16px;
+  border:1px solid rgba(255,255,255,0.2);border-radius:20px;
+  padding:14px 14px 13px 18px;margin-bottom:12px;
   box-shadow:0 10px 26px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.28)}}
-.idx{{position:absolute;left:-10px;top:14px;width:30px;height:30px;border-radius:50%;
-  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;
+.idx{{position:absolute;left:-9px;top:14px;width:26px;height:26px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;
   background:linear-gradient(135deg,#a855f7,#6366f1);box-shadow:0 4px 12px rgba(99,102,241,0.5)}}
-.badge{{position:absolute;top:-11px;right:16px;background:linear-gradient(135deg,#f472b6,#a855f7);
-  color:#fff;font-size:12px;font-weight:800;padding:4px 13px;border-radius:18px;
-  box-shadow:0 4px 12px rgba(168,85,247,0.5)}}
-.card-head{{display:flex;gap:16px;align-items:center;width:100%}}
-.cover-wrap{{flex:0 0 96px}}
-.cover{{width:96px;height:132px;object-fit:cover;border-radius:14px;
-  border:1px solid rgba(255,255,255,0.3);box-shadow:0 8px 20px rgba(0,0,0,0.45)}}
-.cover.noimg{{display:flex;align-items:center;justify-content:center;font-size:40px;
+.card-head{{display:flex;gap:14px;align-items:flex-start;width:100%}}
+.cover-wrap{{flex:0 0 84px}}
+.cover{{width:84px;height:116px;object-fit:cover;border-radius:12px;
+  border:1px solid rgba(255,255,255,0.28);box-shadow:0 8px 18px rgba(0,0,0,0.42)}}
+.cover.noimg{{display:flex;align-items:center;justify-content:center;
   background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.35)}}
-.head-right{{flex:1;min-width:0}}
-.title{{font-size:19px;font-weight:800;line-height:1.4;word-break:break-word;
+.head-right{{flex:1;min-width:0;padding-top:2px}}
+.title{{font-size:17.5px;font-weight:800;line-height:1.4;word-break:break-word;
   text-shadow:0 2px 6px rgba(0,0,0,.35)}}
-.chips{{margin-top:10px;display:flex;flex-wrap:wrap;gap:7px}}
-.chip{{font-size:12px;font-weight:700;padding:3px 11px;border-radius:14px;
+.chips{{margin-top:9px;display:flex;flex-wrap:wrap;gap:6px}}
+.chip{{font-size:11.5px;font-weight:700;padding:2px 10px;border-radius:13px;
+  display:inline-flex;align-items:center;gap:4px;
   background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.22)}}
+.chip.st{{background:rgba(52,211,153,0.22);border-color:rgba(52,211,153,0.5);color:#a7f3d0}}
 .chip.db{{background:rgba(250,204,21,0.24);border-color:rgba(250,204,21,0.55);color:#fde68a}}
 .chip.im{{background:rgba(56,189,248,0.22);border-color:rgba(56,189,248,0.55);color:#bae6fd}}
 .chip.q{{background:rgba(244,63,94,0.24);border-color:rgba(244,63,94,0.55);color:#fecdd3}}
-.synopsis{{margin-top:12px;font-size:13.5px;line-height:1.9;opacity:0.92;
-  border-top:1px solid rgba(255,255,255,0.14);padding-top:11px}}
-.synopsis p{{margin:0 0 5px}}
-.footer{{position:relative;text-align:center;margin-top:16px;padding:18px;font-size:13px;opacity:0.85;
+.syn{{display:flex;gap:8px;margin-top:12px;padding-top:11px;
+  border-top:1px solid rgba(255,255,255,0.14);font-size:12.8px;line-height:1.7;opacity:0.94}}
+.syn-tag{{flex:0 0 auto;align-self:flex-start;font-size:10.5px;font-weight:800;color:#ddd6fe;
+  background:rgba(139,92,246,0.28);border:1px solid rgba(139,92,246,0.5);
+  border-radius:8px;padding:1px 7px;margin-top:2px}}
+.syn-txt{{flex:1;min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;
+  overflow:hidden;word-break:break-word}}
+.footer{{position:relative;text-align:center;margin-top:16px;padding:16px;font-size:12.5px;opacity:0.85;
   background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:20px;
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}
 .footer b{{color:#c4b5fd;font-weight:800}}
@@ -562,18 +558,17 @@ body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC',
 <div class="bg"><i></i><i></i><i></i><i></i></div>
 <div class="wrap">
 <div class="header">
-  <div class="logo">{_svg("movie", 34, "currentColor")}</div>
+  <div class="logo">{_svg("movie", 30, "currentColor")}</div>
   <h1>暮黎影视日报</h1>
   <div class="date">{date_label}</div>
   <div class="sub">今日影视新鲜速递 · 回复片名即可追剧</div>
 </div>
-<div class="count">{_svg("movie", 17, "currentColor")} 今日共更新 {n} 部影视</div>
+<div class="count">{_svg("movie", 16, "currentColor")} 今日共更新 {n} 部影视</div>
 {body_html}
 <div class="footer">数据来源 <b>{source_label}</b> ｜ 由「暮黎资源聚合」插件自动生成<br>By：暮黎 Muliy</div>
 </div></body></html>'''
 
 
-# ==================== HTML → 图片（复用游戏日报 Playwright） ====================
 def render_glass_to_png(html_text: str, font_path: str = "", width: int = 720,
                         channel: str = "", exe: str = "") -> bytes | None:
     """用 Playwright 把毛玻璃 HTML 渲染为 JPEG 字节（整页）。失败返回 None。"""
