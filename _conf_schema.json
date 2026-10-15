@@ -366,7 +366,7 @@
   },
   "shortdrama": {
     "description": "短剧搜索与日报",
-    "hint": "网盘贴吧（wangpant8.com）短剧搜索与夸克网盘资源链接，及每日短剧日报。",
+    "hint": "网盘贴吧短剧搜索与夸克网盘资源链接，及每日短剧日报。",
     "type": "object",
     "default": {},
     "items": {

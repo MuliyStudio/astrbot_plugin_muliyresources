@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" width="300" alt="暮黎 Muliy Logo">
+  <img src="https://raw.githubusercontent.com/MuliyStudio/astrbot_plugin_muliyresources/main/assets/logo.png" width="300" alt="暮黎 Muliy Logo">
 </p>
 
 <h1 align="center">🍄 暮黎资源聚合</h1>
@@ -23,6 +23,12 @@
 
 ---
 
+## 📑 目录
+
+[功能特性](#-功能特性) · [安装](#-安装) · [快速上手](#-快速上手小白使用手册) · [配置指南](#-配置指南) · [功能详解](#-功能详解) · [依赖说明](#-依赖说明) · [常见问题](#-常见问题faq) · [更新日志](#-更新日志) · [交流群](#-交流群) · [许可证](#-许可证)
+
+---
+
 ## ✨ 功能特性
 
 | | 功能 | 说明 |
@@ -30,8 +36,8 @@
 | 🎬 | **影视搜索（双源自动切换）** | 配置片库**账号密码**（`muliy_username`/`muliy_password`，插件自动登录）或 `muliy_cookie` 走**片库新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
 | 🎮 | **游戏搜索** | 搜索 xdgame.com，返回多网盘下载链接（百度/夸克/阿里/123/天翼…） |
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
+| 📺 | **短剧搜索** | 搜索网盘贴吧短剧（wangpant8.com），选中后直接返回**夸克网盘资源链接** |
 | 📖 | **小说搜索与下载** | 基于 [so-novel](https://github.com/freeok/so-novel) 多源聚合，搜书名/作者 → 选源 → 选格式（txt/epub/html/pdf）→ 整本发送 |
-| 📺 | **短剧搜索** | 搜索网盘贴吧（wangpant8.com）短剧，选中后直接返回**夸克网盘资源链接** |
 | 📰 | **日报推送** | 软件 / 游戏 / 影视 / 短剧四套**定时日报**，自动渲染成图片以文件形式推送到群 |
 | 🎵 | **网易云语音名片** | 发网易云链接/小程序卡片，自动解析成**语音**发出来（内置直连，零部署） |
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
@@ -52,7 +58,7 @@
 
 ```bash
 cd <astrbot>/data/plugins/
-git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
+git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 # 重启 AstrBot
 ```
 
@@ -337,7 +343,7 @@ aiocqhttp(OneBot v11)、企业微信、个人微信、QQ官方、Telegram、飞�
 ## 💬 交流群
 
 <p align="center">
-  <img src="assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
+  <img src="https://raw.githubusercontent.com/MuliyStudio/astrbot_plugin_muliyresources/main/assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
 </p>
 
 <p align="center">
