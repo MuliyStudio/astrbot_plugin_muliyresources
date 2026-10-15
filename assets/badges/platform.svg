@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="229" height="20" role="img" aria-label="平台: aiocqhttp · 企微 · TG · 飞书 · QQ">
+  <title>平台: aiocqhttp · 企微 · TG · 飞书 · QQ</title>
+  <linearGradient id="s" x2="0" y2="100%">
+    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+    <stop offset="1" stop-opacity=".1"/>
+  </linearGradient>
+  <clipPath id="r"><rect width="229" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="35" height="20" fill="#555"/>
+    <rect x="35" width="194" height="20" fill="#2B9FE0"/>
+    <rect width="229" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,'Microsoft YaHei','PingFang SC',sans-serif" font-size="11">
+    <text x="18" y="14" fill="#010101" fill-opacity=".3">平台</text>
+    <text x="18" y="13">平台</text>
+    <text x="132" y="14" fill="#010101" fill-opacity=".3">aiocqhttp · 企微 · TG · 飞书 · QQ</text>
+    <text x="132" y="13">aiocqhttp · 企微 · TG · 飞书 · QQ</text>
+  </g>
+</svg>

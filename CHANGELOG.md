@@ -5,9 +5,9 @@
 ### 🖼️ 文档：演示图更短 + 版本徽章改为静态 + 补发 Release
 
 - README「效果预览」三张图重出为**短版**（短剧日报 6 条、影视日报每区块 2 部、搜索交互截断显示），体积更小、不再过长。
-- 版本徽章由 shields **动态**徽章（`github/v/release`，依赖 shields 查询 GitHub、常抓取失败显示破图）改为**静态**徽章，稳定显示。
+- 版本徽章原本是 shields **动态**徽章（`github/v/release`，依赖 shields 去查 GitHub，抓取失败就显示破图）；且 shields.io 在国内常不可达。现把**全部徽章改为自托管 SVG**（`assets/badges/*.svg`，走 CDN 引用），彻底不依赖 shields.io，稳定显示。
 - 补发 GitHub Release（v1.14.x 此前只有 tag 级历史，README 顶部版本徽章点进去可见）。
-- 发布提醒：版本徽章为静态，**每次发版需同步更新**（见 AGENTS.md 发布清单）。
+- 发布提醒：版本徽章为自托管 SVG，**每次发版需同步更新 `assets/badges/version.svg` 内的版本号**（见 AGENTS.md 发布清单）。
 
 ## v1.14.5 — 2026-10-15
 

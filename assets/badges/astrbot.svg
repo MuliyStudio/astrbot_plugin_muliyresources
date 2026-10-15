@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="106" height="20" role="img" aria-label="AstrBot: v4.20+">
+  <title>AstrBot: v4.20+</title>
+  <linearGradient id="s" x2="0" y2="100%">
+    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+    <stop offset="1" stop-opacity=".1"/>
+  </linearGradient>
+  <clipPath id="r"><rect width="106" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="56" height="20" fill="#555"/>
+    <rect x="56" width="50" height="20" fill="#C9920A"/>
+    <rect width="106" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,'Microsoft YaHei','PingFang SC',sans-serif" font-size="11">
+    <text x="28" y="14" fill="#010101" fill-opacity=".3">AstrBot</text>
+    <text x="28" y="13">AstrBot</text>
+    <text x="81" y="14" fill="#010101" fill-opacity=".3">v4.20+</text>
+    <text x="81" y="13">v4.20+</text>
+  </g>
+</svg>
