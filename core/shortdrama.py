@@ -26,6 +26,7 @@ import re
 import io
 import time
 import base64
+import datetime
 import tempfile
 import zipfile
 
@@ -198,7 +199,7 @@ def fetch_latest_dramas(limit: int = 12, resolve_links: bool = True,
                         timeout: int = 15) -> dict:
     """抓取首页「最新上传」短剧（带日期的条目）。
 
-    resolve_links=True 时逐个进入详情页取真实网盘链接（用于日报直接给出可转存链接）。
+    resolve_links=True 时逐个进入详情页取真实网盘链接（用于文字兜底/zip）。
     返回 {"success","items":[{id,title,category,date,disk,detail_url,link}],"error"}
     """
     res = {"success": False, "items": [], "error": ""}
@@ -231,120 +232,206 @@ def fetch_latest_dramas(limit: int = 12, resolve_links: bool = True,
     return res
 
 
-# ==================== 日报 HTML（毛玻璃简约风，复用影视日报视觉） ====================
+# ==================== 农历 / 星期（纯 Python，无需第三方依赖） ====================
+_LUNAR_INFO = [
+    0x04bd8,0x04ae0,0x0a570,0x054d5,0x0d260,0x0d950,0x16554,0x056a0,0x09ad0,0x055d2,
+    0x04ae0,0x0a5b6,0x0a4d0,0x0d250,0x1d255,0x0b540,0x0d6a0,0x0ada2,0x095b0,0x14977,
+    0x04970,0x0a4b0,0x0b4b5,0x06a50,0x06d40,0x1ab54,0x02b60,0x09570,0x052f2,0x04970,
+    0x06566,0x0d4a0,0x0ea50,0x06e95,0x05ad0,0x02b60,0x186e3,0x092e0,0x1c8d7,0x0c950,
+    0x0d4a0,0x1d8a6,0x0b550,0x056a0,0x1a5b4,0x025d0,0x092d0,0x0d2b2,0x0a950,0x0b557,
+    0x06ca0,0x0b550,0x15355,0x04da0,0x0a5b0,0x14573,0x052b0,0x0a9a8,0x0e950,0x06aa0,
+    0x0aea6,0x0ab50,0x04b60,0x0aae4,0x0a570,0x05260,0x0f263,0x0d950,0x05b57,0x056a0,
+    0x096d0,0x04dd5,0x04ad0,0x0a4d0,0x0d4d4,0x0d250,0x0d558,0x0b540,0x0b6a0,0x195a6,
+    0x095b0,0x049b0,0x0a974,0x0a4b0,0x0b27a,0x06a50,0x06d40,0x0af46,0x0ab60,0x09570,
+    0x04af5,0x04970,0x064b0,0x074a3,0x0ea50,0x06b58,0x05ac0,0x0ab60,0x096d5,0x092e0,
+    0x0c960,0x0d954,0x0d4a0,0x0da50,0x07552,0x056a0,0x0abb7,0x025d0,0x092d0,0x0cab5,
+    0x0a950,0x0b4a0,0x0baa4,0x0ad50,0x055d9,0x04ba0,0x0a5b0,0x15176,0x052b0,0x0a930,
+    0x07954,0x06aa0,0x0ad50,0x05b52,0x04b60,0x0a6e6,0x0a4e0,0x0d260,0x0ea65,0x0d530,
+    0x05aa0,0x076a3,0x096d0,0x04afb,0x04ad0,0x0a4d0,0x1d0b6,0x0d250,0x0d520,0x0dd45,
+    0x0b5a0,0x056d0,0x055b2,0x049b0,0x0a577,0x0a4b0,0x0aa50,0x1b255,0x06d20,0x0ada0,
+    0x14b63,0x09370,0x049f8,0x04970,0x064b0,0x168a6,0x0ea50,0x06b20,0x1a6c4,0x0aae0,
+    0x0a2e0,0x0d2e3,0x0c960,0x0d557,0x0d4a0,0x0da50,0x05d55,0x056a0,0x0a6d0,0x055d4,
+    0x052d0,0x0a9b8,0x0a950,0x0b4a0,0x0b6a6,0x0ad50,0x055a0,0x0aba4,0x0a5b0,0x052b0,
+    0x0b273,0x06930,0x07337,0x06aa0,0x0ad50,0x14b55,0x04b60,0x0a570,0x054e4,0x0d160,
+    0x0e968,0x0d520,0x0daa0,0x16aa6,0x056d0,0x04ae0,0x0a9d4,0x0a2d0,0x0d150,0x0f252,
+    0x0d520,
+]
+_LUNAR_BASE = datetime.date(1900, 1, 31)
+_GAN = "甲乙丙丁戊己庚辛壬癸"
+_ZHI = "子丑寅卯辰巳午未申酉戌亥"
+_MONTH_CN = ["正", "二", "三", "四", "五", "六", "七", "八", "九", "十", "冬", "腊"]
+_DAY_CN = ["初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+           "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+           "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"]
+_WEEK_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+
+def _leap_month(y: int) -> int:
+    return _LUNAR_INFO[y - 1900] & 0xf
+
+
+def _leap_days(y: int) -> int:
+    return 30 if (_LUNAR_INFO[y - 1900] & 0x10000) else 29
+
+
+def _month_days(y: int, m: int) -> int:
+    return 30 if (_LUNAR_INFO[y - 1900] & (0x10000 >> m)) else 29
+
+
+def _year_days(y: int) -> int:
+    s = 0
+    for i in range(1, 13):
+        s += _month_days(y, i)
+    return s + _leap_days(y) if _leap_month(y) else s
+
+
+def solar_to_lunar(d: datetime.date) -> dict:
+    """公历 → 农历，返回 {year, month, day, leap, ganzhi}。支持 1900-2100。"""
+    if isinstance(d, datetime.datetime):
+        d = d.date()
+    offset = (d - _LUNAR_BASE).days
+    y = 1900
+    while y < 2101:
+        yd = _year_days(y)
+        if offset < yd:
+            break
+        offset -= yd
+        y += 1
+    leap = _leap_month(y)
+    is_leap = False
+    m = 1
+    while m <= 12:
+        if leap > 0 and m == leap + 1 and not is_leap:
+            cur = _leap_days(y)
+            is_leap = True
+            m -= 1
+        else:
+            cur = _month_days(y, m)
+        if offset < cur:
+            break
+        offset -= cur
+        if is_leap and m == leap + 1:
+            is_leap = False
+        m += 1
+    day = offset + 1
+    return {"year": y, "month": m, "day": day, "leap": is_leap,
+            "ganzhi": _GAN[(y - 4) % 10] + _ZHI[(y - 4) % 12]}
+
+
+def lunar_text(d: datetime.date) -> str:
+    """返回如「丙午年九月初六」。"""
+    if isinstance(d, datetime.datetime):
+        d = d.date()
+    l = solar_to_lunar(d)
+    mon = _MONTH_CN[l["month"] - 1] if 1 <= l["month"] <= 12 else str(l["month"])
+    day = _DAY_CN[l["day"] - 1] if 1 <= l["day"] <= 30 else str(l["day"])
+    return f"{l['ganzhi']}年{'闰' if l['leap'] else ''}{mon}月{day}"
+
+
+def weekday_text(d: datetime.date) -> str:
+    return _WEEK_CN[d.weekday()]
+
+
+# ==================== 日报 HTML（浅色杂志风：标题 + 大号星期 + 编号剧名列表） ====================
 def _esc(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# 字体栈：优先思源宋体/黑体（服务器已装 Noto CJK），回退到插件内嵌 reportfont，
+# 保证在没有系统 CJK 字体的机器上也不会出现豆腐块。
+_FONT_SANS = ("'Noto Sans CJK SC','Source Han Sans SC','Source Han Sans CN',"
+              "'PingFang SC','Microsoft YaHei','reportfont',sans-serif")
+_FONT_SERIF = ("'Noto Serif CJK SC','Source Han Serif SC','Source Han Serif CN',"
+               "'Songti SC','STSong','SimSun','reportfont',serif")
+
+
+def _label_to_date(date_label: str) -> datetime.date:
+    """把「2026年10月15日」解析为 date；失败用今天。"""
+    m = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", date_label or "")
+    if m:
+        try:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return datetime.date.today()
+
+
 def build_drama_html(items: list, date_label: str) -> str:
-    """把短剧日报条目排版成毛玻璃简约风格 HTML（离线可渲染，无需外链资源）。"""
-    cards = []
+    """短剧日报 HTML：编号列表只放剧名，其余以标题/星期/引语/页脚等装饰为主。
+
+    浅色杂志风（参考「每天 60s 读懂世界」排版）。
+    """
+    d = _label_to_date(date_label)
+    week = weekday_text(d)
+    lunar = lunar_text(d)
+    n = len(items)
+
+    rows = []
     for idx, it in enumerate(items, 1):
         title = _esc(it.get("title") or "未知")
-        chips = []
-        cat = (it.get("category") or "短剧").strip()
-        if cat:
-            chips.append(f'<span class="chip cat">{_esc(cat)}</span>')
-        date = (it.get("date") or "").strip()
-        if date:
-            chips.append(f'<span class="chip date">{_svg("event", 12, "currentColor")} {_esc(date)}</span>')
-        disk = (it.get("disk") or "夸克").strip()
-        if disk:
-            chips.append(f'<span class="chip disk">{_disk_icon(disk)} {_esc(disk)}</span>')
-        chips_html = f'<div class="chips">{"".join(chips)}</div>' if chips else ""
+        rows.append(
+            f'<li class="item"><span class="num">{idx}</span>'
+            f'<span class="txt">{title}</span></li>'
+        )
+    list_html = "\n".join(rows) or '<li class="item"><span class="txt">今日暂无上新</span></li>'
 
-        link = (it.get("link") or "").strip()
-        link_html = (f'<div class="link">{_svg("link", 14, "currentColor")}'
-                     f'<span>{_esc(link)}</span></div>') if link else ""
-
-        cards.append(f'''
-<div class="card">
-  <div class="idx">{idx:02d}</div>
-  <div class="title">{title}</div>
-  {chips_html}
-  {link_html}
-</div>''')
-
-    body_html = "\n".join(cards)
-    n = len(items)
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>暮黎短剧日报 - {date_label}</title>
+<title>暮黎短剧日报 - {_esc(date_label)}</title>
 <style>
 @font-face{{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}}
 *{{margin:0;padding:0;box-sizing:border-box}}
-html{{background:#12082b;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif;
-  color:#f2f2f7;line-height:1.65;
-  background:
-    radial-gradient(900px 600px at 8% 4%, rgba(244,114,182,0.50), transparent 60%),
-    radial-gradient(800px 560px at 96% 10%, rgba(139,92,246,0.45), transparent 60%),
-    radial-gradient(900px 700px at 92% 88%, rgba(56,189,248,0.36), transparent 60%),
-    linear-gradient(160deg,#1a0f3a 0%,#2a1050 40%,#101a33 100%);
-  background-color:#12082b;padding:26px 16px 36px}}
-.bg{{position:absolute;inset:0;overflow:hidden;z-index:0;pointer-events:none}}
-.bg i{{position:absolute;border-radius:50%;filter:blur(60px);opacity:0.5}}
-.bg i:nth-child(1){{width:320px;height:320px;left:-80px;top:120px;background:radial-gradient(circle,#f472b6,transparent 70%)}}
-.bg i:nth-child(2){{width:280px;height:280px;right:-60px;top:620px;background:radial-gradient(circle,#a855f7,transparent 70%)}}
-.bg i:nth-child(3){{width:360px;height:360px;left:28%;top:1600px;background:radial-gradient(circle,#38bdf8,transparent 70%)}}
-.wrap{{position:relative;z-index:2;max-width:740px;margin:0 auto}}
-.header{{position:relative;border-radius:28px;padding:32px 24px 30px;text-align:center;overflow:hidden;
-  background:linear-gradient(135deg,rgba(255,255,255,0.16),rgba(255,255,255,0.06));
-  backdrop-filter:blur(18px) saturate(160%);-webkit-backdrop-filter:blur(18px) saturate(160%);
-  border:1px solid rgba(255,255,255,0.25);
-  box-shadow:0 14px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.35)}}
-.header::before{{content:"";position:absolute;left:-30%;top:0;width:160%;height:3px;
-  background:linear-gradient(90deg,transparent,#f0abfc,#67e8f9,#a5b4fc,transparent)}}
-.header .logo{{font-size:34px;line-height:1;margin-bottom:8px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))}}
-.header h1{{font-size:32px;font-weight:800;letter-spacing:4px;
-  background:linear-gradient(90deg,#fbcfe8,#c4b5fd,#67e8f9,#a5f3fc);-webkit-background-clip:text;
-  background-clip:text;color:transparent}}
-.header .date{{margin-top:12px;display:inline-block;background:rgba(255,255,255,0.16);
-  padding:7px 22px;border-radius:22px;font-size:16px;font-weight:700;
-  border:1px solid rgba(255,255,255,0.3)}}
-.header .sub{{margin-top:10px;font-size:13px;opacity:0.85;letter-spacing:1px}}
-.count{{text-align:center;margin:20px 0 4px;font-size:15px;font-weight:700;opacity:0.95;
-  text-shadow:0 2px 8px rgba(0,0,0,.4)}}
-.card{{position:relative;display:flex;flex-direction:column;gap:12px;align-items:stretch;
-  background:linear-gradient(135deg,rgba(255,255,255,0.12),rgba(255,255,255,0.05));
-  backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);
-  border:1px solid rgba(255,255,255,0.2);border-radius:22px;
-  padding:16px 16px 16px 20px;margin-top:16px;
-  box-shadow:0 10px 26px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.28)}}
-.idx{{position:absolute;left:-10px;top:16px;width:30px;height:30px;border-radius:50%;
-  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#fff;
-  background:linear-gradient(135deg,#f472b6,#a855f7);box-shadow:0 4px 12px rgba(168,85,247,0.5)}}
-.title{{font-size:19px;font-weight:800;line-height:1.45;word-break:break-word;
-  text-shadow:0 2px 6px rgba(0,0,0,.35)}}
-.chips{{display:flex;flex-wrap:wrap;gap:7px}}
-.chip{{font-size:12px;font-weight:700;padding:3px 11px;border-radius:14px;
-  display:inline-flex;align-items:center;gap:4px;
-  background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.22)}}
-.chip.cat{{background:rgba(244,114,182,0.24);border-color:rgba(244,114,182,0.55);color:#fbcfe8}}
-.chip.date{{background:rgba(56,189,248,0.20);border-color:rgba(56,189,248,0.5);color:#bae6fd}}
-.chip.disk{{background:rgba(168,85,247,0.22);border-color:rgba(168,85,247,0.55);color:#e9d5ff}}
-.link{{display:flex;align-items:flex-start;gap:7px;margin-top:2px;padding-top:10px;
-  border-top:1px solid rgba(255,255,255,0.14);
-  font-size:13px;color:#a5f3fc;word-break:break-all}}
-.link span{{flex:1;min-width:0}}
-.footer{{position:relative;text-align:center;margin-top:18px;padding:18px;font-size:13px;opacity:0.85;
-  background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:20px;
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}}
-.footer b{{color:#c4b5fd;font-weight:800}}
+html{{background:#f6f4ef;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+body{{font-family:{_FONT_SANS};color:#1f2328;background:#f6f4ef;
+  background-image:radial-gradient(circle at 12% 6%, rgba(232,121,43,0.05), transparent 42%),
+                   radial-gradient(circle at 92% 2%, rgba(232,121,43,0.05), transparent 36%);
+  padding-bottom:30px}}
+.topbar{{height:4px;background:linear-gradient(90deg,#f5a623,#e8792b 45%,rgba(232,121,43,0.15) 72%,transparent)}}
+.wrap{{max-width:720px;margin:0 auto;padding:34px 30px 0}}
+.header{{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:18px}}
+.h-title{{font-family:{_FONT_SERIF};font-size:38px;font-weight:800;letter-spacing:1.5px;color:#1c1f24;line-height:1.05}}
+.h-sub{{margin-top:13px;display:flex;align-items:center;gap:9px;font-size:15px;color:#8a8577}}
+.h-sub .ico{{display:inline-flex;align-items:center}}
+.h-sub .date{{color:#3a3f46;font-weight:700;letter-spacing:0.5px}}
+.h-sub .dot{{color:#d8d2c6}}
+.h-week{{font-family:{_FONT_SERIF};font-size:46px;font-weight:800;letter-spacing:4px;color:#1c1f24;line-height:0.95;white-space:nowrap}}
+.rule{{height:2px;background:linear-gradient(90deg,#e8792b,rgba(232,121,43,0.22) 55%,transparent)}}
+.list{{list-style:none;margin-top:14px}}
+.item{{display:flex;gap:15px;align-items:flex-start;padding:13px 0;
+  border-bottom:1px dashed #ece7dd}}
+.item:last-child{{border-bottom:none}}
+.num{{flex:0 0 25px;width:25px;height:25px;border-radius:50%;border:1.5px solid #ccc5b8;color:#8f897a;
+  font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:3px}}
+.txt{{flex:1;font-size:18px;font-weight:700;line-height:1.62;color:#22262b;letter-spacing:0.3px;word-break:break-word}}
+.quote{{margin-top:24px;padding:20px 26px;border-radius:16px;
+  background:linear-gradient(180deg,#fbfaf7,#f7f4ee);border:1px solid #ece7dd;
+  font-family:{_FONT_SERIF};font-size:16px;color:#5f594b;text-align:center;line-height:1.85;letter-spacing:0.5px}}
+.quote .q{{color:#e8792b;font-weight:700;padding:0 6px}}
+.foot{{margin-top:22px;padding-top:15px;border-top:1px solid #e7e2d8;
+  display:flex;justify-content:space-between;gap:14px;color:#a29c8e;font-size:12.5px}}
+.foot .r{{text-align:right;white-space:nowrap}}
+.foot b{{color:#8a8577;font-weight:700}}
 </style></head>
 <body>
-<div class="bg"><i></i><i></i><i></i></div>
+<div class="topbar"></div>
 <div class="wrap">
-<div class="header">
-  <div class="logo">{_svg("movie", 34, "currentColor")}</div>
-  <h1>暮黎短剧日报</h1>
-  <div class="date">{date_label}</div>
-  <div class="sub">每日精选短剧 · 夸克网盘转存即看</div>
-</div>
-<div class="count">{_svg("fire", 17, "currentColor")} 今日上新 {n} 部短剧</div>
-{body_html}
-<div class="footer">数据来源 <b>网盘贴吧</b> ｜ 由「暮黎资源聚合」插件自动生成<br>By：暮黎 Muliy</div>
+  <div class="header">
+    <div>
+      <div class="h-title">暮黎短剧日报</div>
+      <div class="h-sub"><span class="ico">{_svg("event", 15, "#e8792b")}</span><span class="date">{_esc(date_label)}</span><span class="dot">·</span><span>农历 {lunar}</span></div>
+    </div>
+    <div class="h-week">{week}</div>
+  </div>
+  <div class="rule"></div>
+  <ol class="list">
+{list_html}
+  </ol>
+  <div class="quote"><span class="q">「</span>好剧不怕晚 · 每日准时见<span class="q">」</span></div>
+  <div class="foot">
+    <div><b>数据来源</b> 网盘贴吧 · 共 {n} 部上新</div>
+    <div class="r">@暮黎资源聚合 · 更新于 {d.strftime('%Y/%m/%d')}</div>
+  </div>
 </div></body></html>'''
 
 
