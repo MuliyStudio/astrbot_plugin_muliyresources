@@ -1,7 +1,7 @@
 {
   "game": {
     "description": "游戏资源",
-    "hint": "游戏搜索源与游戏日报相关设置",
+    "hint": "游戏搜索源与游戏日报设置。",
     "type": "object",
     "default": {},
     "items": {
@@ -9,7 +9,7 @@
         "type": "string",
         "description": "游戏搜索源",
         "default": "auto",
-        "hint": "auto（默认）：配置了 xdgame_username/xdgame_password 走 xdgame.com，未配置则自动走 switch618.com 源。也可显式填 xdgame 或 switch618 强制指定源。"
+        "hint": "auto（默认）：有 xdgame 账密走 xdgame，否则走 switch618；也可填 xdgame / switch618 强制。"
       },
       "max_search_results": {
         "type": "int",
@@ -17,13 +17,13 @@
         "default": 32,
         "min": 1,
         "max": 48,
-        "hint": "默认 32，最大 48"
+        "hint": "默认 32，最大 48。"
       },
       "game_report_enabled": {
         "type": "bool",
         "description": "游戏日报总开关",
         "default": true,
-        "hint": "开启后，按本分组 game_schedule_hour/game_schedule_minute 定时，每天自动抓取当日更新的游戏，渲染成卡通图片推送到 game_group_ids 所填群。\n⚠️ 游戏日报的时间与群号是独立的，请勿填到「软件」分组的 schedule_hour/group_ids，否则属于软件日报、会在软件日报时间发出软件日报图片。"
+        "hint": "开启后按本组时间每天自动推送游戏日报到「游戏日报推送群」；时间与群号仅在本组填写，不要填到其它分组。"
       },
       "game_report_max": {
         "type": "int",
@@ -31,7 +31,8 @@
         "default": 24,
         "min": 1,
         "max": 50,
-        "hint": "默认 24，最大 50。过多会导致图片过长。此上限对 xdgame 与 switch618 两种源均生效（不再抓全）。"
+        "hint": "默认 24，最大 50。",
+        "condition": {"game_report_enabled": true}
       },
       "game_schedule_hour": {
         "type": "int",
@@ -39,7 +40,8 @@
         "default": 23,
         "min": 0,
         "max": 23,
-        "hint": "游戏日报独立定时小时，与软件/影视日报分开设置。"
+        "hint": "游戏日报独立定时，与软件/影视/短剧日报分开。",
+        "condition": {"game_report_enabled": true}
       },
       "game_schedule_minute": {
         "type": "int",
@@ -47,38 +49,40 @@
         "default": 0,
         "min": 0,
         "max": 59,
-        "hint": "游戏日报独立定时分钟，与软件/影视日报分开设置。"
+        "hint": "独立于其它日报。",
+        "condition": {"game_report_enabled": true}
       },
       "game_group_ids": {
         "type": "list",
         "description": "游戏日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
-        "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则游戏日报不推送。"
+        "hint": "填入群号，可多个；留空则不推送。",
+        "condition": {"game_report_enabled": true}
       },
       "xdgame_username": {
         "type": "string",
         "description": "xdgame.com 账号",
         "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。游戏搜索仅支持 xdgame.com 源，需配置账号密码并获取有效 Cookie 后使用"
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。"
       },
       "xdgame_password": {
         "type": "string",
         "description": "xdgame.com 密码",
         "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie"
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。"
       },
       "cookie": {
         "type": "text",
         "description": "xdgame.com Cookie",
         "default": "",
-        "hint": "Cookie 长度通常在 200-600 字符之间，自动登录后会自动更新此字段"
+        "hint": "自动登录后写入，一般无需手填。"
       },
       "switch618_cookie": {
         "type": "text",
         "description": "switch618.com 登录 Cookie",
         "default": "",
-        "hint": "由 /game_cookie_refresh 在 switch618 模式下扫码登录后自动写入。未配置 xdgame 账号密码时，游戏搜索自动切换到 switch618 源，需此 Cookie 才能获取下载链接。"
+        "hint": "switch618 源扫码登录后自动写入，一般无需手填。"
       }
     }
   },
@@ -90,30 +94,32 @@
     "items": {
       "schedule_hour": {
         "type": "int",
-        "description": "软件日报推送小时（0-23，）",
+        "description": "软件日报推送小时（0-23）",
         "default": 22,
         "min": 0,
-        "max": 23
+        "max": 23,
+        "hint": "软件日报独立定时，与游戏/影视/短剧日报分开。"
       },
       "schedule_minute": {
         "type": "int",
         "description": "软件日报推送分钟（0-59）",
         "default": 0,
         "min": 0,
-        "max": 59
+        "max": 59,
+        "hint": "独立于其它日报。"
       },
       "group_ids": {
         "type": "list",
         "description": "软件日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
-        "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则软件日报不推送。"
+        "hint": "填入群号，可多个；留空则不推送。"
       }
     }
   },
   "movie": {
     "description": "影视资源",
-    "hint": "影视搜索源与影视日报相关设置。",
+    "hint": "影视搜索源与影视日报设置。",
     "type": "object",
     "default": {},
     "items": {
@@ -121,7 +127,7 @@
         "type": "string",
         "description": "影视搜索源",
         "default": "",
-        "hint": "留空或默认=自动模式：配置了本分组 muliy_cookie 则走片库新站(登录+在线播放+网盘)，未配置则自动回退 a123tv 旧站(仅在线播放)。支持关键字强制指定源：填「片库」强制新站（片库，最全最新的影视资源网站）；填 a123tv 强制旧站。注意：现已由 Cookie 自动切换，无需手动切换源。"
+        "hint": "留空自动：有片库登录走片库新站，否则回退 a123tv；也可填「片库」/「a123tv」强制。"
       },
       "muliy_cache_ttl": {
         "type": "int",
@@ -129,13 +135,13 @@
         "default": 3600,
         "min": 300,
         "max": 86400,
-        "hint": "默认3600秒，到期自动重登"
+        "hint": "默认 3600 秒，到期自动重登。"
       },
       "movie_report_enabled": {
         "type": "bool",
         "description": "影视日报总开关",
         "default": true,
-        "hint": "开启后，按下方时间每天自动抓取影视站主页「最近更新」的影视（电影/剧集/动漫），渲染成毛玻璃图片推送到群。\n影视源自动切换：配置了本分组 muliy_cookie 则走片库新站；未配置则自动回退 a123tv 旧站（免登录），无需任何 Cookie 也能正常出日报。"
+        "hint": "开启后按本组时间每天推送影视日报（未配片库时自动用 a123tv 免登录出报）。"
       },
       "movie_report_max": {
         "type": "int",
@@ -143,7 +149,8 @@
         "default": 24,
         "min": 1,
         "max": 50,
-        "hint": "默认 24，最大 50。电影/剧集/动漫每个区块各取前 N 部（按主页顺序），过多图片过长。"
+        "hint": "电影/剧集/动漫每块各取前 N 部，默认 24。",
+        "condition": {"movie_report_enabled": true}
       },
       "movie_schedule_hour": {
         "type": "int",
@@ -151,58 +158,63 @@
         "default": 20,
         "min": 0,
         "max": 23,
-        "hint": "与软件/游戏日报独立设置。"
+        "hint": "影视日报独立定时，与软件/游戏/短剧日报分开。",
+        "condition": {"movie_report_enabled": true}
       },
       "movie_schedule_minute": {
         "type": "int",
         "description": "影视日报推送分钟（0-59）",
         "default": 0,
         "min": 0,
-        "max": 59
+        "max": 59,
+        "hint": "独立于其它日报。",
+        "condition": {"movie_report_enabled": true}
       },
       "movie_group_ids": {
         "type": "list",
         "description": "影视日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
-        "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则影视日报不推送。"
+        "hint": "填入群号，可多个；留空则不推送。",
+        "condition": {"movie_report_enabled": true}
       },
       "movie_sections": {
         "type": "list",
         "description": "影视日报包含的区块",
         "default": ["mv", "tv", "ac"],
         "items": {"type": "string"},
-        "hint": "点击「添加」选择区块：mv=电影, tv=剧集, ac=动漫。默认全选。例：只推剧集则只留 tv。"
+        "hint": "mv=电影 / tv=剧集 / ac=动漫，可多选。",
+        "condition": {"movie_report_enabled": true}
       },
       "muliy_release_url": {
         "type": "string",
-        "description": "影视发布页地址（多站点探测源）",
+        "description": "影视发布页地址（选填）",
         "default": "",
-        "hint": "选填。片库各备用域名由发布页（默认挂了.com = https://www.xn--ykq321c.com）动态列出。插件会访问发布页获取当前所有可用影视域名，测延迟后自动选最低延迟站点连接与登录，而非固定单一源。\n仅当默认发布页不可用时，才需要在此填入其它可用的发布页地址（须为同样列出 check.js 域名列表的片库系发布页）。留空即用默认发布页。"
+        "hint": "留空即用默认发布页，一般无需填写。"
       },
       "muliy_username": {
         "type": "string",
-        "description": "片库（新站）账号",
+        "description": "片库（新站）账号（选填）",
         "default": "",
-        "hint": "选填。填了「账号 + 密码」后，插件会自动登录片库新站并以登录态访问（无需再手动填 muliy_cookie）。\n登录流程：自动求解「浏览器安全验证」PoW → POST /user/login → 自动取得 app_auth / PHPSESSID 登录态。\n优先级：muliy_username/muliy_password 与 muliy_cookie 任一配置即启用片库新站；两者都配置时以 Cookie 优先（Cookie 为空时才走账号密码登录）。"
+        "hint": "选填。与密码搭配，插件自动登录片库新站，无需搬 Cookie。"
       },
       "muliy_password": {
         "type": "string",
-        "description": "片库（新站）密码",
+        "description": "片库（新站）密码（选填）",
         "default": "",
-        "hint": "选填。与 muliy_username 搭配，用于自动登录片库新站（无需手动搬运 Cookie）。"
+        "hint": "选填。与账号搭配自动登录。"
       },
       "muliy_cookie": {
         "type": "text",
-        "description": "片库（新站）登录态 Cookie（选填，可用账号密码替代）",
+        "description": "片库（新站）Cookie（选填，可用账号密码替代）",
         "default": "",
-        "hint": "选填（想用片库新站影视时）。片库登录态 Cookie，用于以账号态访问影视源（新站额外提供网盘下载资源）。\n需包含账号态字段（至少）：app_auth、PHPSESSID，各字段以英文分号 ; 隔开整串粘贴。\n💡 现在也可以直接在「muliy_username / muliy_password」填写账号密码，由插件自动登录，无需手动复制 Cookie。\n⚠️ 请勿填写 browser_verified / browser_pow：这两个是「浏览器安全验证」会话态，与 IP/域名绑定、极易失效；插件会自动重新求解 PoW 获取有效验证，手动填入反而会导致详情页/播放页始终被「浏览器安全验证」页拦截、拿不到影视详情与播放直链。\n获取方式：登陆后按F12，在「应用/网络」页复制各个带字段名 cookie 粘贴进来，用 ; 隔开（忽略 browser_verified/browser_pow 即可）。\n⚠️⚠️ 属敏感凭证且有有效期，过期需在浏览器重新登录后更新。\n💡 留空也没关系：影视日报与影视搜索都会自动回退 a123tv 旧站（免登录，仅在线播放），照常出日报。"
+        "hint": "选填。含 app_auth、PHPSESSID 即可；勿填 browser_verified / browser_pow（插件会自动求解）。"
       }
     }
   },
   "music": {
     "description": "网易云音乐",
-    "hint": "网易云语音名片 / 歌曲解析相关设置。",
+    "hint": "网易云语音名片 / 歌曲解析设置。",
     "type": "object",
     "default": {},
     "items": {
@@ -210,25 +222,26 @@
         "type": "bool",
         "description": "网易云语音名片",
         "default": true,
-        "hint": "自动识别消息中的网易云链接/小程序分享并发送语音（默认开）"
+        "hint": "自动识别消息中的网易云链接/小程序分享并发送语音。"
       },
       "wyy_backend": {
         "type": "string",
         "description": "解析后端模式",
         "default": "direct",
-        "hint": "direct（默认，推荐）：插件内置直连网易云，零部署、无需任何外部服务，免费歌填好即可用；\n扫码登录也走内置接口——发送 /wyy_login 用网易云 App 扫码，会员 Cookie 自动写入 wyy_cookie，无需部署 NeteaseCloudMusicApi。\ncustom：仅当你已自建 NeteaseCloudMusicApi 实例并填了 wyy_custom_url 时保留使用（兼容旧部署）。\n⚠️ 网易云音频 CDN 会封锁云服务器 IP，服务器端下载音频可能 403；此时插件自动降级为发送「歌曲名片 + 播放链接」，把插件部署在家宽/本地网络可恢复正常发语音。"
+        "hint": "direct=内置直连（推荐，零部署）；custom=自建 NeteaseCloudMusicApi。"
       },
       "wyy_music_type": {
         "type": "string",
         "description": "解析音质",
         "default": "standard",
-        "hint": "direct 模式作为请求网易云的 level 音质参数（custom 模式同样传递）\nstandard/exhigh/lossless/hires/jyeffect/sky/jymaster\n部分音质需 VIP（VIP 歌曲需先在 wyy_cookie 填会员 Cookie 或 /wyy_login 扫码）\n普通语音片段用 standard 即可"
+        "hint": "standard/exhigh/lossless/hires/sky/jymaster；部分需会员。"
       },
       "wyy_custom_url": {
         "type": "string",
-        "description": "自建 NeteaseCloudMusicApi 地址（仅 custom 后端需要）",
+        "description": "自建 NeteaseCloudMusicApi 地址",
         "default": "",
-        "hint": "仅当 wyy_backend=custom 时才需要。自建 NeteaseCloudMusicApi 实例地址。\n推荐填「基础地址」如 http://127.0.0.1:3000（插件自动调用 /song/url + /song/detail，名片信息完整）；也可填含 {id} 的直链模板如 http://127.0.0.1:3000/song/url?id={id}（仅直链，歌名可能缺失）。\n部署见 tools/netease-api/docker-compose.yml。\n若插件与 API 同机，用 http://127.0.0.1:3000；跨容器/跨机用 http://<局域网IP>:3000。\n⚠️ wyy_backend=direct（默认）时本项留空即可，无需部署任何服务。"
+        "hint": "仅 wyy_backend=custom 时需要，如 http://127.0.0.1:3000。",
+        "condition": {"wyy_backend": "custom"}
       },
       "wyy_clip_seconds": {
         "type": "int",
@@ -236,25 +249,25 @@
         "default": 600,
         "min": 10,
         "max": 600,
-        "hint": "实际发送语音时长 = min(歌曲实际时长, 该值)\n例：设 120 → 歌曲最长只发前 120 秒；设 600（10 分钟）→ 不满 10 分钟的歌整曲发送。最大 600。**PS：**建议180秒，不超过400秒"
+        "hint": "默认 600（10 分钟）；建议 180-400。"
       },
       "wyy_audio_format": {
         "type": "string",
         "description": "语音音频格式",
         "default": "wav",
-        "hint": "mp3（QQ 兼容性好，推荐）/ wav（部分 OneBot 实现要求）"
+        "hint": "mp3（QQ 兼容好，推荐）/ wav。"
       },
       "wyy_cookie": {
         "type": "string",
-        "description": "黑胶会员 Cookie（用于解析 VIP/付费歌曲）",
+        "description": "黑胶会员 Cookie（用于解析 VIP 歌曲）",
         "default": "",
-        "hint": "留空则只能解析免费歌曲。\n填黑胶会员账号的 Cookie 即可解析 VIP 歌曲（standard/exhigh/lossless 需黑胶会员，hires 部分需会员，sky/jymaster 需超级会员）。\ndirect 与 custom 两种后端都支持：direct 模式下 Cookie 会随请求直接发给 music.163.com；custom 模式转发给自建实例。\n获取：网易云网页版登录会员号 → F12 → Network → 复制任意请求的 Cookie 整串（需含 MUSIC_U 与 __csrf）。\n⚠️ 属敏感凭证，建议使用小号/专用会员号，请勿外泄；主号有被风控风险。"
+        "hint": "留空只能解析免费歌；填会员 Cookie（含 MUSIC_U）可解析 VIP。"
       },
       "wyy_proxy": {
         "type": "string",
         "description": "网易云请求代理（可选）",
         "default": "",
-        "hint": "留空则直连。若服务器 IP 被网易云风控（扫码报设备环境异常 / 解析报 403 / 匿名注册返回 400），可填代理换出口 IP。\n支持 http://user:pass@host:port 或 socks5://host:port（aiohttp 下 socks5 需装 aiohttp-socks）。\n填后 /wyy、/wyy_login、音频下载都会走该代理。"
+        "hint": "留空直连；服务器 IP 被风控时填代理。"
       }
     }
   },
@@ -268,7 +281,7 @@
         "type": "bool",
         "description": "VIP 视频解析（爱奇艺/腾讯/优酷/芒果等）",
         "default": true,
-        "hint": "开启后，消息里出现受支持的 VIP 视频链接会被自动解析为「可在浏览器/播放器打开的解析播放直链」。关闭则忽略。"
+        "hint": "开启后自动把受支持的 VIP 视频链接解析为播放直链。"
       },
       "video_vip_timeout": {
         "type": "int",
@@ -276,13 +289,13 @@
         "default": 25000,
         "min": 8000,
         "max": 60000,
-        "hint": "默认 25000ms。站点多/网速慢可适当调大。"
+        "hint": "默认 25000 毫秒。"
       }
     }
   },
   "browser": {
     "description": "浏览器",
-    "hint": "Playwright 渲染所用的浏览器设置，游戏日报与 VIP 视频解析共用。",
+    "hint": "Playwright 渲染所用浏览器，游戏日报与 VIP 解析共用。",
     "type": "object",
     "default": {},
     "items": {
@@ -290,19 +303,19 @@
         "type": "string",
         "description": "Playwright 浏览器",
         "default": "",
-        "hint": "如需用本机已装 Chrome 可填 chrome；留空则使用插件自带的 Chromium（需联网首次下载）。游戏日报与 VIP 视频解析共用。"
+        "hint": "填 chrome 用本机 Chrome；留空用插件自带 Chromium。"
       },
       "browser_exe": {
         "type": "string",
-        "description": "Playwright 浏览器可执行路径（留空=自动）",
+        "description": "浏览器可执行路径（留空=自动）",
         "default": "",
-        "hint": "指定 Chromium/Chrome 可执行文件路径。留空则自动选择。游戏日报与 VIP 视频解析共用。"
+        "hint": "留空自动选择。"
       }
     }
   },
   "novel": {
     "description": "小说搜索与下载",
-    "hint": "基于 so-novel 开源小说下载器的多源聚合搜索/下载。需另起一个 so-novel 实例并以 Web 模式（-Dmode=web，默认端口 7765）运行，本插件通过 HTTP 调用其接口。",
+    "hint": "基于 so-novel 的多源聚合搜索/下载，需另起一个 so-novel 实例（Web 模式）。",
     "type": "object",
     "default": {},
     "items": {
@@ -310,13 +323,13 @@
         "type": "string",
         "description": "so-novel Web 服务地址",
         "default": "http://127.0.0.1:7765",
-        "hint": "so-novel 以 -Dmode=web 启动后的访问地址（Jetty，默认端口 7765）。\n• 同机直连：http://127.0.0.1:7765\n• so-novel 跑在 Docker 容器（与 AstrBot 同宿主机）：填 Docker 网关 http://172.17.0.1:7765（切勿填公网 IP，回环 NAT 易不通）\n• 跨机/跨容器网络：填 http://<内网IP>:7765\n若填了正确地址仍报「so-novel 不可达」，请确认容器已加 -e JAVA_TOOL_OPTIONS=\"-Dmode=web\" 真正以 Web 模式启动（默认镜像启动的是 TUI 交互菜单，无此参数时 7765 不会监听）。"
+        "hint": "so-novel 以 Web 模式启动后的地址，默认 http://127.0.0.1:7765。"
       },
       "sonovel_token": {
         "type": "string",
         "description": "访问令牌（可选）",
         "default": "",
-        "hint": "官方 so-novel servlet 不做鉴权，留空即可。若部署在带鉴权的封装层（如 so-novel-web）后，此处填其 Bearer Token。"
+        "hint": "官方 servlet 不鉴权，留空即可。"
       },
       "sonovel_search_limit": {
         "type": "int",
@@ -324,14 +337,14 @@
         "default": 20,
         "min": 1,
         "max": 50,
-        "hint": "每个书源返回的最大结果数，默认 20。"
+        "hint": "默认 20。"
       },
       "sonovel_format": {
         "type": "list",
         "description": "默认下载格式（可多选）",
         "default": ["txt"],
         "items": {"type": "string"},
-        "hint": "点击「添加」勾选默认生成的格式，可多选：txt / epub / html / pdf。\n下载时若逐本临时选了格式则按所选生成；若直接回复「下载/确认」则用这里的全部默认格式。推荐至少保留 txt（体积小、通用）。"
+        "hint": "txt / epub / html / pdf，推荐至少保留 txt。"
       },
       "sonovel_timeout": {
         "type": "int",
@@ -339,7 +352,7 @@
         "default": 30,
         "min": 5,
         "max": 120,
-        "hint": "聚合搜索与书源检查的网络超时，默认 30 秒。"
+        "hint": "默认 30 秒。"
       },
       "sonovel_download_timeout": {
         "type": "int",
@@ -347,13 +360,13 @@
         "default": 600,
         "min": 30,
         "max": 1800,
-        "hint": "so-novel 服务端「同步抓取整本小说」的等待上限，默认 600 秒。大书可能需数分钟，超时将提示换源/换格式。"
+        "hint": "默认 600 秒，大书可能需数分钟。"
       }
     }
   },
   "shortdrama": {
     "description": "短剧搜索与日报",
-    "hint": "基于网盘贴吧（wangpant8.com）的短剧搜索与夸克网盘资源链接，以及每日短剧日报。",
+    "hint": "网盘贴吧（wangpant8.com）短剧搜索与夸克网盘资源链接，及每日短剧日报。",
     "type": "object",
     "default": {},
     "items": {
@@ -361,7 +374,7 @@
         "type": "bool",
         "description": "短剧搜索总开关",
         "default": true,
-        "hint": "开启后，支持「搜短剧XX / 看短剧XX」搜索短剧，选中后返回夸克网盘资源链接与详情页。关闭则忽略短剧搜索。"
+        "hint": "开启后支持「搜短剧XX / 看短剧XX」，选中返回夸克网盘链接。"
       },
       "drama_search_limit": {
         "type": "int",
@@ -369,13 +382,13 @@
         "default": 20,
         "min": 4,
         "max": 40,
-        "hint": "每次搜索最多返回多少条短剧结果（默认 20，站点搜索页约 20 条/页）。"
+        "hint": "默认 20。"
       },
       "drama_report_enabled": {
         "type": "bool",
         "description": "短剧日报总开关",
         "default": true,
-        "hint": "开启后，按本分组 drama_schedule_hour/drama_schedule_minute 定时，每天自动抓取网盘贴吧首页「最新上传」短剧，渲染成图片推送到 drama_group_ids 所填群。\n⚠️ 短剧日报的时间与群号是独立的，请勿填到其它分组。"
+        "hint": "开启后按本组时间每天推送短剧日报到「短剧日报推送群」。"
       },
       "drama_report_max": {
         "type": "int",
@@ -383,7 +396,8 @@
         "default": 12,
         "min": 1,
         "max": 30,
-        "hint": "默认 12，最大 30。每部会额外请求详情页取真实网盘链接，过多会变慢且图片过长。"
+        "hint": "默认 12，最大 30（每部需额外请求详情页）。",
+        "condition": {"drama_report_enabled": true}
       },
       "drama_schedule_hour": {
         "type": "int",
@@ -391,7 +405,8 @@
         "default": 21,
         "min": 0,
         "max": 23,
-        "hint": "短剧日报独立定时小时，与软件/游戏/影视日报分开设置。"
+        "hint": "短剧日报独立定时，与软件/游戏/影视日报分开。",
+        "condition": {"drama_report_enabled": true}
       },
       "drama_schedule_minute": {
         "type": "int",
@@ -399,14 +414,16 @@
         "default": 0,
         "min": 0,
         "max": 59,
-        "hint": "短剧日报独立定时分钟，与软件/游戏/影视日报分开设置。"
+        "hint": "独立于其它日报。",
+        "condition": {"drama_report_enabled": true}
       },
       "drama_group_ids": {
         "type": "list",
         "description": "短剧日报推送群 ID",
         "default": [],
         "items": {"type": "string"},
-        "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则短剧日报不推送。"
+        "hint": "填入群号，可多个；留空则不推送。",
+        "condition": {"drama_report_enabled": true}
       },
       "drama_timeout": {
         "type": "int",
@@ -414,7 +431,7 @@
         "default": 15,
         "min": 5,
         "max": 60,
-        "hint": "搜索与详情页请求的网络超时，默认 15 秒。"
+        "hint": "默认 15 秒。"
       }
     }
   }

@@ -191,7 +191,7 @@ _CONF_GROUPS = {
     ],
     "software": ["schedule_hour", "schedule_minute", "group_ids"],
     "movie": [
-        "movie_source", "muliy_cache_ttl",
+        "movie_source", "muliy_cache_ttl", "muliy_release_url",
         "movie_report_enabled", "movie_report_max",
         "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections",
         "muliy_username", "muliy_password", "muliy_cookie",
@@ -221,7 +221,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.2")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.3")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):

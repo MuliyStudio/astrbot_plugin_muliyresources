@@ -1,5 +1,16 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.14.3 — 2026-10-15
+
+### 🧹 配置页优化：精简 hint + 联动隐藏（减少翻页）
+
+- **精简 hint**：`_conf_schema.json` 每条配置说明压到一行，超长解释移到 README「配置注意事项」。
+- **`condition` 联动隐藏**（已按 AstrBot 4.27.4 行为核实：嵌套分组内按组内配置求值）：
+  - 游戏/影视/短剧日报：关闭「日报总开关」后，自动隐藏对应的 `*_schedule_hour/minute`、`*_group_ids`、`*_report_max`（影视还含 `movie_sections`）。
+  - 网易云：`wyy_custom_url` 仅在 `wyy_backend=custom` 时显示。
+- **修正**：`muliy_release_url` 补入 `_CONF_GROUPS["movie"]`（此前 schema 有、分组表漏登记，会导致该配置在配置迁移时被丢弃）。
+- 说明：AstrBot 插件配置页（`AstrBotConfig.vue`）不支持把整组做成可折叠下拉栏（`collapsed` 仅核心配置的 V4 组件支持），故采用上述精简 + 联动方案。
+
 ## v1.14.2 — 2026-10-15
 
 ### 🔧 调整：短剧选中后只返回网盘链接（不再显示详情页）

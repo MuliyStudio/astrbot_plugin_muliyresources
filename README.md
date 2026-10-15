@@ -217,6 +217,14 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 - `video_vip_timeout`：单个解析接口超时（毫秒）
 - `browser_channel` / `browser_exe`：日报 / VIP 解析共用浏览器（留空自动；日报无浏览器时自动用 Pillow 兜底出图）
 
+### ⚠️ 配置注意事项（从配置项提示里精简后移到这里）
+
+- **片库 Cookie**（`muliy_cookie`）：只需 `app_auth`、`PHPSESSID`；**不要填 `browser_verified` / `browser_pow`**（这两个与 IP/域名绑定、极易失效，插件会自动重新求解 PoW）。填了会导致详情/播放页始终被「浏览器安全验证」页拦截。
+- **片库发布页**（`muliy_release_url`）：留空即可，插件会用默认发布页自动探测当前可用域名；仅当默认发布页不可用时才需改为其它同系发布页。
+- **so-novel**（`sonovel_base_url`）：必须以 Web 模式启动（`-Dmode=web`，默认端口 7765），否则 7765 不监听。Docker 且与 AstrBot 同宿主机时，填 Docker 网关 `http://172.17.0.1:7765`（别填公网 IP）。
+- **网易云**（`wyy_*`）：`wyy_backend=direct`（默认）零部署即可用；网易云 CDN 可能封锁云服务器 IP，若发语音失败会自动降级为「歌曲名片 + 播放链接」。被风控时可在 `wyy_proxy` 填代理换出口 IP。
+- **游戏 Cookie**：`cookie` / `switch618_cookie` 由 `/game_cookie_refresh` 自动写入，一般无需手填。
+
 ---
 
 ## 📖 功能详解
