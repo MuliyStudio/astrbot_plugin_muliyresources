@@ -49,16 +49,20 @@
 ## 🖼️ 效果预览
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">
-  &nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">&nbsp;
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg" width="45%" alt="短剧日报">
 </p>
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="70%" alt="影视日报">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="45%" alt="影视日报">&nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/software_daily.jpg" width="45%" alt="软件日报">
 </p>
 
-> 以上均为**真实运行效果**：短剧搜索 → 网盘链接、短剧日报（杂志风）、影视日报（毛玻璃）。
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/game_daily.jpg" width="45%" alt="游戏日报">
+</p>
+
+> 以上均为**真实运行效果**（从左到右、上到下）：短剧搜索 → 网盘链接 · 短剧日报（杂志风）· 影视日报（毛玻璃）· 软件日报（夏日风）· 游戏日报（卡通风）。
 
 ---
 
