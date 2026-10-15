@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/MuliyStudio/astrbot_plugin_muliyresources/main/assets/logo.png" width="300" alt="暮黎 Muliy Logo">
+  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/logo.png" width="300" alt="暮黎 Muliy Logo">
 </p>
 
 <h1 align="center">🍄 暮黎资源聚合</h1>
@@ -25,7 +25,7 @@
 
 ## 📑 目录
 
-[功能特性](#-功能特性) · [安装](#-安装) · [快速上手](#-快速上手小白使用手册) · [配置指南](#-配置指南) · [功能详解](#-功能详解) · [依赖说明](#-依赖说明) · [常见问题](#-常见问题faq) · [更新日志](#-更新日志) · [交流群](#-交流群) · [许可证](#-许可证)
+[功能特性](#-功能特性) · [效果预览](#-效果预览) · [安装](#-安装) · [快速上手](#-快速上手小白使用手册) · [配置指南](#-配置指南) · [功能详解](#-功能详解) · [依赖说明](#-依赖说明) · [常见问题](#-常见问题faq) · [更新日志](#-更新日志) · [交流群](#-交流群) · [许可证](#-许可证)
 
 ---
 
@@ -43,6 +43,22 @@
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
 | 🤚 | **表情包娱乐** | `摸摸 @某人` / `给你一脚 @某人` / `给我按摩 @某人` 生成 GIF |
+
+---
+
+## 🖼️ 效果预览
+
+<p align="center">
+  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">
+  &nbsp;
+  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg" width="45%" alt="短剧日报">
+</p>
+
+<p align="center">
+  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="70%" alt="影视日报">
+</p>
+
+> 以上均为**真实运行效果**：短剧搜索 → 网盘链接、短剧日报（杂志风）、影视日报（毛玻璃）。
 
 ---
 
@@ -343,7 +359,7 @@ aiocqhttp(OneBot v11)、企业微信、个人微信、QQ官方、Telegram、飞�
 ## 💬 交流群
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/MuliyStudio/astrbot_plugin_muliyresources/main/assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
+  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
 </p>
 
 <p align="center">
