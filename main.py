@@ -221,7 +221,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.1")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.2")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -5480,8 +5480,7 @@ class MuliyResourcesPlugin(Star):
                     self._drama_sessions.delete(event)
                     if not det.get("success"):
                         await event.send(MessageChain([Plain(
-                            f"😕 {det.get('error', '未获取到资源链接')}\n"
-                            f"📄 详情页：{sel.get('detail_url', '')}")]))
+                            f"😕 {det.get('error', '未获取到资源链接')}，换一部试试？")]))
                         return
                     title = det.get("title") or sel["title"]
                     lines = [
@@ -5489,7 +5488,6 @@ class MuliyResourcesPlugin(Star):
                         "=" * 30,
                         f"☁️ 网盘：{det.get('disk_type', '夸克')}",
                         f"🔗 资源：{det.get('link', '')}",
-                        f"📄 详情页：{det.get('detail_url', sel.get('detail_url', ''))}",
                         "",
                         "💡 复制资源链接到夸克网盘转存即可观看。",
                     ]
