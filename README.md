@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/logo.png" width="300" alt="暮黎 Muliy Logo">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/logo.png" width="300" alt="暮黎 Muliy Logo">
 </p>
 
 <h1 align="center">🍄 暮黎资源聚合</h1>
@@ -49,13 +49,13 @@
 ## 🖼️ 效果预览
 
 <p align="center">
-  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">
   &nbsp;
-  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg" width="45%" alt="短剧日报">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg" width="45%" alt="短剧日报">
 </p>
 
 <p align="center">
-  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="70%" alt="影视日报">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="70%" alt="影视日报">
 </p>
 
 > 以上均为**真实运行效果**：短剧搜索 → 网盘链接、短剧日报（杂志风）、影视日报（毛玻璃）。
@@ -359,7 +359,7 @@ aiocqhttp(OneBot v11)、企业微信、个人微信、QQ官方、Telegram、飞�
 ## 💬 交流群
 
 <p align="center">
-  <img src="https://fastly.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/qq_group_qrcode.jpg" width="240" alt="暮黎交流群二维码">
 </p>
 
 <p align="center">

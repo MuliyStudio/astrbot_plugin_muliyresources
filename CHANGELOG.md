@@ -14,7 +14,7 @@
 ### 🖼️ 文档：README 新增效果预览图（CDN 引用）
 
 - 新增「效果预览」章节与三张**真实运行效果图**（`assets/screenshots/`）：短剧搜索交互、短剧日报（杂志风）、影视日报（毛玻璃）。
-- README 中的图片（logo / 交流群二维码 / 效果图）统一改用 **jsDelivr CDN 绝对链接**（`fastly.jsdelivr.net`），在任何地方阅读都能正常显示。
+- README 中的图片（logo / 交流群二维码 / 效果图）统一改用 **jsDelivr CDN 绝对链接**（`cdn.jsdelivr.net`），在任何地方阅读都能正常显示。
 
 ## v1.14.4 — 2026-10-15
 
