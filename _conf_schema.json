@@ -350,5 +350,72 @@
         "hint": "so-novel 服务端「同步抓取整本小说」的等待上限，默认 600 秒。大书可能需数分钟，超时将提示换源/换格式。"
       }
     }
+  },
+  "shortdrama": {
+    "description": "短剧搜索与日报",
+    "hint": "基于网盘贴吧（wangpant8.com）的短剧搜索与夸克网盘资源链接，以及每日短剧日报。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "drama_enabled": {
+        "type": "bool",
+        "description": "短剧搜索总开关",
+        "default": true,
+        "hint": "开启后，支持「搜短剧XX / 看短剧XX」搜索短剧，选中后返回夸克网盘资源链接与详情页。关闭则忽略短剧搜索。"
+      },
+      "drama_search_limit": {
+        "type": "int",
+        "description": "单次搜索结果上限",
+        "default": 20,
+        "min": 4,
+        "max": 40,
+        "hint": "每次搜索最多返回多少条短剧结果（默认 20，站点搜索页约 20 条/页）。"
+      },
+      "drama_report_enabled": {
+        "type": "bool",
+        "description": "短剧日报总开关",
+        "default": true,
+        "hint": "开启后，按本分组 drama_schedule_hour/drama_schedule_minute 定时，每天自动抓取网盘贴吧首页「最新上传」短剧，渲染成图片推送到 drama_group_ids 所填群。\n⚠️ 短剧日报的时间与群号是独立的，请勿填到其它分组。"
+      },
+      "drama_report_max": {
+        "type": "int",
+        "description": "短剧日报每期最多部数",
+        "default": 12,
+        "min": 1,
+        "max": 30,
+        "hint": "默认 12，最大 30。每部会额外请求详情页取真实网盘链接，过多会变慢且图片过长。"
+      },
+      "drama_schedule_hour": {
+        "type": "int",
+        "description": "短剧日报推送小时（0-23）",
+        "default": 21,
+        "min": 0,
+        "max": 23,
+        "hint": "短剧日报独立定时小时，与软件/游戏/影视日报分开设置。"
+      },
+      "drama_schedule_minute": {
+        "type": "int",
+        "description": "短剧日报推送分钟（0-59）",
+        "default": 0,
+        "min": 0,
+        "max": 59,
+        "hint": "短剧日报独立定时分钟，与软件/游戏/影视日报分开设置。"
+      },
+      "drama_group_ids": {
+        "type": "list",
+        "description": "短剧日报推送群 ID",
+        "default": [],
+        "items": {"type": "string"},
+        "hint": "点击「添加」逐个填入群号（如 123456789），可添加多个。留空则短剧日报不推送。"
+      },
+      "drama_timeout": {
+        "type": "int",
+        "description": "请求超时（秒）",
+        "default": 15,
+        "min": 5,
+        "max": 60,
+        "hint": "搜索与详情页请求的网络超时，默认 15 秒。"
+      }
+    }
   }
 }

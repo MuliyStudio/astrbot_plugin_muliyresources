@@ -5,7 +5,7 @@
 <h1 align="center">🍄 暮黎资源聚合</h1>
 
 <p align="center">
-  <strong>一个 AstrBot 插件，搞定你的影视 / 游戏 / 软件 / 小说搜索与日报推送</strong>
+  <strong>一个 AstrBot 插件，搞定你的影视 / 游戏 / 软件 / 短剧 / 小说搜索与日报推送</strong>
 </p>
 
 <p align="center">
@@ -31,7 +31,8 @@
 | 🎮 | **游戏搜索** | 搜索 xdgame.com，返回多网盘下载链接（百度/夸克/阿里/123/天翼…） |
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
 | 📖 | **小说搜索与下载** | 基于 [so-novel](https://github.com/freeok/so-novel) 多源聚合，搜书名/作者 → 选源 → 选格式（txt/epub/html/pdf）→ 整本发送 |
-| 📰 | **日报推送** | 软件 / 游戏 / 影视三套**定时日报**，自动渲染成图片以文件形式推送到群 |
+| 📺 | **短剧搜索** | 搜索网盘贴吧（wangpant8.com）短剧，选中后返回**夸克网盘资源链接**与详情页 |
+| 📰 | **日报推送** | 软件 / 游戏 / 影视 / 短剧四套**定时日报**，自动渲染成图片以文件形式推送到群 |
 | 🎵 | **网易云语音名片** | 发网易云链接/小程序卡片，自动解析成**语音**发出来（内置直连，零部署） |
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
@@ -64,7 +65,8 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到片库新站 → 配 `muliy_username` + `muliy_password`（或 `muliy_cookie`） |
 | 🎮 游戏搜索 | ✅ | 默认走 xdgame，配账密后可用 `/game_cookie_refresh` 自动登录 |
 | 💿 软件搜索 | ✅ | |
-| 📰 软件 / 游戏 / 影视日报 | ✅ | 无浏览器也能出图（Pillow 兜底）；想更精美 → 装 Chromium（可选） |
+| 📺 短剧搜索 | ✅ | 搜「搜短剧XX / 看短剧XX」即可，返回夸克网盘资源链接 |
+| 📰 软件 / 游戏 / 影视 / 短剧日报 | ✅ | 无浏览器也能出图（Pillow 兜底）；想更精美 → 装 Chromium（可选） |
 | 🎵 网易云语音名片 | ✅ | 免费歌直接解析；VIP 歌需填会员 Cookie |
 | 🎞️ VIP 视频解析 | ✅ | |
 | 🤚 表情包 | ✅ | |
@@ -84,6 +86,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 /找影视 流浪地球        # 搜索影视
 /找游戏 黑神话悟空      # 搜索游戏
 /找软件 微信            # 搜索软件
+/找短剧 穿越            # 搜索短剧（返回夸克网盘链接）
 /找小说 斗破苍穹        # 搜索小说（需 so-novel）
 /software_report        # 手动触发软件日报
 ```
@@ -113,7 +116,7 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | 游戏自动登录刷新 Cookie | `game` → `xdgame_username` + `xdgame_password` |
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
-| 日报推到群聊 | 各自分组填 `xxx_group_ids`（软件/游戏/影视独立） |
+| 日报推到群聊 | 各自分组填 `xxx_group_ids`（软件/游戏/影视/短剧独立） |
 
 ### 常用命令速查
 
@@ -122,11 +125,12 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `/找游戏 <名称>` | 所有人 | 搜索游戏 |
 | `/找软件 <名称>` | 所有人 | 搜索软件 |
 | `/找影视 <名称>` | 所有人 | 搜索影视（自动选源） |
+| `/找短剧 <名称>` | 所有人 | 搜索短剧（返回夸克网盘链接） |
 | `/找小说 <名称>` | 所有人 | 搜索小说（需 so-novel） |
 | `/game_cookie_refresh` | 管理员 | 自动登录 xdgame 刷新 Cookie |
 | `/game_cookie` | 所有人 | 查看游戏 Cookie 状态 |
 | `/movie_cookie` | 管理员 | 查看/检测/设置片库 Cookie（`/movie_cookie set <cookie>`） |
-| `/software_report` `/game_report` `/movie_report` | 可配置 | 手动触发日报 |
+| `/software_report` `/game_report` `/movie_report` `/drama_report` | 可配置 | 手动触发日报 |
 | `/wyy <链接或ID>` | 所有人 | 手动解析网易云歌曲为语音 |
 | `/wyy_login` | 管理员 | 网易云扫码登录（自动写入会员 Cookie） |
 | `/novel_status` | 所有人 | 检查 so-novel 是否可达 |
@@ -195,6 +199,18 @@ git clone https://github.com/muliystudio/astrbot_plugin_muliyresources.git
 | `sonovel_timeout` | `30` | 搜索超时（秒） |
 | `sonovel_download_timeout` | `600` | 整本下载超时（秒） |
 
+### 📺 短剧（shortdrama）
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `drama_enabled` | `true` | 短剧搜索总开关（`搜短剧XX` / `看短剧XX`） |
+| `drama_search_limit` | `20` | 单次搜索结果上限 |
+| `drama_report_enabled` | `true` | 短剧日报开关 |
+| `drama_schedule_hour` / `drama_schedule_minute` | `21:00` | 短剧日报定时（独立） |
+| `drama_group_ids` | `[]` | 短剧日报推送群号 |
+| `drama_report_max` | `12` | 短剧日报每期上限 |
+| `drama_timeout` | `15` | 请求超时（秒） |
+
 ### 🎞️ VIP 解析（vip_video）/ 🌐 浏览器（browser）
 
 - `video_vip_parse`（默认 `true`）：VIP 视频自动解析开关
@@ -220,9 +236,15 @@ xdgame Cookie 约 30 天过期。配置账密后执行 `/game_cookie_refresh`：
 1. 插件纯 HTTP 自动登录 xdgame，**自动求解新版「人机验证」(Cap PoW)**，无需人工输验证码
 2. 登录成功后 Cookie 自动保存，无需再操作
 
+### 📺 短剧：搜索 → 网盘链接
+
+- 数据源为**网盘贴吧**（wangpant8.com，Next.js 站点，无需登录/签名）。
+- 发「搜短剧XX / 看短剧XX」或 `/找短剧 <剧名>`：搜索 → 回复序号选择 → 返回**剧名 + 夸克网盘资源链接 + 详情页**。
+- 资源全部为**夸克网盘**，复制链接转存即可观看。
+
 ### 🎮 日报推送
 
-- 三套日报（软件 / 游戏 / 影视）各自独立定时、独立群配置。
+- 四套日报（软件 / 游戏 / 影视 / 短剧）各自独立定时、独立群配置。
 - **渲染（三级降级，无需装任何东西）**：
   1. 本地 Chromium（若已安装）→ 最高清
   2. **AstrBot 内置 `html_render`**（官方 T2I 服务）→ 装好插件即用，无需浏览器

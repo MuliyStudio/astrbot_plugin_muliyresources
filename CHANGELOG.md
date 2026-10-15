@@ -1,5 +1,20 @@
 # 暮黎资源聚合插件 更新日志
 
+## v1.14.0 — 2026-10-15
+
+### ✨ 新增：短剧搜索 + 短剧日报（网盘贴吧 wangpant8.com）
+
+- **短剧搜索**：新增 `core/shortdrama.py`，接入 [网盘贴吧](https://www.wangpant8.com)（Next.js SSR，免登录/免签名）。
+  - 支持 `搜短剧XX / 看短剧XX`（LLM 意图拦截）、`/找短剧 <剧名>` 命令与 `search_drama` 工具。
+  - 一条龙：搜索列表 → 回复序号选择 → 返回**剧名 + 夸克网盘资源链接 + 官方详情页**；支持翻页/跳转/取消。
+  - 资源全部为夸克网盘（`https://pan.quark.cn/s/{pwdId}`），复制链接转存即可观看。
+- **短剧日报**：新增第四套独立日报（与软件/游戏/影视并列）。
+  - 每天定时抓取首页「最新上传」短剧，逐个取真实网盘链接，渲染成**毛玻璃风格图片**推送到 `drama_group_ids` 群。
+  - 复用三级渲染降级：本地 Chromium → AstrBot 内置 `html_render` → Pillow 兜底。
+  - 支持 `/drama_report` 手动触发；独立时间（默认 21:00）与群号，含兜底补发与日报缓存。
+- **配置**：新增 `shortdrama` 分组（`_conf_schema.json` 与 `main.py` `_CONF_GROUPS` 同步）：`drama_enabled` / `drama_search_limit` / `drama_report_enabled` / `drama_report_max` / `drama_schedule_hour` / `drama_schedule_minute` / `drama_group_ids` / `drama_timeout`。
+- 新增联网测试实测通过：搜索解析、详情字段（`diskType`/`fromShareLink`）、首页最新列表与链接解析均正常。
+
 ## v1.13.5 — 2026-10-12
 
 ### 🛡️ 过审修复：VIP 解析路径消除同步网络阻塞 / 数据目录兜底不再写插件安装目录

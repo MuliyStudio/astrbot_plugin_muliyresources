@@ -64,6 +64,11 @@ from .core.movie_daily import (
     fetch_movie_daily, fetch_movie_daily_auto, build_glass_html,
     render_glass_to_png, gen_report_zip as gen_movie_report_zip
 )
+from .core.shortdrama import (
+    search_dramas, get_drama_detail, fetch_latest_dramas,
+    build_drama_html, render_drama_to_png, gen_report_zip as gen_drama_report_zip,
+    DRAMA_BASE,
+)
 try:
     from .core.report_pil import render_pil_report
 except ImportError:
@@ -195,6 +200,12 @@ _CONF_GROUPS = {
         "wyy_auto_parse", "wyy_backend", "wyy_music_type", "wyy_custom_url",
         "wyy_clip_seconds", "wyy_audio_format", "wyy_cookie", "wyy_proxy",
     ],
+    "shortdrama": [
+        "drama_enabled", "drama_search_limit",
+        "drama_report_enabled", "drama_report_max",
+        "drama_schedule_hour", "drama_schedule_minute", "drama_group_ids",
+        "drama_timeout",
+    ],
     "vip_video": ["video_vip_parse", "video_vip_timeout"],
     "browser": ["browser_channel", "browser_exe"],
     "novel": [
@@ -210,7 +221,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.13.5")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.0")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -221,6 +232,7 @@ class MuliyResourcesPlugin(Star):
         self._movie_sessions = SearchSessionManager()   # 影视会话 (a123tv)
         self._movie_sessions_new = SearchSessionManager()  # 影视会话 (片库新站)
         self._novel_sessions = SearchSessionManager()  # 小说会话 (so-novel)
+        self._drama_sessions = SearchSessionManager()  # 短剧会话 (wangpant8)
         self._muliy_client: MuliySiteClient | None = None  # 新站客户端（懒加载）
         # 后台任务引用（防止被GC）
         self._bg_tasks: list[asyncio.Task] = []
@@ -240,6 +252,11 @@ class MuliyResourcesPlugin(Star):
         self._movie_last_run_date: str = ""
         self._movie_schedule_hour: int = 20
         self._movie_schedule_minute: int = 0
+        # 短剧日报调度（独立 schedule，与软件/游戏/影视日报分开）
+        self._drama_scheduler_job_id = "daily_drama_report"
+        self._drama_last_run_date: str = ""
+        self._drama_schedule_hour: int = 21
+        self._drama_schedule_minute: int = 0
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._fallback_task: Optional[asyncio.Task] = None
         self._sw_job_lock = None  # 懒初始化（需在事件循环内创建 asyncio.Lock）
@@ -423,6 +440,33 @@ class MuliyResourcesPlugin(Star):
                     event.stop_event()
                     return
 
+        # ★短剧搜索意图拦截：用户说"搜短剧XX/看短剧XX"时，
+        #   这里直接强制调 search_drama，不依赖 LLM 选工具。
+        #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
+        _drama_intent_kws = ('搜短剧', '看短剧', '找短剧', '追短剧', '短剧搜索')
+        if any(k in raw_text for k in _drama_intent_kws):
+            dses0 = self._drama_sessions.get(event)
+            if dses0:
+                self._drama_sessions.delete(event)
+                logger.info(f"[暮黎资源] 新短剧搜索自动清除旧会话 (stage={dses0.get('stage')})")
+            _dn = re.sub(r'^(我想看|我要看|想看|要看|帮我找|帮我搜|帮我看|搜|找|看|追|要|想|帮我|能不能|可以|麻烦|请)\s*', '', raw_text)
+            _dn = re.sub(r'^(一下|一部|个|部|下)\s*', '', _dn)  # 去量词
+            _dn = re.sub(r'短剧\s*', '', _dn)  # 去"短剧"统称
+            _dn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _dn).strip()
+            if _dn:
+                try:
+                    logger.info(f"[暮黎资源] 短剧意图拦截: '{raw_text}' → search_drama('{_dn}')")
+                    _ret = await self.llm_search_drama(event, _dn)
+                    if _ret and not _ret.startswith("[已发送"):
+                        await event.send(MessageChain([Plain(_ret)]))
+                    event.stop_event()
+                    return
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 短剧搜索出错: {e}")
+                    await event.send(MessageChain([Plain(f"【暮黎资源】 短剧搜索出错：{str(e)[:120]}")]))
+                    event.stop_event()
+                    return
+
         # ★小说搜索意图拦截：用户说"找小说XX/搜小说XX/我想看小说XX"时，
         #   这里直接强制调 search_novel，不依赖 LLM 选工具。
         #   有旧会话时自动清除（用户要搜新的了，不必手动取消）。
@@ -523,6 +567,7 @@ class MuliyResourcesPlugin(Star):
         resource_kw = (
             "找", "搜索", "下载", "资源", "游戏", "软件",
             "影视", "电影", "电视剧", "综艺", "动漫", "追剧", "看片",
+            "短剧", "搜短剧", "看短剧", "追短剧",
             "想看", "观看", "看剧", "看一", "看个", "看部", "看番", "追番",
             "找小说", "搜小说", "看小说", "读小说", "听小说",
             "wps", "office", "微信", "qq", "钉钉",
@@ -548,7 +593,7 @@ class MuliyResourcesPlugin(Star):
             return
 
         instruction = """【暮黎资源】你是资源搜索助手。
-- 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
+- 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 短剧 search_drama / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
 - 搜索结果出来后，只需提醒用户：回复“序号”选择、说“下一页/上一页”翻页、选网盘回复“网盘名或序号”；这些由系统直接处理，严禁编造列表或链接。
 - 严禁使用 markdown 表格（QQ 会乱码）。"""
         # 上架规范：严禁直接改写 system_prompt（会破坏上游模型上下文缓存命中率）。
@@ -1152,6 +1197,51 @@ class MuliyResourcesPlugin(Star):
         await event.send(MessageChain([Plain(final_txt)]))
         logger.info(f"[暮黎资源] search_movie('{movie_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
+
+    @filter.llm_tool(name="search_drama")
+    async def llm_search_drama(self, event: AstrMessageEvent, drama_name: str):
+        """搜索短剧资源（夸克网盘）。用户说"搜短剧/看短剧/追短剧XX"时调用。
+        流程：搜索→选序号→返回夸克网盘资源链接与详情页，后续交互由系统自动处理。
+        Args:
+            drama_name(string): 短剧名称（如"穿越"、"开局只想苟系统"、"偏偏似你"）
+        """
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, drama_name)
+        if not allowed:
+            return f"【暮黎资源】⚠️ {reason}"
+        cfg = self._get_config()
+        if isinstance(cfg, dict) and not cfg.get("drama_enabled", True):
+            return "【暮黎资源·短剧】短剧搜索已在后台关闭。"
+        try:
+            limit = int(cfg.get("drama_search_limit", 20) or 20) if isinstance(cfg, dict) else 20
+        except (TypeError, ValueError):
+            limit = 20
+        try:
+            timeout = int(cfg.get("drama_timeout", 15) or 15) if isinstance(cfg, dict) else 15
+        except (TypeError, ValueError):
+            timeout = 15
+        ps = 8; tag = "【暮黎资源·短剧】"
+        try:
+            r = await asyncio.to_thread(search_dramas, drama_name, limit, timeout)
+        except Exception as e:
+            logger.error(f"[暮黎资源] search_drama('{drama_name}') 失败: {e}")
+            return f"{tag} 搜索失败：{str(e)[:120]}"
+        if not r.get("success"):
+            return f"{tag} 搜索失败：{r.get('error', '未知错误')}"
+        results = r.get("items", [])
+        if not results:
+            return f"{tag} 未找到与「{drama_name}」相关的短剧，换个关键词试试？"
+        self._drama_sessions.set(event, {
+            "stage": "select_drama", "keyword": drama_name, "results": results,
+            "page": 0, "page_size": ps, "timeout": timeout,
+            "_updated": time.time(), "_llm_handled": True,
+        })
+        t = len(results); pt = (t + ps - 1) // ps
+        page_txt = self._format_drama_page(self._drama_sessions.get(event))
+        final_txt = tag + f" 🎬 短剧搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
+        await event.send(MessageChain([Plain(final_txt)]))
+        logger.info(f"[暮黎资源] search_drama('{drama_name}') → {len(results)}条 → 直接 send")
+        return f"[已发送给用户] {len(results)} 个短剧结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
     @filter.llm_tool(name="search_novel")
     async def llm_search_novel(self, event: AstrMessageEvent, novel_name: str):
@@ -2117,6 +2207,76 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             yield event.plain_result(f"❌ a123tv.com 不可达：{str(e)[:120]}")
 
+    # ==================== 短剧搜索与日报 (网盘贴吧 wangpant8.com) ====================
+
+    @filter.command("找短剧")
+    async def cmd_drama_search(self, event: AstrMessageEvent):
+        """短剧搜索 — 网盘贴吧（wangpant8.com）→ 返回夸克网盘资源链接与详情页。"""
+        keyword = re.sub(r"^/?找短剧\s*", "", event.message_str.strip()).strip()
+        # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
+        allowed, reason, _ = await self._audit_search_keyword(event, keyword)
+        if not allowed:
+            yield event.plain_result(f"⚠️ {reason}"); return
+        if not keyword:
+            yield event.plain_result("请发送：/找短剧 <剧名>"); return
+        logger.info(f"短剧搜索: 关键词=[{keyword}]")
+        ret = await self.llm_search_drama(event, keyword)
+        # llm_search_drama 成功时已 event.send；未找到/失败只返回文本，需自己发出
+        if ret and not ret.startswith("[已发送"):
+            yield event.plain_result(ret)
+
+    @filter.command("drama_report")
+    async def cmd_drama_report(self, event: AstrMessageEvent):
+        """手动触发短剧日报（最新上传，含夸克网盘链接）。"""
+        config = self._get_config()
+        try:
+            mx = int(config.get("drama_report_max", 12) or 12) if isinstance(config, dict) else 12
+        except (TypeError, ValueError):
+            mx = 12
+        try:
+            timeout = int(config.get("drama_timeout", 15) or 15) if isinstance(config, dict) else 15
+        except (TypeError, ValueError):
+            timeout = 15
+        yield event.plain_result("⏳ 正在抓取最新短剧（含网盘链接）...")
+        result = await asyncio.to_thread(fetch_latest_dramas, mx, True, timeout)
+        if not result.get("success"):
+            yield event.plain_result(f"⚠️ {result.get('error','未知错误')}"); return
+        items = result.get("items", [])
+        if not items:
+            yield event.plain_result("📭 今日暂无短剧更新。"); return
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        html = build_drama_html(items, date_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        try:
+            img_bytes = await asyncio.to_thread(render_drama_to_png, html, font_path, 720, channel, exe)
+        except Exception as e:
+            logger.error(f"[短剧日报] 渲染异常: {e}")
+        if not img_bytes:
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            cards = [{"cover": "", "title": it.get("title") or "未知",
+                      "chips": [c for c in (it.get("category") or "短剧",
+                                            it.get("date") or "",
+                                            it.get("disk") or "夸克") if c],
+                      "desc": it.get("link") or ""} for it in items]
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, "网盘贴吧", font_path, 720, "短剧日报")
+        ts = datetime.date.today().strftime("%Y%m%d")
+        if img_bytes:
+            fn = f"暮黎短剧日报_{ts}{_img_ext(img_bytes)}"
+            ok = await self._send_event_file(event, img_bytes, fn, "", "短剧日报")
+            if not ok:
+                yield event.plain_result("⚠️ 日报图片发送失败，已尝试降级发图/文字版。")
+        else:
+            await event.send(MessageChain([Plain(
+                "⚠️ 图片渲染失败，改为文字版：\n"
+                + "\n".join(f"{i}. {it.get('title','')}  {it.get('link','')}"
+                            for i, it in enumerate(items, 1)))]))
+        return
+
     # ==================== 小说搜索与下载 (so-novel) ====================
 
     def _novel_cfg(self):
@@ -2773,6 +2933,12 @@ class MuliyResourcesPlugin(Star):
         msec = config.get("movie_sections", "mv,tv,ac") or "mv,tv,ac"
         mmx = int(config.get("movie_report_max", 24) or 24) if isinstance(config, dict) else 24
         mnxt = _nxt(self._movie_scheduler_job_id); mlr = self._movie_last_run_date or "从未执行"
+        # 短剧日报状态
+        den = config.get("drama_report_enabled", True) if isinstance(config, dict) else True
+        dh = config.get("drama_schedule_hour", 21); dmn = config.get("drama_schedule_minute", 0)
+        dgroups, dfb = self._resolve_group_ids("drama_group_ids")
+        dmx = int(config.get("drama_report_max", 12) or 12) if isinstance(config, dict) else 12
+        dnxt = _nxt(self._drama_scheduler_job_id); dlr = self._drama_last_run_date or "从未执行"
         yield event.plain_result(
             f"📊 暮黎资源聚合\n{'='*30}\n"
             f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'} | 模式: {mode}\n"
@@ -2781,8 +2947,10 @@ class MuliyResourcesPlugin(Star):
             f"   上次:{glr} | 下次:{gnxt}\n"
             f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{len(mgroups)}个{'（共享）' if mfb else ''} | 上限{mmx}\n"
             f"   区块:{msec} | 上次:{mlr} | 下次:{mnxt}\n"
+            f"📺 短剧日报: {'✅开' if den else '❌关'} 每日 {int(dh):02d}:{int(dmn):02d} | 群{len(dgroups)}个{'（共享）' if dfb else ''} | 上限{dmx}\n"
+            f"   上次:{dlr} | 下次:{dnxt}\n"
             f"🖼️ 软件图片: {'是' if ei else '否'} | 软件上限: {mx}\n"
-            f"⚡ 命令: /找软件 | /找游戏 | /game_report | /movie_report")
+            f"⚡ 命令: /找软件 | /找游戏 | /找短剧 | /game_report | /movie_report | /drama_report")
 
     # ==================== 翻页格式化 ====================
 
@@ -2864,6 +3032,33 @@ class MuliyResourcesPlugin(Star):
             lines.append("💡 翻页指令： " + " ｜ ".join(nav))
         lines.append(f"⏱️ {SESSION_TIMEOUT}秒无操作自动取消。")
         lines.append("回复数字选择影视，回复0取消。")
+        return "\n".join(lines)
+
+    def _format_drama_page(self, s: dict) -> str:
+        """短剧搜索列表的格式化。每行：[序号] 剧名  【分类·日期】"""
+        r = s["results"]; t = len(r); p = s.get("page", 0); ps = s.get("page_size", 8)
+        pt = (t + ps - 1) // ps; st = p * ps; ed = min(st + ps, t)
+        lines = [f"🎬 共找到 {t} 个「{s.get('keyword','')}」相关短剧，当前第 {p+1}/{pt} 页"]
+        lines.append("=" * 36)
+        lines.append("")
+        for i in range(st, ed):
+            x = r[i]
+            title = x["title"]
+            title = (title[:34] + "...") if len(title) > 37 else title
+            tags = [x.get("category") or "短剧"]
+            if x.get("date"):
+                tags.append(x["date"])
+            lines.append(f"{emoji_index(i - st + 1, ed - st)} {title}  【{'·'.join(tags)}】")
+        lines.append("")
+        lines.append("=" * 36)
+        nav = []
+        if st > 0: nav.append("「上一页」")
+        if ed < t: nav.append("「下一页」")
+        if pt > 1: nav.append(f"「跳转 1~{pt}」")
+        if nav:
+            lines.append("💡 翻页指令： " + " ｜ ".join(nav))
+        lines.append(f"⏱️ {SESSION_TIMEOUT}秒无操作自动取消。")
+        lines.append("回复数字选择短剧，回复0取消。")
         return "\n".join(lines)
 
     # ==================== 游戏搜索交互流程 (session_waiter) ====================
@@ -4817,7 +5012,7 @@ class MuliyResourcesPlugin(Star):
         )
         _all_session_mgrs = (self._sessions, self._search_sessions,
                               self._movie_sessions, self._movie_sessions_new,
-                              self._novel_sessions)
+                              self._novel_sessions, self._drama_sessions)
         _active = [m for m in _all_session_mgrs if m.get(event)]
         if _active and not sel_like:
             for m in _active:
@@ -5231,6 +5426,78 @@ class MuliyResourcesPlugin(Star):
                 return
 
         # ══════════════════════════════════════════════
+        # 短剧会话 (wangpant8)
+        # ══════════════════════════════════════════════
+        dses = self._drama_sessions.get(event)
+        if dses:
+            stage = dses.get("stage", "")
+
+            # ── 取消（所有阶段通用） ──
+            if text in cancel_kw:
+                event.stop_event()
+                self._drama_sessions.delete(event)
+                event.set_result(event.plain_result("已取消搜索。"))
+                return
+
+            if stage == "select_drama":
+                # 翻页 / 跳转
+                if text in page_kw or text.startswith("跳"):
+                    event.stop_event()
+                    ps = dses.get("page_size", 8); t = len(dses["results"])
+                    cur = dses.get("page", 0)
+                    if text in page_kw:
+                        dses["page"] = 0 if (cur + 1) * ps >= t else cur + 1 if "下一页" in text else max(0, cur - 1)
+                    else:
+                        m = re.search(r"\d+", text)
+                        if m:
+                            pt = (t + ps - 1) // ps
+                            dses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
+                    dses["_updated"] = time.time()
+                    await event.send(MessageChain([Plain(self._format_drama_page(self._drama_sessions.get(event)))]))
+                    return
+
+                # 数字/自然语言选择 → 取详情 + 返回网盘链接
+                if text in num_kw or text.startswith("第") or text.startswith("选") or text.startswith("最后"):
+                    event.stop_event()
+                    num = self._parse_natural_number(text)
+                    if num == -2:
+                        num = len(dses["results"]) - (dses.get("page", 0) * dses.get("page_size", 8))
+                    r = dses["results"]; pg = dses.get("page", 0); ps = dses.get("page_size", 8)
+                    t = len(r); st = pg * ps; ed = min(st + ps, t); pc = ed - st
+                    if num < 1 or num > pc:
+                        await event.send(MessageChain([Plain(f"请输入1-{pc}之间的数字。回复0取消。")]))
+                        return
+                    ai = st + num - 1; sel = r[ai]
+                    self._drama_sessions.update(event, selected_index=ai, stage="fetching")
+                    await event.send(MessageChain([Plain(f"🎬 已选择：{sel['title']}\n⏳ 正在获取网盘资源，请稍候...")]))
+                    try:
+                        det = await asyncio.to_thread(
+                            get_drama_detail, sel["id"], int(dses.get("timeout", 15) or 15))
+                    except Exception as e:
+                        self._drama_sessions.delete(event)
+                        await event.send(MessageChain([Plain(f"❌ 获取资源失败：{str(e)[:100]}")]))
+                        return
+                    self._drama_sessions.delete(event)
+                    if not det.get("success"):
+                        await event.send(MessageChain([Plain(
+                            f"😕 {det.get('error', '未获取到资源链接')}\n"
+                            f"📄 详情页：{sel.get('detail_url', '')}")]))
+                        return
+                    title = det.get("title") or sel["title"]
+                    lines = [
+                        f"🎬 {title}",
+                        "=" * 30,
+                        f"☁️ 网盘：{det.get('disk_type', '夸克')}",
+                        f"🔗 资源：{det.get('link', '')}",
+                        f"📄 详情页：{det.get('detail_url', sel.get('detail_url', ''))}",
+                        "",
+                        "💡 复制资源链接到夸克网盘转存即可观看。",
+                    ]
+                    await event.send(MessageChain([Plain("\n".join(lines))]))
+                    logger.info(f"[执行] 短剧 {title} → {det.get('link','')}")
+                    return
+
+        # ══════════════════════════════════════════════
         # 小说会话 (so-novel)
         # ══════════════════════════════════════════════
         nses = self._novel_sessions.get(event)
@@ -5412,6 +5679,12 @@ class MuliyResourcesPlugin(Star):
             mm = int(config.get("movie_schedule_minute",0) if isinstance(config,dict) else 0)
         except Exception: mh,mm = 20,0
         self._movie_schedule_hour = max(0,min(23,mh)); self._movie_schedule_minute = max(0,min(59,mm))
+        # 短剧日报独立调度（与软件/游戏/影视日报分开）
+        try:
+            dh = int(config.get("drama_schedule_hour",21) if isinstance(config,dict) else 21)
+            dm = int(config.get("drama_schedule_minute",0) if isinstance(config,dict) else 0)
+        except Exception: dh,dm = 21,0
+        self._drama_schedule_hour = max(0,min(23,dh)); self._drama_schedule_minute = max(0,min(59,dm))
         self._scheduled_job_ids = []
         sch = self._framework_scheduler()
         if sch is not None:
@@ -5422,6 +5695,7 @@ class MuliyResourcesPlugin(Star):
                 (self._scheduler_job_id, self._schedule_hour, self._schedule_minute, self._sw_daily_job, "软件日报"),
                 (self._game_scheduler_job_id, self._game_schedule_hour, self._game_schedule_minute, self._game_daily_job, "游戏日报"),
                 (self._movie_scheduler_job_id, self._movie_schedule_hour, self._movie_schedule_minute, self._movie_daily_job, "影视日报"),
+                (self._drama_scheduler_job_id, self._drama_schedule_hour, self._drama_schedule_minute, self._drama_daily_job, "短剧日报"),
             ]
             for job_id, jh, jm, func, name in jobs:
                 try:
@@ -5446,6 +5720,7 @@ class MuliyResourcesPlugin(Star):
                 (self._scheduler_job_id, self._schedule_hour, self._schedule_minute, self._sw_daily_job, "软件日报"),
                 (self._game_scheduler_job_id, self._game_schedule_hour, self._game_schedule_minute, self._game_daily_job, "游戏日报"),
                 (self._movie_scheduler_job_id, self._movie_schedule_hour, self._movie_schedule_minute, self._movie_daily_job, "影视日报"),
+                (self._drama_scheduler_job_id, self._drama_schedule_hour, self._drama_schedule_minute, self._drama_daily_job, "短剧日报"),
             ]
             self._apscheduler = AsyncIOScheduler(**tz_kw); self._apscheduler.start()
             for job_id, jh, jm, func, name in jobs:
@@ -5558,6 +5833,16 @@ class MuliyResourcesPlugin(Star):
         # 已统一改用 CronTrigger 每日重复，无需手动重排下一次
         return
 
+    def _drama_next_run(self):
+        n = datetime.datetime.now(self._timezone) if self._timezone else datetime.datetime.now()
+        nr = n.replace(hour=self._drama_schedule_hour,minute=self._drama_schedule_minute,second=0,microsecond=0)
+        if nr <= n: nr += datetime.timedelta(days=1)
+        return nr
+
+    def _schedule_drama_next(self):
+        # 已统一改用 CronTrigger 每日重复，无需手动重排下一次
+        return
+
     async def _sw_heartbeat(self):
         """每 600s 守护一次：
         - 官方模式下检测日报时间配置是否变更，变更则重新注册（配置热更新）；
@@ -5574,11 +5859,14 @@ class MuliyResourcesPlugin(Star):
                     ngm = int(config.get("game_schedule_minute",0) if isinstance(config,dict) else 0)
                     nmh = int(config.get("movie_schedule_hour",20) if isinstance(config,dict) else 20)
                     nmm = int(config.get("movie_schedule_minute",0) if isinstance(config,dict) else 0)
+                    ndh = int(config.get("drama_schedule_hour",21) if isinstance(config,dict) else 21)
+                    ndm = int(config.get("drama_schedule_minute",0) if isinstance(config,dict) else 0)
                 except Exception:
-                    nh,nm,ngh,ngm,nmh,nmm = 10,0,18,0,20,0
+                    nh,nm,ngh,ngm,nmh,nmm,ndh,ndm = 10,0,18,0,20,0,21,0
                 changed = (nh != self._schedule_hour or nm != self._schedule_minute or
                            ngh != self._game_schedule_hour or ngm != self._game_schedule_minute or
-                           nmh != self._movie_schedule_hour or nmm != self._movie_schedule_minute)
+                           nmh != self._movie_schedule_hour or nmm != self._movie_schedule_minute or
+                           ndh != self._drama_schedule_hour or ndm != self._drama_schedule_minute)
                 if changed:
                     logger.info("[暮黎资源] 检测到日报时间配置变更，重新注册定时任务")
                     await self._start_sw_scheduler(); continue
@@ -5599,6 +5887,8 @@ class MuliyResourcesPlugin(Star):
                     if not jg or not jg.next_run_time: self._schedule_game_next()
                     jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
                     if not jm or not jm.next_run_time: self._schedule_movie_next()
+                    jd = self._apscheduler.get_job(self._drama_scheduler_job_id)
+                    if not jd or not jd.next_run_time: self._schedule_drama_next()
             except asyncio.CancelledError: return
             except Exception: pass
 
@@ -5643,6 +5933,12 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[暮黎资源] 🛡️ 影视日报兜底补发（今日目标 {self._movie_schedule_hour:02d}:{self._movie_schedule_minute:02d} 已过且未发送）")
             try: await self._movie_daily_job()
             except Exception as e: logger.error(f"[暮黎资源] 影视日报兜底执行失败: {e!r}")
+        # 短剧日报
+        dtgt = n.replace(hour=self._drama_schedule_hour, minute=self._drama_schedule_minute, second=0, microsecond=0)
+        if n >= dtgt and self._drama_last_run_date != ts:
+            logger.warning(f"[暮黎资源] 🛡️ 短剧日报兜底补发（今日目标 {self._drama_schedule_hour:02d}:{self._drama_schedule_minute:02d} 已过且未发送）")
+            try: await self._drama_daily_job()
+            except Exception as e: logger.error(f"[暮黎资源] 短剧日报兜底执行失败: {e!r}")
 
     def _sw_cached_path(self, ds: str) -> str:
         return os.path.join(self._reports_dir,f"sw_report_{ds}.zip") if self._reports_dir else ""
@@ -5654,8 +5950,8 @@ class MuliyResourcesPlugin(Star):
             for fn in os.listdir(self._reports_dir):
                 if not fn.endswith(".zip"): continue
                 if not (fn.startswith("sw_report_") or fn.startswith("game_report_")
-                        or fn.startswith("movie_report_")): continue
-                p = (fn.replace("sw_report_","").replace("game_report_","").replace("movie_report_","").replace(".zip",""))
+                        or fn.startswith("movie_report_") or fn.startswith("drama_report_")): continue
+                p = (fn.replace("sw_report_","").replace("game_report_","").replace("movie_report_","").replace("drama_report_","").replace(".zip",""))
                 if len(p)!=8 or not p.isdigit(): continue
                 fd = datetime.date(int(p[:4]),int(p[4:6]),int(p[6:8]))
                 if fd < cut: os.remove(os.path.join(self._reports_dir,fn))
@@ -5870,6 +6166,120 @@ class MuliyResourcesPlugin(Star):
                 "⚠️ 图片渲染失败，改为文字版：\n"
                 + "\n".join(f"{i}. {it.get('title','')}（{it.get('type_name','')}）{(' '+it.get('status','')) if it.get('status') else ''}"
                              for i, it in enumerate(items, 1)))]))
+
+    def _drama_cached_path(self, ds: str) -> str:
+        return os.path.join(self._reports_dir, f"drama_report_{ds}.zip") if self._reports_dir else ""
+
+    async def _drama_send_report(self, img_bytes, ts, text: str = ""):
+        config = self._get_config()
+        gids, _fb = self._resolve_group_ids("drama_group_ids")
+        if not gids: return 0
+        apid = self._resolve_report_platform()
+        logger.info(f"[暮黎资源] 短剧日报推送目标平台: {apid} | 目标群: {gids}")
+        fn = f"暮黎短剧日报_{ts}{_img_ext(img_bytes)}" if img_bytes else ""
+        sent = 0
+        for gid in gids:
+            umo = f"{apid}:GroupMessage:{gid}"
+            if await self._try_send_group_file(umo, img_bytes, fn, text, "短剧日报"):
+                sent += 1
+        logger.info(f"[暮黎资源] 短剧日报本次成功推送 {sent}/{len(gids)} 个群")
+        return sent
+
+    async def _drama_build_and_send(self, items: list, ts: str):
+        date_label = datetime.date.today().strftime("%Y年%m月%d日")
+        html = build_drama_html(items, date_label)
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        config = self._get_config()
+        channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
+        exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
+        img_bytes = None
+        logger.info(f"[短剧日报] 开始渲染，共 {len(items)} 部，浏览器 channel={channel!r} exe={exe!r}")
+        try:
+            img_bytes = await asyncio.to_thread(render_drama_to_png, html, font_path, 720, channel, exe)
+            logger.info(f"[短剧日报] 渲染完成" + (f"，原始图片体积 {len(img_bytes)//1024}KB" if img_bytes else "，但未返回图片(将用兜底渲染)"))
+        except Exception as e:
+            logger.error(f"[短剧日报] 渲染异常: {type(e).__name__}: {e!r}\n{traceback.format_exc()}")
+        if not img_bytes:
+            # ① AstrBot 内置 html_renderer（云端 T2I，无需本机浏览器）
+            logger.info("[短剧日报] Playwright 不可用，尝试 AstrBot 内置渲染")
+            img_bytes = await self._html_render_astrbot(html, 720)
+        if not img_bytes:
+            # ② Pillow 纯 Python 兜底（永远可用）
+            logger.info("[短剧日报] 尝试 Pillow 兜底渲染")
+            cards = []
+            for it in items:
+                chips = [c for c in (it.get("category") or "短剧",
+                                     it.get("date") or "",
+                                     it.get("disk") or "夸克") if c]
+                cards.append({"cover": "", "title": it.get("title") or "未知",
+                              "chips": chips, "desc": (it.get("link") or "暂无链接")[:160]})
+            img_bytes = await self._report_pil_fallback(
+                cards, date_label, "网盘贴吧", font_path, 720, "短剧日报")
+        if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
+            logger.info(f"[短剧日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
+            img_bytes = self._compress_game_image(img_bytes)
+            logger.info(f"[短剧日报] 压缩后体积 {len(img_bytes)//1024}KB")
+        # 始终构建文字版，作为图片上传失败时的兜底（定时任务无 event 可用）
+        text = (f"🎬 暮黎短剧日报 {date_label}\n今日上新 {len(items)} 部：\n"
+                + "\n".join(f"{i}. {it.get('title','')}  {it.get('link','')}"
+                             for i, it in enumerate(items, 1)))
+        if not img_bytes:
+            logger.warning("[短剧日报] 图片渲染失败，将改用文字版推送")
+        return await self._drama_send_report(img_bytes, ts, text)
+
+    async def _drama_daily_job(self):
+        ts = datetime.date.today().strftime("%Y%m%d")
+        if self._sw_job_lock is None:
+            self._sw_job_lock = asyncio.Lock()
+        async with self._sw_job_lock:
+            if self._drama_last_run_date == ts:
+                logger.info(f"[暮黎资源] 短剧日报今日({ts})已运行过，跳过")
+                return
+            self._drama_last_run_date = ts
+        logger.info(f"[暮黎资源] ⏰ 短剧日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
+        config = self._get_config()
+        if not (config.get("drama_report_enabled", True) if isinstance(config, dict) else True):
+            logger.warning("[暮黎资源] 短剧日报已触发，但 drama_report_enabled 关闭，跳过")
+            return
+        gs_list, fb = self._resolve_group_ids("drama_group_ids")
+        if not gs_list:
+            logger.warning("[暮黎资源] 短剧日报已触发，但未配置 drama_group_ids，跳过发送")
+            return
+        try:
+            mx = int(config.get("drama_report_max", 12) or 12)
+        except (TypeError, ValueError):
+            mx = 12
+        try:
+            timeout = int(config.get("drama_timeout", 15) or 15)
+        except (TypeError, ValueError):
+            timeout = 15
+        result = await asyncio.to_thread(fetch_latest_dramas, mx, True, timeout)
+        if not result.get("success"):
+            logger.warning(f"[短剧日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
+            return
+        items = result.get("items", [])
+        if not items:
+            logger.info("[短剧日报] 今日暂无更新，标记今日已完成")
+            self._drama_last_run_date = ts; return
+        # 缓存 zip 供面板回看
+        try:
+            date_label = datetime.date.today().strftime("%Y年%m月%d日")
+            html = build_drama_html(items, date_label)
+            zp = await asyncio.to_thread(gen_drama_report_zip, items, html, ts)
+            if zp:
+                import shutil
+                shutil.copy2(zp, self._drama_cached_path(ts))
+                self._sw_cleanup_reports()
+        except Exception as e:
+            logger.warning(f"[短剧日报] 缓存 zip 失败: {e}")
+        sent = await self._drama_build_and_send(items, ts)
+        # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
+        if sent > 0:
+            self._drama_last_run_date = ts
+            logger.info(f"[短剧日报] 今日推送完成（{sent} 群）")
+        else:
+            logger.error("[短剧日报] 抓取成功但发送 0 群，兜底守护将重试")
+        self._schedule_drama_next()
 
     async def _sw_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
