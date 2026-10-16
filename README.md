@@ -43,6 +43,7 @@
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
 | 🤚 | **表情包娱乐** | `摸摸 @某人` / `给你一脚 @某人` / `给我按摩 @某人` 生成 GIF |
+| 🔐 | **入群审核（QQ）** | 新成员入群 @ 他并发送「20-100 加减法」**图形验证码**，限时答对才留下，答错达上限/超时自动移出群聊 |
 
 ---
 
@@ -96,6 +97,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | 🎵 网易云语音名片 | ✅ | 免费歌直接解析；VIP 歌需填会员 Cookie |
 | 🎞️ VIP 视频解析 | ✅ | |
 | 🤚 表情包 | ✅ | |
+| 🔐 入群审核（QQ） | ⚙️ 需手动开启 | 默认关闭；在 `verify` 组开启并填生效群号，机器人需为群管理员 |
 | 📖 **小说搜索** | ⚠️ 需额外部署 | 需另跑一个 so-novel 服务，见下文 |
 
 > **想省事的话**：什么都不用装、什么都不用配，装好插件就能搜影视/游戏/软件、能收日报、能发语音。
@@ -143,6 +145,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
 | 日报推到群聊 | 各自分组填 `xxx_group_ids`（软件/游戏/影视/短剧独立） |
+| 入群审核（QQ 图形验证码） | `verify` → 开启 `join_verify_enabled` + 填 `join_verify_group_ids`（机器人需为群管理员） |
 
 ### 常用命令速查
 
@@ -161,6 +164,8 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `/wyy_login` | 管理员 | 网易云扫码登录（自动写入会员 Cookie） |
 | `/novel_status` | 所有人 | 检查 so-novel 是否可达 |
 | `/movie_status` | 所有人 | 检查影视站可达性 |
+| `/入群验证 状态` | 管理员 | 查看入群审核配置与在验证人数 |
+| `/入群验证 测试` | 管理员 | 发送一张示例验证码图片（不修改群成员） |
 
 > 开启 LLM 后，以上功能均可自然语言触发，无需记命令。
 
@@ -237,6 +242,20 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `drama_report_max` | `12` | 短剧日报每期上限 |
 | `drama_timeout` | `15` | 请求超时（秒） |
 
+### 🔐 入群审核（verify）
+
+> 仅支持 **QQ（aiocqhttp / OneBot v11，如 NapCat、Lagrange）**，且机器人需为**群管理员**（撤回/踢人依赖管理权限）。
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `join_verify_enabled` | `false` | 入群审核总开关（默认关，开启后生效） |
+| `join_verify_group_ids` | `[]` | 生效群白名单，留空表示**所有群**生效（建议填写） |
+| `join_verify_timeout` | `120` | 验证限时（秒），超时移出群聊 |
+| `join_verify_max_attempts` | `2` | 答题机会，第 2 次答错立即移出群聊 |
+| `join_verify_recall` | `true` | 验证期间撤回该成员的非答案发言（防刷屏） |
+| `join_verify_kick` | `true` | 失败时移出群聊（关闭则只提示不踢人） |
+| `join_verify_public_result` | `true` | 通过/失败都在群里 @ 提示结果 |
+
 ### 🎞️ VIP 解析（vip_video）/ 🌐 浏览器（browser）
 
 - `video_vip_parse`（默认 `true`）：VIP 视频自动解析开关
@@ -275,6 +294,14 @@ xdgame Cookie 约 30 天过期。配置账密后执行 `/game_cookie_refresh`：
 - 数据源为**网盘贴吧**（wangpant8.com，Next.js 站点，无需登录/签名）。
 - 发「搜短剧XX / 看短剧XX」或 `/找短剧 <剧名>`：搜索 → 回复序号选择 → 直接返回**剧名 + 夸克网盘资源链接**。
 - 资源全部为**夸克网盘**，复制链接转存即可观看。
+
+### 🔐 入群审核：图形验证码（QQ）
+
+- 新成员入群时，机器人 @ 他并发送一张 **20-100 以内加减法**的图形验证码（随机背景 + 干扰线噪点，防简单 OCR）。
+- 成员在 **2 分钟**内回复正确答案即通过；**答错 2 次**或**超时**会被移出群聊。
+- 验证期间自动**撤回**该成员的非答案发言防刷屏；非数字发言不计入答题次数。
+- **为什么不禁言？** QQ 中被禁言的成员**无法发送任何群消息**，「先禁言再让他在群里答题」在协议上无法成立，所以本功能用「撤回非答案发言」替代禁言来防刷屏。
+- 成员退群/被踢会自动清理验证状态，插件卸载或热重载会取消后台超时任务。
 
 ### 🎮 日报推送
 

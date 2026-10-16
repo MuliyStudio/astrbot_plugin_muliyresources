@@ -118,6 +118,10 @@ from .core.massage import (
     PIL_AVAILABLE as MASSAGE_PIL_AVAILABLE,
     generate_massage,
 )
+from .core.verify import (
+    PIL_AVAILABLE as VERIFY_PIL_AVAILABLE,
+    generate_arithmetic, render_captcha,
+)
 
 def _format_size(size_bytes: int) -> str:
     if size_bytes < 1024: return f"{size_bytes} B"
@@ -208,6 +212,11 @@ _CONF_GROUPS = {
     ],
     "vip_video": ["video_vip_parse", "video_vip_timeout"],
     "browser": ["browser_channel", "browser_exe"],
+    "verify": [
+        "join_verify_enabled", "join_verify_group_ids", "join_verify_timeout",
+        "join_verify_max_attempts", "join_verify_recall", "join_verify_kick",
+        "join_verify_public_result",
+    ],
     "novel": [
         "sonovel_base_url", "sonovel_token", "sonovel_search_limit",
         "sonovel_format", "sonovel_timeout", "sonovel_download_timeout",
@@ -221,7 +230,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情", "1.14.7")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.0")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -266,6 +275,9 @@ class MuliyResourcesPlugin(Star):
         self._scheduled_job_ids: list[str] = []
         # VIP 解析：等待用户「选接口」的待处理会话 {unified_msg_origin: {...}}
         self._vip_pending: dict = {}
+        # 入群审核：待验证成员 {f"{group_id}:{user_id}": {...}} 与超时任务
+        self._join_verify: dict = {}
+        self._join_verify_tasks: dict = {}
         self._last_run_date: str = ""
         self._debug_log_path: str = ""
         self._reports_dir: str = ""
@@ -357,6 +369,12 @@ class MuliyResourcesPlugin(Star):
     async def terminate(self):
         logger.info("暮黎资源聚合插件终止")
         await self._stop_sw_scheduler()
+        # 取消所有入群审核超时任务，避免插件卸载/热重载后残留后台协程
+        for key in list(self._join_verify_tasks):
+            self._cancel_join_verify_task(key)
+        for t in self._bg_tasks:
+            if not t.done():
+                t.cancel()
 
     @filter.on_platform_loaded()
     async def _on_platform_loaded(self):
@@ -6739,6 +6757,314 @@ class MuliyResourcesPlugin(Star):
                 if p and os.path.exists(p):
                     try: os.unlink(p)
                     except Exception: pass
+
+    # ==================== 入群审核（QQ / aiocqhttp / OneBot v11） ====================
+    #
+    # 流程：新成员入群 notice → 群里 @ 他并发送「20-100 以内加减法」图形验证码 →
+    #       限时内回复正确答案即通过；答错达上限或超时 → 移出群聊。
+    # 注：QQ 被禁言的成员无法发送任何群消息，因此本功能「不禁言」，
+    #     改为验证期间撤回该成员的非答案发言来防刷屏。
+
+    def _raw_notice(self, event):
+        """取出平台原始事件（OneBot 的 notice/request 等），取不到返回 None。
+
+        aiocqhttp 适配器会把 notice/request 也包装成 AstrMessageEvent，
+        原始 OneBot 事件保留在 event.message_obj.raw_message 中。
+        """
+        try:
+            raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        except Exception:
+            return None
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        if hasattr(raw, "get") and hasattr(raw, "__getitem__"):
+            return raw
+        return None
+
+    def _join_verify_font(self) -> str:
+        return os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+
+    async def _send_group_msg(self, client, group_id, text: str = "",
+                              at_user: str = "", image_b64: str = ""):
+        """经 OneBot 直接发群消息（notice 事件与后台任务里都可用）。
+
+        返回 message_id（能取到时），发送失败返回 None。
+        """
+        msg = []
+        if at_user:
+            msg.append({"type": "at", "data": {"qq": str(at_user)}})
+        if text:
+            msg.append({"type": "text", "data": {"text": text}})
+        if image_b64:
+            msg.append({"type": "image", "data": {"file": f"base64://{image_b64}"}})
+        if not msg:
+            return None
+        try:
+            ret = await client.call_action(action="send_group_msg",
+                                           group_id=int(group_id), message=msg)
+            if isinstance(ret, dict):
+                return ret.get("message_id")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[入群审核] 群消息发送失败 group={group_id}: {type(e).__name__}: {e!r}")
+        return None
+
+    def _cancel_join_verify_task(self, key: str):
+        t = self._join_verify_tasks.pop(key, None)
+        if t and not t.done():
+            t.cancel()
+
+    async def _start_join_verify(self, group_id: str, user_id: str):
+        """发起一次入群验证：发验证码图片 + 记录状态 + 启动超时任务。"""
+        cfg = self._get_config()
+        try:
+            timeout = max(30, int(cfg.get("join_verify_timeout") or 120))
+        except (TypeError, ValueError):
+            timeout = 120
+        try:
+            max_attempts = max(1, int(cfg.get("join_verify_max_attempts") or 2))
+        except (TypeError, ValueError):
+            max_attempts = 2
+
+        client = self._get_best_client()
+        if client is None:
+            logger.warning("[入群审核] 未找到可用的 OneBot 客户端，跳过本次验证")
+            return
+
+        key = f"{group_id}:{user_id}"
+        self._join_verify.pop(key, None)
+        self._cancel_join_verify_task(key)
+        # 顺手清理已结束的后台任务引用，避免 _bg_tasks 无限增长
+        self._bg_tasks = [t for t in self._bg_tasks if not t.done()]
+
+        question, answer = generate_arithmetic()
+        img = render_captcha(question, self._join_verify_font()) if VERIFY_PIL_AVAILABLE else None
+        image_b64 = base64.b64encode(img).decode("utf-8") if img else ""
+
+        tip = (f" 欢迎加入本群！请在 {timeout} 秒内回复下面算式的答案完成验证"
+               f"（共 {max_attempts} 次机会，超时或答错将移出群聊）。"
+               + ("" if image_b64 else f"\n题目：{question} = ?"))
+        prompt_msg_id = await self._send_group_msg(client, group_id, text=tip,
+                                                   at_user=user_id, image_b64=image_b64)
+
+        now = time.time()
+        self._join_verify[key] = {
+            "group_id": str(group_id), "user_id": str(user_id),
+            "question": question, "answer": int(answer),
+            "attempts": 0, "max_attempts": max_attempts,
+            "deadline": now + timeout, "last_hint": 0.0,
+            "prompt_msg_id": prompt_msg_id,
+        }
+        task = asyncio.create_task(self._join_verify_timeout(key, timeout))
+        self._join_verify_tasks[key] = task
+        self._bg_tasks.append(task)
+        logger.info(f"[入群审核] 向 {key} 发起验证：{question} = {answer}（{timeout}s / {max_attempts} 次机会）")
+
+    async def _join_verify_timeout(self, key: str, timeout: int):
+        """超时未验证 → 按配置移出群聊。"""
+        try:
+            await asyncio.sleep(timeout + 1)
+        except asyncio.CancelledError:
+            return
+        self._join_verify_tasks.pop(key, None)
+        st = self._join_verify.get(key)
+        if not st:
+            return
+        if time.time() < st.get("deadline", 0):
+            return
+        self._join_verify.pop(key, None)
+        await self._join_verify_fail(st, "timeout")
+
+    async def _join_verify_fail(self, st: dict, reason: str):
+        """验证失败：公开提示（可关）+ 移出群聊（可关）。"""
+        cfg = self._get_config()
+        gid, uid = st.get("group_id"), st.get("user_id")
+        key = f"{gid}:{uid}"
+        client = self._get_best_client()
+        if cfg.get("join_verify_public_result", True) and client:
+            if reason == "wrong":
+                txt = f" 验证码连续错误 {st.get('max_attempts')} 次，将被移出群聊。"
+            else:
+                txt = f" 验证超时（{int(cfg.get('join_verify_timeout') or 120)} 秒）未完成，将被移出群聊。"
+            await self._send_group_msg(client, gid, text=txt, at_user=uid)
+        if cfg.get("join_verify_kick", True) and client:
+            try:
+                await client.call_action(action="set_group_kick", group_id=int(gid),
+                                         user_id=int(uid), reject_add_request=False)
+                logger.info(f"[入群审核] {key} 验证失败({reason})，已移出群聊")
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[入群审核] 踢出 {key} 失败: {type(e).__name__}: {e!r}")
+        self._join_verify.pop(key, None)
+        self._cancel_join_verify_task(key)
+
+    async def _join_verify_pass(self, st: dict):
+        """验证通过：清理状态并公开提示。"""
+        gid, uid = st.get("group_id"), st.get("user_id")
+        key = f"{gid}:{uid}"
+        self._join_verify.pop(key, None)
+        self._cancel_join_verify_task(key)
+        logger.info(f"[入群审核] {key} 验证通过")
+        cfg = self._get_config()
+        if cfg.get("join_verify_public_result", True):
+            client = self._get_best_client()
+            if client:
+                await self._send_group_msg(client, gid, text=" ✅ 验证通过，欢迎加入本群！", at_user=uid)
+
+    async def _join_verify_wrong(self, st: dict):
+        """答案错误：未达上限则提示剩余次数，达上限则踢出。"""
+        st["attempts"] = int(st.get("attempts", 0)) + 1
+        left = int(st.get("max_attempts", 2)) - st["attempts"]
+        gid, uid = st.get("group_id"), st.get("user_id")
+        if left <= 0:
+            key = f"{gid}:{uid}"
+            self._join_verify.pop(key, None)
+            self._cancel_join_verify_task(key)
+            await self._join_verify_fail(st, "wrong")
+            return
+        client = self._get_best_client()
+        if client:
+            remain = max(0, int(st.get("deadline", 0) - time.time()))
+            await self._send_group_msg(client, gid,
+                                       text=f" ❌ 答案错误，还有 {left} 次机会（剩余 {remain} 秒）。",
+                                       at_user=uid)
+
+    async def _join_verify_recall(self, event):
+        """撤回验证期间的非答案发言（需机器人有管理权限，失败静默忽略）。"""
+        if not self._get_config().get("join_verify_recall", True):
+            return
+        try:
+            mid = getattr(getattr(event, "message_obj", None), "message_id", None)
+            client = self._get_best_client()
+            if mid is None or client is None:
+                return
+            await client.call_action(action="delete_msg", message_id=int(mid))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[入群审核] 撤回消息失败(可忽略): {e!r}")
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
+    async def on_group_member_notice(self, event: AstrMessageEvent):
+        """群成员入/退群 notice：新成员触发入群验证；退群/被踢清理验证状态。"""
+        try:
+            raw = self._raw_notice(event)
+            if raw is None or raw.get("post_type") != "notice":
+                return
+            notice_type = raw.get("notice_type")
+            if notice_type not in ("group_increase", "group_decrease"):
+                return
+            gid = str(raw.get("group_id") or "")
+            uid = str(raw.get("user_id") or "")
+            if not gid or not uid:
+                return
+            if notice_type == "group_decrease":
+                key = f"{gid}:{uid}"
+                if self._join_verify.pop(key, None):
+                    self._cancel_join_verify_task(key)
+                    logger.info(f"[入群审核] {key} 已离群，清理验证状态")
+                return
+            # group_increase
+            if uid == str(raw.get("self_id") or ""):
+                return  # 机器人自己被拉进群，不验证自己
+            cfg = self._get_config()
+            if not cfg.get("join_verify_enabled", False):
+                return
+            groups = self._parse_multi(cfg.get("join_verify_group_ids", []))
+            if groups and gid not in groups:
+                return
+            event.stop_event()
+            await self._start_join_verify(gid, uid)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[入群审核] 处理群成员事件失败: {type(e).__name__}: {e!r}")
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
+    async def on_group_verify_reply(self, event: AstrMessageEvent):
+        """入群验证期间拦截新成员的发言：答对通过、答错计数、其他撤回不计数。"""
+        try:
+            gid = event.get_group_id()
+            uid = str(event.get_sender_id() or "")
+            if not gid or not uid:
+                return
+            key = f"{gid}:{uid}"
+            st = self._join_verify.get(key)
+            if not st:
+                return
+            # 只处理真正的消息事件，notice/request 不参与答题
+            raw = self._raw_notice(event)
+            if raw is not None:
+                pt = raw.get("post_type")
+                if pt and pt != "message":
+                    return
+            event.stop_event()
+            text = (event.message_str or "").strip()
+            nums = re.findall(r"-?\d+", text)
+            if not nums:
+                # 非答案发言：撤回防刷屏；必要时（带冷却）温和提醒一次
+                await self._join_verify_recall(event)
+                now = time.time()
+                if text and now - float(st.get("last_hint", 0.0)) > 15:
+                    st["last_hint"] = now
+                    client = self._get_best_client()
+                    if client:
+                        await self._send_group_msg(client, gid,
+                                                   text=" 请直接回复算式答案（纯数字）。", at_user=uid)
+                return
+            await self._join_verify_recall(event)
+            try:
+                guess = int(nums[-1])
+            except (TypeError, ValueError):
+                return
+            if guess == int(st.get("answer", -1)):
+                await self._join_verify_pass(st)
+            else:
+                await self._join_verify_wrong(st)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[入群审核] 处理验证回复失败: {type(e).__name__}: {e!r}")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("入群验证")
+    async def cmd_join_verify(self, event: AstrMessageEvent):
+        """入群审核状态与自测（管理员）。
+
+        用法：/入群验证 状态   查看当前配置与验证中人数
+              /入群验证 测试   发送一张示例验证码图片
+        """
+        arg = re.sub(r"^/?入群验证", "", event.message_str or "").strip()
+        cfg = self._get_config()
+        if arg in ("测试", "test"):
+            if not VERIFY_PIL_AVAILABLE:
+                yield event.plain_result("⚠️ Pillow 不可用，无法渲染验证码图片。请先安装依赖后重载插件。")
+                return
+            q, a = generate_arithmetic()
+            img = render_captcha(q, self._join_verify_font())
+            if not img:
+                yield event.plain_result("⚠️ 验证码图片渲染失败。")
+                return
+            tmp = tempfile.mktemp(suffix=".png", prefix="join_verify_test_")
+            try:
+                with open(tmp, "wb") as f:
+                    f.write(img)
+                await event.send(MessageChain([ImageComponent(file=tmp)]))
+                yield event.plain_result(f"📋 验证码自测：题目 {q} = ?（答案 {a}）")
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.unlink(tmp)
+                    except Exception:
+                        pass
+            return
+        groups = self._parse_multi(cfg.get("join_verify_group_ids", []))
+        yield event.plain_result(
+            "🔐 入群审核状态\n"
+            f"开关：{'✅ 已开启' if cfg.get('join_verify_enabled') else '⛔ 已关闭'}\n"
+            f"生效群：{'全部群' if not groups else '、'.join(groups)}\n"
+            f"超时：{int(cfg.get('join_verify_timeout') or 120)} 秒\n"
+            f"机会：{int(cfg.get('join_verify_max_attempts') or 2)} 次（答错达上限即踢）\n"
+            f"失败处理：{'移出群聊' if cfg.get('join_verify_kick', True) else '仅提示不踢人'}\n"
+            f"撤回非答案发言：{'是' if cfg.get('join_verify_recall', True) else '否'}\n"
+            f"当前验证中：{len(self._join_verify)} 人\n"
+            "—\n"
+            "用法：/入群验证 状态 | /入群验证 测试"
+        )
 
     def _get_best_client(self, event=None):
         try:

@@ -434,5 +434,66 @@
         "hint": "默认 15 秒。"
       }
     }
+  },
+  "verify": {
+    "description": "入群审核（QQ）",
+    "hint": "新成员入群后 @ 他并发送图形验证码，限时回复正确答案；答错达上限或超时移出群聊。仅支持 QQ（aiocqhttp / OneBot v11），且机器人需为群管理员。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "join_verify_enabled": {
+        "type": "bool",
+        "description": "入群审核总开关",
+        "default": false,
+        "hint": "默认关闭。开启后新成员入群需完成图形验证码验证，否则会被移出群聊。"
+      },
+      "join_verify_group_ids": {
+        "type": "list",
+        "description": "生效群 ID（白名单）",
+        "default": [],
+        "items": {"type": "string"},
+        "hint": "只在这些群启用审核；留空表示所有群生效。建议填写，避免影响其它群。",
+        "condition": {"join_verify_enabled": true}
+      },
+      "join_verify_timeout": {
+        "type": "int",
+        "description": "验证限时（秒）",
+        "default": 120,
+        "min": 30,
+        "max": 600,
+        "hint": "默认 120 秒（2 分钟）。超时未通过将被移出群聊。",
+        "condition": {"join_verify_enabled": true}
+      },
+      "join_verify_max_attempts": {
+        "type": "int",
+        "description": "答题机会（次）",
+        "default": 2,
+        "min": 1,
+        "max": 5,
+        "hint": "默认 2 次，即第 2 次答错立即移出群聊（仅统计含数字的发言）。",
+        "condition": {"join_verify_enabled": true}
+      },
+      "join_verify_recall": {
+        "type": "bool",
+        "description": "验证期间撤回该成员的非答案发言",
+        "default": true,
+        "hint": "开启后（需机器人有管理权限）会撤回待验证成员的消息，防止刷屏；关闭则仅提示。",
+        "condition": {"join_verify_enabled": true}
+      },
+      "join_verify_kick": {
+        "type": "bool",
+        "description": "验证失败时移出群聊",
+        "default": true,
+        "hint": "关闭后只作提示，不踢人（适合先观察）。",
+        "condition": {"join_verify_enabled": true}
+      },
+      "join_verify_public_result": {
+        "type": "bool",
+        "description": "公开提示验证结果",
+        "default": true,
+        "hint": "开启后验证通过/失败都会在群里 @ 该成员提示；关闭则静默处理。",
+        "condition": {"join_verify_enabled": true}
+      }
+    }
   }
 }
