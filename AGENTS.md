@@ -2,8 +2,8 @@
 
 ## 仓库约定
 
-- **每次更新后必须提交并推送到 GitHub**：改动完成后运行 `git add` → `git commit`（按仓库风格写中文 commit，如 `fix(1.13.1): ...`）→ `git push origin main`。
-- 发布/版本变更时同步更新：`metadata.yaml` 的 `version`、`main.py` 里 `@register(...)` 的版本号、**自托管版本徽章** `assets/badges/version.svg` 内的版本号、`CHANGELOG.md` 顶部新增条目；并创建/更新对应的 GitHub Release。发版后建议 purge 一次 CDN 缓存：`https://purge.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg`。
+- **⚠️ 未经明确要求，不要 commit / push / 建 Release**：默认只修改本地文件，改完向用户说明即可。仅当用户明确要求「提交 / 推送 / 发版 / 发布 / ship」时，才执行 `git add` → `git commit`（按仓库风格写中文 commit，如 `fix(1.13.1): ...`）→ `git push origin main`；用户没说就**不要碰 GitHub**。
+- **发版**（仅在用户明确要求发版时）同步更新：`metadata.yaml` 的 `version`、`main.py` 里 `@register(...)` 的版本号、**自托管版本徽章** `assets/badges/version.svg` 内的版本号、`CHANGELOG.md` 顶部新增条目；并创建/更新对应的 GitHub Release。发版后建议 purge 一次 CDN 缓存：`https://purge.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg`。
 - 配置项改动需同步 `_conf_schema.json` 与 `main.py` 的 `_CONF_GROUPS`（`_KEY_TO_GROUP` 自动生成）。
 
 ## 环境注意（本机 Windows）

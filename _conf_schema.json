@@ -475,23 +475,23 @@
       },
       "join_verify_recall": {
         "type": "bool",
-        "description": "验证期间撤回该成员的非答案发言",
+        "description": "验证期间撤回消息（成员发言 + 机器人验证消息）",
         "default": true,
-        "hint": "开启后（需机器人有管理权限）会撤回待验证成员的消息，防止刷屏；关闭则仅提示。",
+        "hint": "开启后（需机器人有管理权限）会撤回待验证成员的消息防刷屏，并在验证结束（通过/失败/超时）时把机器人本次发的验证消息一并撤回，做到不留痕。关闭则仅提示、不撤回。",
         "condition": {"join_verify_enabled": true}
       },
       "join_verify_kick": {
         "type": "bool",
         "description": "验证失败时移出群聊",
         "default": true,
-        "hint": "关闭后只作提示，不踢人（适合先观察）。",
+        "hint": "关闭后只撤回首屏消息，不踢人（适合先观察）。",
         "condition": {"join_verify_enabled": true}
       },
-      "join_verify_public_result": {
-        "type": "bool",
-        "description": "公开提示验证结果",
-        "default": true,
-        "hint": "开启后验证通过/失败都会在群里 @ 该成员提示；关闭则静默处理。",
+      "join_verify_welcome_text": {
+        "type": "string",
+        "description": "验证通过后的欢迎词",
+        "default": "✅ 验证成功，欢迎加入群聊！",
+        "hint": "验证通过时会先撤回机器人本次发的验证消息，只保留这一条；留空则静默通过（不发送任何消息）。",
         "condition": {"join_verify_enabled": true}
       }
     }

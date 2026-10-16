@@ -216,7 +216,7 @@ _CONF_GROUPS = {
     "verify": [
         "join_verify_enabled", "join_verify_group_ids", "join_verify_timeout",
         "join_verify_max_attempts", "join_verify_recall", "join_verify_kick",
-        "join_verify_public_result",
+        "join_verify_welcome_text",
     ],
     "novel": [
         "sonovel_base_url", "sonovel_token", "sonovel_search_limit",
@@ -231,7 +231,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.1")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.3")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -321,6 +321,8 @@ class MuliyResourcesPlugin(Star):
                             logger.warning(f"[暮黎资源] 恢复配置回写失败: {e}")
         except Exception as e:
             logger.warning(f"[暮黎资源] 本地配置恢复失败: {e}")
+        # 恢复各日报「今日已发送」状态：重装/热重载后不再重复补发当天日报
+        self._load_report_state()
         await self._start_sw_scheduler()
         # 影视源 / 游戏源：按 cookie 是否配置自动决定（替代手动 movie_source 切换）
         try:
@@ -2807,8 +2809,6 @@ class MuliyResourcesPlugin(Star):
                 except Exception:
                     pass
                 if data:
-                    if trim_uniform_bottom:
-                        data = trim_uniform_bottom(data)
                     logger.info(f"[日报] AstrBot 内置渲染完成，体积 {len(data)//1024}KB")
                     return data
         except Exception as e:
@@ -5669,6 +5669,64 @@ class MuliyResourcesPlugin(Star):
             pass
         return None
 
+    # ==================== 日报运行状态持久化（防止重装/重启后重复补发） ====================
+    # 四个日报的「今日已发送日期」原本只存在内存：插件一重装/热重载就归零，
+    # 兜底守护（_sw_fallback）会立刻把当天已过时间点的日报全部补发一遍。
+    # 这里把状态落到 data 目录下的 json，重装后也能读到，从而不再重复触发。
+
+    _REPORT_STATE_KINDS = {
+        "sw": "_last_run_date",
+        "game": "_game_last_run_date",
+        "movie": "_movie_last_run_date",
+        "drama": "_drama_last_run_date",
+    }
+
+    def _report_state_path(self) -> str:
+        return os.path.join(self._plugin_data_dir(), "daily_reports_state.json")
+
+    def _load_report_state(self):
+        """从 data 目录恢复各日报「上次发送日期」。"""
+        try:
+            p = self._report_state_path()
+            if not os.path.exists(p):
+                return
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            restored = []
+            for kind, attr in self._REPORT_STATE_KINDS.items():
+                v = str(data.get(kind) or "").strip()
+                if v:
+                    setattr(self, attr, v)
+                    restored.append(f"{kind}={v}")
+            if restored:
+                logger.info(f"[暮黎资源] 已恢复日报运行状态（本次不会重复补发）: {', '.join(restored)}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] 读取日报运行状态失败(忽略): {e!r}")
+
+    def _persist_report_state(self):
+        try:
+            p = self._report_state_path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            data = {k: str(getattr(self, a, "") or "") for k, a in self._REPORT_STATE_KINDS.items()}
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, p)  # 原子替换，避免半截文件
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] 写入日报运行状态失败(忽略): {e!r}")
+
+    def _mark_report_ran(self, kind: str, ts: str):
+        """标记某日报今日已处理（含占位），并即时持久化，重装后不会再触发。"""
+        attr = self._REPORT_STATE_KINDS.get(kind)
+        if not attr:
+            return
+        if getattr(self, attr, "") == ts:
+            return
+        setattr(self, attr, ts)
+        self._persist_report_state()
+
     async def _start_sw_scheduler(self):
         """注册三个独立日报的每日定时任务。
 
@@ -6056,7 +6114,7 @@ class MuliyResourcesPlugin(Star):
             if self._movie_last_run_date == ts:
                 logger.info(f"[暮黎资源] 影视日报今日({ts})已运行过，跳过")
                 return
-            self._movie_last_run_date = ts
+            self._mark_report_ran("movie", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 影视日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
@@ -6090,7 +6148,7 @@ class MuliyResourcesPlugin(Star):
         items = result.get("items", [])
         if not items:
             logger.info("[影视日报] 今日暂无更新，标记今日已完成")
-            self._movie_last_run_date = ts; return
+            self._mark_report_ran("movie", ts); return
         # 缓存 zip 供面板回看
         try:
             date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -6105,7 +6163,7 @@ class MuliyResourcesPlugin(Star):
         sent = await self._movie_build_and_send(items, ts)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
-            self._movie_last_run_date = ts
+            self._mark_report_ran("movie", ts)
             logger.info(f"[影视日报] 今日推送完成（{sent} 群）")
         else:
             logger.error("[影视日报] 抓取成功但发送 0 群，兜底守护将重试")
@@ -6254,7 +6312,7 @@ class MuliyResourcesPlugin(Star):
             if self._drama_last_run_date == ts:
                 logger.info(f"[暮黎资源] 短剧日报今日({ts})已运行过，跳过")
                 return
-            self._drama_last_run_date = ts
+            self._mark_report_ran("drama", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 短剧日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         if not (config.get("drama_report_enabled", True) if isinstance(config, dict) else True):
@@ -6279,7 +6337,7 @@ class MuliyResourcesPlugin(Star):
         items = result.get("items", [])
         if not items:
             logger.info("[短剧日报] 今日暂无更新，标记今日已完成")
-            self._drama_last_run_date = ts; return
+            self._mark_report_ran("drama", ts); return
         # 缓存 zip 供面板回看
         try:
             date_label = datetime.date.today().strftime("%Y年%m月%d日")
@@ -6294,7 +6352,7 @@ class MuliyResourcesPlugin(Star):
         sent = await self._drama_build_and_send(items, ts)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
-            self._drama_last_run_date = ts
+            self._mark_report_ran("drama", ts)
             logger.info(f"[短剧日报] 今日推送完成（{sent} 群）")
         else:
             logger.error("[短剧日报] 抓取成功但发送 0 群，兜底守护将重试")
@@ -6309,7 +6367,7 @@ class MuliyResourcesPlugin(Star):
             if self._last_run_date == ts:
                 logger.info(f"[暮黎资源] 软件日报今日({ts})已运行过，跳过")
                 return
-            self._last_run_date = ts  # 先占位，防止并发重入
+            self._mark_report_ran("sw", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 软件日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
@@ -6324,7 +6382,7 @@ class MuliyResourcesPlugin(Star):
         sws = result.get("softwares",[])
         if not sws:
             logger.info("[软件日报] 今日暂无更新，标记今日已完成")
-            self._last_run_date = ts; return
+            self._mark_report_ran("sw", ts); return
         # 橙色夏日风格：HTML → 图片（替代旧的 Pillow 手绘）
         img_bytes = await self._sw_render_image(sws)
         zp = await asyncio.to_thread(gen_report_zip, sws, io.BytesIO(img_bytes) if img_bytes else None)
@@ -6344,7 +6402,7 @@ class MuliyResourcesPlugin(Star):
             except: pass
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
-            self._last_run_date = ts
+            self._mark_report_ran("sw", ts)
             logger.info(f"[软件日报] 今日推送完成（{sent} 群）")
         else:
             logger.error("[软件日报] 抓取成功但发送 0 群，兜底守护将重试")
@@ -6382,12 +6440,45 @@ class MuliyResourcesPlugin(Star):
             pass
         return "aiocqhttp"
 
+    @staticmethod
+    def _image_size(img_bytes: bytes):
+        """读取图片像素尺寸；失败返回 None。"""
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(img_bytes)) as im:
+                return im.size
+        except Exception:
+            return None
+
+    async def _finalize_report_image(self, img_bytes: bytes | None,
+                                     tag: str = "日报") -> bytes | None:
+        """日报出图后的统一后处理：裁掉底部与页面底色一致的空白（自适应）。
+
+        无论图片来自本地 Playwright、AstrBot 内置 T2I 还是 Pillow 兜底，
+        都在这里过一遍，避免「固定视口渲染器」在内容不足一屏时留下大片底色。
+        """
+        if not img_bytes or not trim_uniform_bottom:
+            return img_bytes
+        before = self._image_size(img_bytes)
+        try:
+            out = await asyncio.to_thread(trim_uniform_bottom, img_bytes)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[{tag}] 底部留白裁剪失败(忽略): {e!r}")
+            return img_bytes
+        after = self._image_size(out)
+        if before and after:
+            pct = 100 * (before[1] - after[1]) // max(before[1], 1)
+            logger.info(f"[{tag}] 出图尺寸 {before[0]}x{before[1]} → {after[0]}x{after[1]}"
+                        + (f"（裁掉底部留白 {pct}%）" if after != before else "（无留白）"))
+        return out
+
     async def _try_send_group_file(self, umo: str, img_bytes: bytes | None, file_name: str, text: str, label: str) -> bool:
         """以「文件」形式发送日报图片（绕开 onebot 发图体积上限，杜绝大图被平台静默拒收）。
 
         与小说 _upload_zip 一致，走 client.call_action(upload_group_file, base64://..., name=...)。
         群文件发送失败 → 降级文字版兜底；无图片则直接发文字版。
         """
+        img_bytes = await self._finalize_report_image(img_bytes, label)
         gid = umo.split(":")[-1]
         if img_bytes:
             client = self._get_best_client()
@@ -6433,6 +6524,7 @@ class MuliyResourcesPlugin(Star):
         其余平台先尝试 FileComponent 文件发送，不支持文件的平台（企微/QQ官方/TG 等）
         自动降级为「当前会话直接发图片」，再不行才用 text 兜底。
         """
+        img_bytes = await self._finalize_report_image(img_bytes, label)
         if not img_bytes:
             if text:
                 await event.send(MessageChain([Plain(text)]))
@@ -6604,7 +6696,7 @@ class MuliyResourcesPlugin(Star):
             if self._game_last_run_date == ts:
                 logger.info(f"[暮黎资源] 游戏日报今日({ts})已运行过，跳过")
                 return
-            self._game_last_run_date = ts
+            self._mark_report_ran("game", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 游戏日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
         config = self._get_config()
         if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
@@ -6629,11 +6721,11 @@ class MuliyResourcesPlugin(Star):
         games = result.get("games", [])
         if not games:
             logger.info("[游戏日报] 今日暂无更新，标记今日已完成")
-            self._game_last_run_date = ts; return
+            self._mark_report_ran("game", ts); return
         sent = await self._game_build_and_send(games, ts)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
-            self._game_last_run_date = ts
+            self._mark_report_ran("game", ts)
             logger.info(f"[游戏日报] 今日推送完成（{sent} 群）")
         else:
             logger.error("[游戏日报] 抓取成功但发送 0 群，兜底守护将重试")
@@ -6818,6 +6910,35 @@ class MuliyResourcesPlugin(Star):
         if t and not t.done():
             t.cancel()
 
+    async def _join_verify_send(self, st: dict, text: str, at_user: str = "",
+                                image_b64: str = ""):
+        """发送一条验证相关消息并记录其 message_id，便于验证结束时统一撤回。"""
+        client = self._get_best_client()
+        if client is None:
+            return None
+        mid = await self._send_group_msg(client, st.get("group_id"), text=text,
+                                         at_user=at_user or st.get("user_id"),
+                                         image_b64=image_b64)
+        if mid is not None:
+            st.setdefault("msg_ids", []).append(mid)
+        return mid
+
+    async def _join_verify_recall_ids(self, st: dict):
+        """撤回本次验证里机器人自己发出的所有消息（清屏）。"""
+        if not self._get_config().get("join_verify_recall", True):
+            return
+        client = self._get_best_client()
+        ids = list(st.get("msg_ids") or [])
+        st["msg_ids"] = []
+        if client is None or not ids:
+            return
+        for mid in ids:
+            try:
+                await client.call_action(action="delete_msg", message_id=int(mid))
+                await asyncio.sleep(0.25)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[入群审核] 撤回机器人消息失败(可忽略): {e!r}")
+
     async def _start_join_verify(self, group_id: str, user_id: str):
         """发起一次入群验证：发验证码图片 + 记录状态 + 启动超时任务。"""
         cfg = self._get_config()
@@ -6845,27 +6966,28 @@ class MuliyResourcesPlugin(Star):
         img = render_captcha(question, self._join_verify_font()) if VERIFY_PIL_AVAILABLE else None
         image_b64 = base64.b64encode(img).decode("utf-8") if img else ""
 
-        tip = (f" 欢迎加入本群！请在 {timeout} 秒内回复下面算式的答案完成验证"
-               f"（共 {max_attempts} 次机会，超时或答错将移出群聊）。"
-               + ("" if image_b64 else f"\n题目：{question} = ?"))
-        prompt_msg_id = await self._send_group_msg(client, group_id, text=tip,
-                                                   at_user=user_id, image_b64=image_b64)
-
         now = time.time()
-        self._join_verify[key] = {
+        st = {
             "group_id": str(group_id), "user_id": str(user_id),
             "question": question, "answer": int(answer),
             "attempts": 0, "max_attempts": max_attempts,
             "deadline": now + timeout, "last_hint": 0.0,
-            "prompt_msg_id": prompt_msg_id,
+            "msg_ids": [],  # 机器人本次发出的消息，验证结束/取消时一并撤回
         }
+        self._join_verify[key] = st
+
+        tip = (f" 欢迎加入本群！请在 {timeout} 秒内回复下面算式的答案完成验证"
+               f"（共 {max_attempts} 次机会，超时或答错将移出群聊）。"
+               + ("" if image_b64 else f"\n题目：{question} = ?"))
+        await self._join_verify_send(st, tip, at_user=user_id, image_b64=image_b64)
+
         task = asyncio.create_task(self._join_verify_timeout(key, timeout))
         self._join_verify_tasks[key] = task
         self._bg_tasks.append(task)
         logger.info(f"[入群审核] 向 {key} 发起验证：{question} = {answer}（{timeout}s / {max_attempts} 次机会）")
 
     async def _join_verify_timeout(self, key: str, timeout: int):
-        """超时未验证 → 按配置移出群聊。"""
+        """超时未验证 → 撤回首屏消息并移出群聊。"""
         try:
             await asyncio.sleep(timeout + 1)
         except asyncio.CancelledError:
@@ -6880,42 +7002,40 @@ class MuliyResourcesPlugin(Star):
         await self._join_verify_fail(st, "timeout")
 
     async def _join_verify_fail(self, st: dict, reason: str):
-        """验证失败：公开提示（可关）+ 移出群聊（可关）。"""
+        """验证失败：撤回本次验证中机器人发出的所有消息（不留痕），再移出群聊。"""
         cfg = self._get_config()
         gid, uid = st.get("group_id"), st.get("user_id")
         key = f"{gid}:{uid}"
+        self._join_verify.pop(key, None)
+        self._cancel_join_verify_task(key)
+        await self._join_verify_recall_ids(st)
         client = self._get_best_client()
-        if cfg.get("join_verify_public_result", True) and client:
-            if reason == "wrong":
-                txt = f" 验证码连续错误 {st.get('max_attempts')} 次，将被移出群聊。"
-            else:
-                txt = f" 验证超时（{int(cfg.get('join_verify_timeout') or 120)} 秒）未完成，将被移出群聊。"
-            await self._send_group_msg(client, gid, text=txt, at_user=uid)
         if cfg.get("join_verify_kick", True) and client:
             try:
                 await client.call_action(action="set_group_kick", group_id=int(gid),
                                          user_id=int(uid), reject_add_request=False)
-                logger.info(f"[入群审核] {key} 验证失败({reason})，已移出群聊")
+                logger.info(f"[入群审核] {key} 验证失败({reason})，已撤回首屏消息并移出群聊")
             except Exception as e:  # noqa: BLE001
                 logger.error(f"[入群审核] 踢出 {key} 失败: {type(e).__name__}: {e!r}")
-        self._join_verify.pop(key, None)
-        self._cancel_join_verify_task(key)
+        else:
+            logger.info(f"[入群审核] {key} 验证失败({reason})，已撤回首屏消息（未开启踢人）")
 
     async def _join_verify_pass(self, st: dict):
-        """验证通过：清理状态并公开提示。"""
+        """验证通过：撤回所有验证消息，只保留一条可配置的欢迎语。"""
         gid, uid = st.get("group_id"), st.get("user_id")
         key = f"{gid}:{uid}"
         self._join_verify.pop(key, None)
         self._cancel_join_verify_task(key)
-        logger.info(f"[入群审核] {key} 验证通过")
-        cfg = self._get_config()
-        if cfg.get("join_verify_public_result", True):
+        await self._join_verify_recall_ids(st)
+        welcome = (self._get_config().get("join_verify_welcome_text") or "").strip()
+        logger.info(f"[入群审核] {key} 验证通过" + ("（已发送欢迎语）" if welcome else "（未配置欢迎语，静默通过）"))
+        if welcome:
             client = self._get_best_client()
             if client:
-                await self._send_group_msg(client, gid, text=" ✅ 验证通过，欢迎加入本群！", at_user=uid)
+                await self._send_group_msg(client, gid, text=(" " + welcome), at_user=uid)
 
     async def _join_verify_wrong(self, st: dict):
-        """答案错误：未达上限则提示剩余次数，达上限则踢出。"""
+        """答案错误：未达上限则提示剩余次数，达上限则撤屏 + 踢出。"""
         st["attempts"] = int(st.get("attempts", 0)) + 1
         left = int(st.get("max_attempts", 2)) - st["attempts"]
         gid, uid = st.get("group_id"), st.get("user_id")
@@ -6925,12 +7045,8 @@ class MuliyResourcesPlugin(Star):
             self._cancel_join_verify_task(key)
             await self._join_verify_fail(st, "wrong")
             return
-        client = self._get_best_client()
-        if client:
-            remain = max(0, int(st.get("deadline", 0) - time.time()))
-            await self._send_group_msg(client, gid,
-                                       text=f" ❌ 答案错误，还有 {left} 次机会（剩余 {remain} 秒）。",
-                                       at_user=uid)
+        remain = max(0, int(st.get("deadline", 0) - time.time()))
+        await self._join_verify_send(st, f" ❌ 答案错误，还有 {left} 次机会（剩余 {remain} 秒）。")
 
     async def _join_verify_recall(self, event):
         """撤回验证期间的非答案发言（需机器人有管理权限，失败静默忽略）。"""
@@ -6961,9 +7077,11 @@ class MuliyResourcesPlugin(Star):
                 return
             if notice_type == "group_decrease":
                 key = f"{gid}:{uid}"
-                if self._join_verify.pop(key, None):
+                st_left = self._join_verify.pop(key, None)
+                if st_left:
                     self._cancel_join_verify_task(key)
-                    logger.info(f"[入群审核] {key} 已离群，清理验证状态")
+                    await self._join_verify_recall_ids(st_left)
+                    logger.info(f"[入群审核] {key} 已离群，清理验证状态并撤回首屏消息")
                 return
             # group_increase
             if uid == str(raw.get("self_id") or ""):
@@ -7006,10 +7124,7 @@ class MuliyResourcesPlugin(Star):
                 now = time.time()
                 if text and now - float(st.get("last_hint", 0.0)) > 15:
                     st["last_hint"] = now
-                    client = self._get_best_client()
-                    if client:
-                        await self._send_group_msg(client, gid,
-                                                   text=" 请直接回复算式答案（纯数字）。", at_user=uid)
+                    await self._join_verify_send(st, " 请直接回复算式答案（纯数字）。")
                 return
             await self._join_verify_recall(event)
             try:
@@ -7062,8 +7177,9 @@ class MuliyResourcesPlugin(Star):
             f"生效群：{'全部群' if not groups else '、'.join(groups)}\n"
             f"超时：{int(cfg.get('join_verify_timeout') or 120)} 秒\n"
             f"机会：{int(cfg.get('join_verify_max_attempts') or 2)} 次（答错达上限即踢）\n"
-            f"失败处理：{'移出群聊' if cfg.get('join_verify_kick', True) else '仅提示不踢人'}\n"
-            f"撤回非答案发言：{'是' if cfg.get('join_verify_recall', True) else '否'}\n"
+            f"失败处理：{'撤回首屏消息并移出群聊' if cfg.get('join_verify_kick', True) else '撤回首屏消息（不踢人）'}\n"
+            f"通过欢迎词：{((cfg.get('join_verify_welcome_text') or '').strip() or '（静默通过，不发送）')[:40]}\n"
+            f"撤回机制：{'开启（成员发言 + 机器人验证消息）' if cfg.get('join_verify_recall', True) else '关闭'}\n"
             f"当前验证中：{len(self._join_verify)} 人\n"
             "—\n"
             "用法：/入群验证 状态 | /入群验证 测试"
