@@ -70,9 +70,10 @@ from .core.shortdrama import (
     DRAMA_BASE,
 )
 try:
-    from .core.report_pil import render_pil_report
+    from .core.report_pil import render_pil_report, trim_uniform_bottom
 except ImportError:
     render_pil_report = None
+    trim_uniform_bottom = None
 from .core.movie import (
     search_movies, get_movie_detail,
     format_movie_list, format_episodes, format_sources,
@@ -230,7 +231,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.0")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.1")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -2806,6 +2807,8 @@ class MuliyResourcesPlugin(Star):
                 except Exception:
                     pass
                 if data:
+                    if trim_uniform_bottom:
+                        data = trim_uniform_bottom(data)
                     logger.info(f"[日报] AstrBot 内置渲染完成，体积 {len(data)//1024}KB")
                     return data
         except Exception as e:

@@ -17,7 +17,9 @@ cards 为条目列表，每项：
 """
 import base64
 import io
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageStat
+
+from .constants import logger
 
 _HEADER_BG = (66, 133, 244)
 _BG_TOP = (245, 247, 252)
@@ -44,6 +46,64 @@ def _font(path, size):
     except Exception:
         pass
     return ImageFont.load_default()
+
+
+def trim_uniform_bottom(img_bytes: bytes, keep_px: int = 24,
+                        tol: int = 12, max_ratio: float = 0.7) -> bytes:
+    """自适应裁掉图片底部「与页面底色一致」的空白区域。
+
+    背景：AstrBot 内置 T2I（html_render）按固定视口高度出图（常见 800x1400），
+    日报内容不足一屏时底部会留下大片纯色页面底色（插件自身的 Playwright 渲染是
+    full_page，一般无此问题）。
+
+    做法：以最底一行为参照色，自底向上逐行判断——该行「行内颜色起伏很小」且
+    「均值接近参照色」即为留白行；保留 keep_px 像素边距后裁掉。
+    最多只裁 max_ratio 的高度，避免误裁正文；无需裁剪或失败时原样返回。
+    """
+    if not img_bytes:
+        return img_bytes
+    try:
+        im = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception:
+        return img_bytes
+    w, h = im.size
+    if h < 240 or w < 50:
+        return img_bytes
+    try:
+        ref = [round(x) for x in ImageStat.Stat(im.crop((0, h - 1, w, h))).mean]
+    except Exception:
+        return img_bytes
+    limit = max(keep_px, int(h * (1 - max_ratio)))
+    top = h - 1
+    while top > limit:
+        try:
+            st = ImageStat.Stat(im.crop((0, top, w, top + 1)))
+            mn_mx, mean = st.extrema, st.mean
+        except Exception:
+            break
+        flat = all((mn_mx[i][1] - mn_mx[i][0]) <= tol * 2 for i in range(3))
+        same = all(abs(mean[i] - ref[i]) <= tol for i in range(3))
+        if flat and same:
+            top -= 1
+        else:
+            break
+    blank = (h - 1) - top
+    if blank <= keep_px:
+        return img_bytes
+    new_h = top + 1 + keep_px
+    if new_h >= h or new_h < 240:
+        return img_bytes
+    out = im.crop((0, 0, w, new_h))
+    buf = io.BytesIO()
+    try:
+        if img_bytes[:4] == b"\x89PNG":
+            out.save(buf, "PNG")
+        else:
+            out.save(buf, "JPEG", quality=88)
+    except Exception:
+        return img_bytes
+    logger.info(f"[日报] 底部留白自适应裁剪：{h}px → {new_h}px")
+    return buf.getvalue()
 
 
 def _b64_to_bytes(data_uri: str):
