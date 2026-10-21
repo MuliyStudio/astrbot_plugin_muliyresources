@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """软件日报&搜索相关函数"""
-import re, datetime, time, io, base64, os, tempfile, zipfile, requests
+import re, datetime, time, io, base64, os, tempfile, zipfile, random, requests
 from bs4 import BeautifulSoup
 from .constants import (
     SW_BASE_URL, SW_LIST_URL, SW_SEARCH_URL, SW_DISK_ICONS, SW_PAN_COLORS, SW_HEADERS, logger
 )
 from .mdi_icons import svg as _svg
+from .brand import logo_img
 
 # ==================== 通用工具 ====================
 
@@ -78,7 +79,7 @@ def _extract_description(article):
     if cur_title and cur_content: sections.append({"title":cur_title,"content":"\n\n".join(cur_content)})
     return sections
 
-def get_software_list(max_softwares: int = 24) -> list:
+def get_software_list(max_softwares: int = 24, today_only: bool = True) -> list:
     today_str = f"时间：{datetime.date.today().strftime('%Y-%m-%d')}"
     html = _get_html(SW_LIST_URL)
     if not html: return []
@@ -91,7 +92,7 @@ def get_software_list(max_softwares: int = 24) -> list:
         title = te.get_text(strip=True) if te else ""
         time_elem = item.find("div", class_="list-ca")
         ut = time_elem.get_text(strip=True) if time_elem else ""
-        if today_str not in ut: continue
+        if today_only and today_str not in ut: continue
         le = item.find("div", class_="list-btn")
         le = le.find("a") if le else None
         du = _fix_url(le.get("href","")) if le else ""
@@ -101,6 +102,24 @@ def get_software_list(max_softwares: int = 24) -> list:
         if title and du:
             softwares.append({"title":title,"update_time":ut,"detail_url":du,"cover_img":ci,"description":"","sections":[],"images":[],"downloads":[]})
     return softwares[:max_softwares]
+
+
+def get_random_software_recent() -> dict | None:
+    """从 x6d 软件列表随机取一款，用于签到推荐。"""
+    items = get_software_list(24, today_only=False)
+    # x6d 列表里偶尔混有游戏条目（标题带《》），推荐到「软件」栏会很怪，先过滤掉
+    items = [
+        sw for sw in items
+        if sw.get("title") and len(sw["title"]) <= 28
+        and "《" not in sw["title"] and "游戏" not in sw["title"]
+    ]
+    if not items:
+        return None
+    sw = random.choice(items)
+    title = sw.get("title", "")
+    query = re.split(r"\s+(?:v\d|V\d|适用|\d{4})", title, maxsplit=1)[0].strip() or title
+    return {"name": title, "desc": "x6d 软件 · 近期更新", "query": query}
+
 
 def get_detail(sw: dict) -> dict:
     html = _get_html(sw["detail_url"], retries=3, timeout=25)
@@ -248,6 +267,10 @@ def gen_report_zip(softwares: list, image_buffer=None):
     except Exception as e: logger.error(f"ZIP生成失败: {e}"); return None
 
 def _build_report_html(t, softwares, img_map, hdi):
+    _logo = logo_img(40)
+    _logo_html = (f'<div style="margin-bottom:10px"><img src="{_logo}" width="40" '
+                  f'height="40" style="width:40px;height:40px;display:inline-block"></div>'
+                  if _logo else "")
     html=f'''<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>暮黎软件日报 - {t}</title><style>
 *{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px 15px;line-height:1.6}}
 .container{{max-width:900px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,0.2);overflow:hidden}}
@@ -271,7 +294,7 @@ def _build_report_html(t, softwares, img_map, hdi):
 .download-icon{{font-size:18px;margin-right:10px}}
 .download-name{{font-size:14px;font-weight:500;flex:1}}
 .footer{{background:#f8f9fa;padding:20px;text-align:center;font-size:13px;color:#666;border-top:1px solid #e9ecef}}
-</style></head><body><div class="container"><div class="header"><h1>{_svg("package", 22, "currentColor")} 暮黎软件日报</h1><div class="date">{t}</div></div><div class="content">'''
+</style></head><body><div class="container"><div class="header">{_logo_html}<h1>{_svg("package", 22, "currentColor")} 暮黎软件日报</h1><div class="date">{t}</div></div><div class="content">'''
     for i,sw in enumerate(softwares,1):
         html+=f'<div class="software-card"><div class="software-title">{_svg("package", 16, "currentColor")} {i}. {sw["title"]}</div><div class="software-meta"><span>{_svg("event", 13, "currentColor")} {sw["update_time"]}</span><span>{_svg("camera", 13, "currentColor")} {len(sw["images"])}张截图</span><span>{_svg("link", 13, "currentColor")} {len(sw["downloads"])}个下载</span></div>'
         if sw.get('sections'):
@@ -444,6 +467,8 @@ def build_summer_html(softwares: list, date_label: str, source_label: str = "小
 
     cards_html = "\n".join(cards)
     n = len(softwares)
+    _logo = logo_img(40)
+    brand_logo = (f'<div class="logo">{_logo}</div>' if _logo else "")
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -468,7 +493,10 @@ body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC
   background:radial-gradient(circle,rgba(255,255,255,0.5),transparent 70%)}}
 .header::after{{content:"";position:absolute;right:-30px;bottom:-50px;width:160px;height:160px;border-radius:50%;
   background:radial-gradient(circle,rgba(255,255,255,0.28),transparent 70%)}}
-.header .logo{{position:relative;z-index:1;margin-bottom:6px}}
+.header .logo{{position:relative;z-index:1;width:58px;height:58px;margin:0 auto 10px;
+  background:#fff;border-radius:18px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 20px rgba(0,0,0,0.16)}}
+.header .logo img{{width:42px;height:42px;display:block}}
 .header h1{{position:relative;z-index:1;font-size:32px;font-weight:800;letter-spacing:3px;
   text-shadow:0 3px 0 rgba(180,70,0,0.25)}}
 .header .date{{position:relative;z-index:1;margin-top:10px;display:inline-block;background:rgba(255,255,255,0.28);
@@ -506,7 +534,7 @@ body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC
 </style></head>
 <body><div class="wrap">
 <div class="header">
-  <div class="logo">{_svg("drink", 40, "#fff")}</div>
+  {brand_logo}
   <h1>暮黎软件日报</h1>
   <div class="date">{date_label}</div>
   <div class="sub">夏日限定 · 每日精选软件 · @机器人搜索软件名即可下载</div>

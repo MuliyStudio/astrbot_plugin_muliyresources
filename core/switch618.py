@@ -27,6 +27,7 @@ import time
 import datetime
 import io
 import base64
+import random
 from urllib.parse import unquote, urlparse
 from .constants import logger, parse_cookie_string, extract_game_description
 
@@ -573,6 +574,30 @@ def parse_618_list(html: str) -> list:
                 "intro": "", "cover_b64": "", "shots_b64": [],
             })
     return games
+
+
+def get_random_game_618(cookie_str: str = "") -> dict | None:
+    """从 switch618 列表页随机取一款游戏，用于签到推荐（不抓详情）。"""
+    html = fetch_618(S618_PCGAMES_TPL.format(1), cookie_str, retries=2)
+    if not html:
+        return None
+    blocked = ("绅士", "黄油", "成人", "里番", "色情", "福利")
+    games = [
+        g for g in parse_618_list(html)
+        if g.get("title") and len(g["title"]) <= 30
+        and not any(k in (g.get("category") or "") or k in g["title"] for k in blocked)
+    ]
+    if not games:
+        return None
+    game = random.choice(games)
+    title = game["title"]
+    m = re.search(r"《([^》]+)》", title)
+    if m:
+        query = m.group(1).strip()
+    else:
+        query = re.split(r"\s*[（(]", title, maxsplit=1)[0].strip() or title
+    return {"name": title, "desc": game.get("category") or "switch618 游戏",
+            "query": query}
 
 
 def _is_today_618(span_text: str) -> bool:

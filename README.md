@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.15.3" alt="版本"></a>
+  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.0" alt="版本"></a>
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/astrbot.svg" alt="AstrBot 版本">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/platform.svg" alt="支持平台">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/novel.svg" alt="so-novel">
@@ -38,10 +38,12 @@
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
 | 📺 | **短剧搜索** | 搜索网盘贴吧短剧（wangpant8.com），选中后直接返回**夸克网盘资源链接** |
 | 📖 | **小说搜索与下载** | 基于 [so-novel](https://github.com/freeok/so-novel) 多源聚合，搜书名/作者 → 选源 → 选格式（txt/epub/html/pdf）→ 整本发送 |
+| 🖼️ | **长列表出图** | 小说 / 网盘 / 游戏 / 软件 / 影视 / 短剧搜索结果，以及积分卡、积分排行，条目多时自动排版成图片（思源黑体正文 + 思源宋体标题 + MDI 图标，带 logo、序号、页码与操作提示），回复数字选择与翻页指令不变 |
 | 📰 | **日报推送** | 软件 / 游戏 / 影视 / 短剧四套**定时日报**，自动渲染成图片以文件形式推送到群 |
 | 🎵 | **网易云语音名片** | 发网易云链接/小程序卡片，自动解析成**语音**发出来（内置直连，零部署） |
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
+| 💰 | **签到与积分** | `/签到` 领取每日积分，并生成一张带 **Bing 每日壁纸 / Epic 喜加一 / 每日一言 / 资源推荐** 的签到卡片；搜索资源按类型扣除积分，积分跨群聊全局共享 |
 | 🤚 | **表情包娱乐** | `摸摸 @某人` / `给你一脚 @某人` / `给我按摩 @某人` 生成 GIF |
 | 🔐 | **入群审核（QQ）** | 新成员入群 @ 他并发送「20-100 加减法」**图形验证码**，限时答对才留下，答错达上限/超时自动移出群聊 |
 
@@ -63,7 +65,22 @@
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/game_daily.jpg" width="45%" alt="游戏日报">
 </p>
 
-> 以上均为**真实运行效果**（从左到右、上到下）：短剧搜索 → 网盘链接 · 短剧日报（杂志风）· 影视日报（毛玻璃）· 软件日报（夏日风）· 游戏日报（卡通风）。
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/checkin_card.jpg" width="45%" alt="每日签到卡片">&nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_novel_card.jpg" width="45%" alt="小说搜索列表">
+</p>
+
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_pan_card.jpg" width="45%" alt="网盘资源列表">
+</p>
+
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_card.jpg" width="45%" alt="积分卡片">&nbsp;
+  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_rank.jpg" width="45%" alt="积分排行">
+</p>
+
+> 以上均为**真实运行效果**（从左到右、上到下）：短剧搜索 → 网盘链接 · 短剧日报（杂志风）· 影视日报（毛玻璃）· 软件日报（夏日风）· 游戏日报（卡通风）· 签到卡片 · 小说搜索列表 · 网盘资源列表 · 积分卡片 · 积分排行。
+> 条目较多的搜索列表会自动排版成图片（带 logo、序号、页码与操作提示），回复数字选择、翻页指令不变。
 
 ---
 
@@ -163,6 +180,10 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `/wyy <链接或ID>` | 所有人 | 手动解析网易云歌曲为语音 |
 | `/wyy_login` | 管理员 | 网易云扫码登录（自动写入会员 Cookie） |
 | `/novel_status` | 所有人 | 检查 so-novel 是否可达 |
+| `/签到` `/每日签到` | 所有人 | 每日签到领取积分（连续签到加成 + Bing 壁纸/天气/一言/推荐卡片） |
+| `/积分` `/我的积分` | 所有人 | 查看自己的积分、连续签到与搜索消耗 |
+| `/积分排行` | 所有人 | 查看积分排行榜（前 10 名） |
+| `/积分管理 <用户ID> <数量>` | 管理员 | 增减用户积分；`/积分管理 设置 <ID> <数量>` 直接设置，`/积分管理 查询 <ID>` 查询 |
 | `/movie_status` | 所有人 | 检查影视站可达性 |
 | `/入群验证 状态` | 管理员 | 查看入群审核配置与在验证人数 |
 | `/入群验证 测试` | 管理员 | 发送一张示例验证码图片（不修改群成员） |
@@ -230,6 +251,19 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `sonovel_timeout` | `30` | 搜索超时（秒） |
 | `sonovel_download_timeout` | `600` | 整本下载超时（秒） |
 
+### 🖼️ 长列表图片（list_card）
+
+> 小说 / 网盘 / 游戏 / 软件 / 影视 / 短剧搜索结果、积分卡与积分排行，条目较多时自动排版成一张图片（白纸 + 网格 + 暖黄高亮，思源黑体正文、思源宋体标题、MDI 图标）；回复数字选择、翻页指令与原来完全一致。
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `list_card_enabled` | `true` | 长列表图片总开关（关闭后全部回到纯文本） |
+| `list_card_threshold` | `5` | 结果条数大于该值就出图；条目少但纯文本很长（>400 字）时也会自动出图 |
+
+卡片用本地渲染：插件初始化时后台预热 Chromium，单张约 0.1–0.3 秒，同一张卡片 10 分钟内命中缓存；空闲 10 分钟自动释放浏览器内存。渲染失败或未安装 Playwright 时自动回退文本，功能不受影响。
+
+字体为 SIL OFL 授权的思源黑体 / 思源宋体子集（GB2312 常用字 + 标点，约 4.5 MB），随插件打包，不依赖服务器装没装中文字体。卡片文本会自动去掉 emoji 与装饰符号，不依赖 emoji 字体。
+
 ### 📺 短剧（shortdrama）
 
 | 配置项 | 默认 | 说明 |
@@ -241,6 +275,34 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `drama_group_ids` | `[]` | 短剧日报推送群号 |
 | `drama_report_max` | `12` | 短剧日报每期上限 |
 | `drama_timeout` | `15` | 请求超时（秒） |
+
+### 💰 签到与积分（points）
+
+> 积分按用户（平台 + 用户ID）全局保存，跨群聊/私聊共享；数据文件为 AstrBot data 目录下 `plugin_data/astrbot_plugin_muliyresources/points.json`，覆盖安装/热重载不丢。
+
+| 配置项 | 默认 | 说明 |
+|--------|------|------|
+| `points_enabled` | `false` | 签到积分总开关（关闭时搜索不扣积分） |
+| `points_initial` | `0` | 新用户初始积分 |
+| `checkin_points` | `10` | 每日签到基础积分 |
+| `checkin_streak_bonus` | `0` | 连续签到每日额外加成（第 2 天起） |
+| `checkin_streak_max` | `7` | 连续加成最多累计天数 |
+| `checkin_card_enabled` | `true` | 签到成功卡片（HTML 出图；失败自动回退文字） |
+| `checkin_info_module` | `epic` | 卡片左下内容：`epic` 喜加一 / `history` 历史上的今天 / `poem` 今日诗词 / `weather` 天气 / `off` 关闭 |
+| `checkin_weather_city` | 空 | 仅 `weather` 模式生效；留空按服务器出口 IP 自动定位 |
+| `checkin_recommend_dynamic` | `true` | 推荐优先从当前搜索源动态取：影视按 a123tv / 片库当前源随机、游戏按当前源随机、软件从 x6d 随机；失败回退静态清单 |
+| `checkin_recommend_games` | 见后台 | 推荐游戏清单，每行 `名称|一句话推荐`，每天轮换一款 |
+| `checkin_recommend_software` | 见后台 | 推荐软件清单，格式同上 |
+| `checkin_recommend_movies` | 见后台 | 推荐影视清单，格式同上 |
+| `points_cost_game` | `5` | 每次成功搜索游戏消耗积分（0=免费） |
+| `points_cost_software` | `5` | 每次成功搜索软件消耗积分 |
+| `points_cost_movie` | `5` | 每次成功搜索影视消耗积分 |
+| `points_cost_drama` | `5` | 每次成功搜索短剧消耗积分 |
+| `points_cost_novel` | `5` | 每次成功搜索小说消耗积分 |
+
+> 仅在**搜到结果**时扣费；未找到、接口失败或用户主动取消不扣积分。搜索前会检查余额，不足时提示先 `/签到`。
+>
+> 签到卡片数据源：Bing 每日壁纸、Epic 喜加一 / 历史上的今天 / 今日诗词 / UAPI 天气、Hitokoto 每日一言；Bing 按天缓存，Epic 缓存 30 分钟，历史/诗词缓存 6 小时，一言按天缓存，天气缓存 30 分钟，动态推荐按「类型 + 源 + 日期」缓存一天。任一接口失败时卡片会显示占位内容或自动降级，不影响签到本身。推荐清单留空即不显示该类型。
 
 ### 🔐 入群审核（verify）
 
@@ -349,7 +411,7 @@ docker run -d --name sonovel -p 7765:7765 \
 |------|------|:---:|
 | Pillow | 图片生成 / 日报兜底渲染 | ✅ 必需 |
 | requests / bs4 / apscheduler / httpx / aiohttp | 搜索 / 解析 / 调度 | ✅ 必需（AstrBot 一般自带） |
-| **Chromium**（`playwright install chromium`） | 日报高清 HTML 渲染 | ⚠️ 可选（**AstrBot 内置渲染 / Pillow 兜底，装好插件即出图**） |
+| **Chromium**（`playwright install chromium`） | 日报高清 HTML 渲染、搜索列表卡片出图 | ⚠️ 可选（日报有内置渲染 / Pillow 兜底；列表卡片没装 Chromium 时自动回退文本） |
 | **so-novel** | 小说搜索下载 | ⚠️ 可选（仅小说功能需要） |
 | ffmpeg | 网易云语音截取 | ⚠️ 可选（不装发完整音频） |
 

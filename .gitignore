@@ -6,3 +6,7 @@ __pycache__/
 # 调试日志
 qr_debug_logs/
 *.log
+
+# 本地预览产物 / 打包产物（不进仓库，也不进插件包）
+assets/preview/
+dist/

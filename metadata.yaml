@@ -7,7 +7,7 @@ desc: |
   附带网易云语音名片、爱奇艺/腾讯/优酷/芒果 VIP 视频解析、摸头杀等表情包娱乐，以及 QQ 入群图形验证码审核；支持 LLM 自然语言与命令式玩法，无需记命令。
 repo: https://github.com/MuliyStudio/astrbot_plugin_muliyresources
 astrbot_version: ">=4.20.0"
-version: "1.15.3"
+version: "1.16.0"
 social_link: https://github.com/MuliyStudio
 support_platforms:
   - aiocqhttp

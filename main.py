@@ -47,6 +47,7 @@ from .core.game import search_games, get_game_detail, resolve_download_link, gen
 from .core.switch618 import (
     search_games_618, get_game_detail_618, resolve_download_link_618,
     check_618_cookie, get_qr_image_bytes, submit_618_login, get_today_games_618,
+    get_random_game_618,
 )
 from .core.qr_login import (
     format_cookie_string, extract_xdgame_cookies,
@@ -55,14 +56,15 @@ from .core.qr_login import (
 from .core.software import (
     search_software, get_search_detail, generate_search_html,
     get_software_list, get_detail, sync_scrape, gen_list_image, gen_report_zip,
-    build_summer_html, download_summer_assets
+    build_summer_html, download_summer_assets, get_random_software_recent,
 )
 from .core.game_daily import (
-    get_today_games, build_cartoon_html, render_html_to_png
+    get_today_games, build_cartoon_html, render_html_to_png, get_random_game_xdgame,
 )
 from .core.movie_daily import (
     fetch_movie_daily, fetch_movie_daily_auto, build_glass_html,
-    render_glass_to_png, gen_report_zip as gen_movie_report_zip
+    render_glass_to_png, gen_report_zip as gen_movie_report_zip,
+    get_random_movie_muliy,
 )
 from .core.shortdrama import (
     search_dramas, get_drama_detail, fetch_latest_dramas,
@@ -74,15 +76,27 @@ try:
 except ImportError:
     render_pil_report = None
     trim_uniform_bottom = None
+try:
+    from .core.list_card import (
+        novel_card_html, pan_card_html, points_card_html, points_rank_html,
+        game_card_html, software_card_html, movie_card_html,
+        movie_new_card_html, drama_card_html,
+        render_list_card, prewarm as prewarm_list_card,
+    )
+except ImportError:  # 缺 playwright 时也要能正常加载插件（列表自动回退文本）
+    novel_card_html = pan_card_html = points_card_html = points_rank_html = None
+    game_card_html = software_card_html = movie_card_html = None
+    movie_new_card_html = drama_card_html = None
+    render_list_card = prewarm_list_card = None
 from .core.movie import (
-    search_movies, get_movie_detail,
+    search_movies, get_movie_detail, get_random_movie,
     format_movie_list, format_episodes, format_sources,
     select_episode, select_source,
     parse_play_page, build_play_url,
     MV_BASE_URL,
 )
 from .core.novel import (
-    search_novels, fetch_novel, download_novel_file,
+    search_novels, fetch_novel, download_novel, download_novel_file,
     check_sources, NovelApiError, NOVEL_FORMATS,
 )
 from .core.muliy_site import (
@@ -122,6 +136,13 @@ from .core.massage import (
 from .core.verify import (
     PIL_AVAILABLE as VERIFY_PIL_AVAILABLE,
     generate_arithmetic, render_captcha,
+)
+from .core.points import PointsStore
+from .core.avatars import fetch_avatars as fetch_point_avatars, split_key as split_point_key
+from .core.checkin_card import (
+    build_checkin_html, fetch_bing_wallpaper, fetch_hitokoto, fetch_weather,
+    fetch_info, pick_recommendations, recommendation_text, render_checkin_png,
+    DEFAULT_RECOMMEND_GAMES, DEFAULT_RECOMMEND_SOFTWARE, DEFAULT_RECOMMEND_MOVIES,
 )
 
 def _format_size(size_bytes: int) -> str:
@@ -222,8 +243,26 @@ _CONF_GROUPS = {
         "sonovel_base_url", "sonovel_token", "sonovel_search_limit",
         "sonovel_format", "sonovel_timeout", "sonovel_download_timeout",
     ],
+    "list_card": ["list_card_enabled", "list_card_threshold"],
+    "points": [
+        "points_enabled", "points_initial", "checkin_points",
+        "checkin_streak_bonus", "checkin_streak_max",
+        "points_cost_game", "points_cost_software", "points_cost_movie",
+        "points_cost_drama", "points_cost_novel",
+        "checkin_card_enabled", "checkin_info_module", "checkin_weather_city",
+        "checkin_recommend_dynamic",
+        "checkin_recommend_games", "checkin_recommend_software", "checkin_recommend_movies",    ],
 }
 _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
+
+# 积分消耗类型 → 展示名（搜索类命令 / LLM 工具共用）
+_POINTS_LABELS = {
+    "game": "游戏",
+    "software": "软件",
+    "movie": "影视",
+    "drama": "短剧",
+    "novel": "小说",
+}
 
 
 # ========================================================================
@@ -231,7 +270,7 @@ _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.15.3")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.0")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -283,11 +322,21 @@ class MuliyResourcesPlugin(Star):
         self._debug_log_path: str = ""
         self._reports_dir: str = ""
         self._reports_retention_days: int = 5
+        # 全局积分 / 每日签到（懒加载，数据文件位于 AstrBot data 目录）
+        self._points_store: Optional[PointsStore] = None
+        # 签到推荐动态抓取缓存 {(类型:来源:日期): (过期时间, 推荐或 None)}
+        self._rec_cache: dict = {}
 
     # ==================== 生命周期 ====================
 
     async def initialize(self):
         logger.info("暮黎资源聚合插件初始化")
+        # 长列表图片卡片：后台预热 Chromium（不阻塞初始化），首次搜索省掉冷启动
+        try:
+            if prewarm_list_card and self._get_config().get("list_card_enabled", True):
+                prewarm_list_card()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[暮黎资源] 列表卡片预热跳过: {e}")
         # issue4 兜底：本地配置文件恢复（防止 AstrBot 配置未落盘 / 卸载重装导致 Cookie 等数据丢失）
         # 关键：本地兜底文件位于插件目录【之外】的 AStrBot data 目录，卸载/覆盖重装插件目录不会删它；
         # 只要卸载时不勾选「同时删除插件配置文件」，这里就能把数据永久找回。
@@ -406,6 +455,33 @@ class MuliyResourcesPlugin(Star):
         #   等词也绝不应触发任何资源搜索逻辑（否则"新增小说搜索下载"会被误判为小说搜索）。
         #   这类请求直接放行给普通对话/画图流程，不注入搜索引导、不拦截。
         raw_text = event.message_str.strip()
+
+        # ★签到 / 积分查询快捷拦截：规则能处理的短指令直接回复，不经过 LLM（省 token、响应更快）
+        _short = re.sub(r"^[/／]\s*", "", raw_text).strip()
+        _short = re.sub(r"^(帮我|我要|我想|今天|麻烦|请)\s*", "", _short)
+        _short = re.sub(r"[!！。.～~\s]+$", "", _short)
+        if re.fullmatch(r"(每日签到|签到|打卡)(一下|下|吧|啦|呢|了)?", _short):
+            try:
+                await self._send_checkin(event)
+                event.stop_event()
+                return
+            except Exception as e:
+                logger.warning(f"[暮黎资源·积分] 签到快捷处理失败: {e}")
+        if re.fullmatch(r"积分(排行榜|排行|榜单|榜)", _short):
+            try:
+                await self._send_points_rank_card(event)
+                event.stop_event()
+                return
+            except Exception as e:
+                logger.warning(f"[暮黎资源·积分] 积分排行快捷处理失败: {e}")
+        if re.fullmatch(r"(我的)?积分(查询|余额|有多少|多少)?|查(一下)?积分", _short):
+            try:
+                await self._send_points_card(event)
+                event.stop_event()
+                return
+            except Exception as e:
+                logger.warning(f"[暮黎资源·积分] 积分查询快捷处理失败: {e}")
+
         _non_search_intent = (
             "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
             "介绍", "宣传", "公告", "海报", "banner", "logo",
@@ -616,6 +692,7 @@ class MuliyResourcesPlugin(Star):
         instruction = """【暮黎资源】你是资源搜索助手。
 - 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 短剧 search_drama / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
 - 搜索结果出来后，只需提醒用户：回复“序号”选择、说“下一页/上一页”翻页、选网盘回复“网盘名或序号”；这些由系统直接处理，严禁编造列表或链接。
+- 搜索资源会消耗积分（后台可配置），积分不足时系统会提示先发送 /签到；签到、积分查询、排行榜由系统直接回复，不要编造余额。
 - 严禁使用 markdown 表格（QQ 会乱码）。"""
         # 上架规范：严禁直接改写 system_prompt（会破坏上游模型上下文缓存命中率）。
         # 改为把指令作为「临时用户内容块」追加到用户消息之后——只在本次请求对模型可见、
@@ -858,6 +935,553 @@ class MuliyResourcesPlugin(Star):
                 return {}
         return {}
 
+    # ==================== 全局积分 / 每日签到 ====================
+
+    def _points_settings(self) -> dict:
+        """把积分相关配置归一化为统一结构（缺失 / 非法值自动回退默认）。"""
+        cfg = self._get_config()
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        def _int(key: str, default: int) -> int:
+            try:
+                return max(0, int(cfg.get(key, default)))
+            except (TypeError, ValueError):
+                return max(0, int(default))
+
+        def _list(key: str, default: list) -> list:
+            raw = cfg.get(key)
+            return self._parse_multi(default if raw is None else raw)
+
+        return {
+            "enabled": bool(cfg.get("points_enabled", False)),
+            "initial": _int("points_initial", 0),
+            "checkin": _int("checkin_points", 10),
+            "streak_bonus": _int("checkin_streak_bonus", 0),
+            "streak_max": max(1, _int("checkin_streak_max", 7)),
+            "card_enabled": bool(cfg.get("checkin_card_enabled", True)),
+            "info_module": str(cfg.get("checkin_info_module") or "epic").strip().lower(),
+            "weather_city": str(cfg.get("checkin_weather_city") or "").strip(),
+            "recommend_dynamic": bool(cfg.get("checkin_recommend_dynamic", True)),
+            "recommend_games": _list("checkin_recommend_games", DEFAULT_RECOMMEND_GAMES),
+            "recommend_software": _list("checkin_recommend_software", DEFAULT_RECOMMEND_SOFTWARE),
+            "recommend_movies": _list("checkin_recommend_movies", DEFAULT_RECOMMEND_MOVIES),
+            "costs": {
+                "game": _int("points_cost_game", 5),
+                "software": _int("points_cost_software", 5),
+                "movie": _int("points_cost_movie", 5),
+                "drama": _int("points_cost_drama", 5),
+                "novel": _int("points_cost_novel", 5),
+            },
+        }
+
+    def _points_db(self) -> PointsStore:
+        """懒加载积分存储（路径依赖 AstrBot data 目录，不能在 __init__ 里固定）。"""
+        if self._points_store is None:
+            self._points_store = PointsStore(
+                os.path.join(self._plugin_data_dir(), "points.json"),
+                tz_getter=lambda: self._timezone,
+            )
+        return self._points_store
+
+    def _points_user(self, event: AstrMessageEvent) -> tuple[str, str, str]:
+        """返回 (存储键, 用户ID, 昵称)。键包含平台标识，跨群聊/私聊共享。"""
+        try:
+            uid = str(event.get_sender_id() or "")
+        except Exception:
+            uid = ""
+        try:
+            platform = str(event.get_platform_id() or "")
+        except Exception:
+            platform = ""
+        try:
+            name = str(event.get_sender_name() or "")
+        except Exception:
+            name = ""
+        if not uid:
+            # 极少数平台取不到用户 ID 时退回会话标识，避免所有用户共用一个 anonymous 账户
+            try:
+                uid = str(getattr(event, "unified_msg_origin", "") or "anonymous")
+            except Exception:
+                uid = "anonymous"
+        return PointsStore.make_key(platform, uid), uid, name
+
+    def _points_guard(self, event: AstrMessageEvent, kind: str) -> Optional[str]:
+        """搜索前的余额检查：None=放行；返回文本=积分不足，调用方直接发给用户。"""
+        s = self._points_settings()
+        if not s["enabled"]:
+            return None
+        cost = int(s["costs"].get(kind, 0) or 0)
+        if cost <= 0:
+            return None
+        key, _uid, name = self._points_user(event)
+        try:
+            user = self._points_db().get(key, name, s["initial"])
+            balance = int(user.get("points", 0) or 0)
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 读取余额失败（已放行搜索）: {e}")
+            return None
+        if balance >= cost:
+            return None
+        label = _POINTS_LABELS.get(kind, kind)
+        return (f"【暮黎资源·积分】\n"
+                f"💰 搜索{label}需要 {cost} 积分，你当前只有 {balance} 积分。\n"
+                f"📅 发送 /签到 领取每日积分后再试。")
+
+    def _points_charge(self, event: AstrMessageEvent, kind: str,
+                       keyword: str = "") -> str:
+        """搜到结果后扣费并返回附加提示（功能关闭 / 消耗为 0 时返回空串）。"""
+        s = self._points_settings()
+        if not s["enabled"]:
+            return ""
+        cost = int(s["costs"].get(kind, 0) or 0)
+        if cost <= 0:
+            return ""
+        key, _uid, name = self._points_user(event)
+        try:
+            ok, balance = self._points_db().spend(key, cost, name, s["initial"])
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 扣费失败（已放行搜索）: {e}")
+            return ""
+        logger.info(f"[暮黎资源·积分] 扣费 {kind} cost={cost} keyword={keyword[:20]!r} "
+                    f"ok={ok} balance={balance}")
+        if not ok:
+            return f"\n\n⚠️ 积分不足，本次未扣除 {cost} 积分。"
+        return f"\n\n💰 本次搜索消耗 {cost} 积分，剩余 {balance} 积分（发送 /签到 领取每日积分）"
+
+    def _points_card_data(self, event: AstrMessageEvent) -> Optional[dict]:
+        """读取积分卡所需的全部数据（文本与图片共用，避免读两次库）。"""
+        s = self._points_settings()
+        key, uid, name = self._points_user(event)
+        try:
+            user = self._points_db().get(key, name, s["initial"])
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 读取积分卡失败: {e}")
+            return None
+        today = self._points_day().strftime("%Y-%m-%d")
+        last = str(user.get("last_checkin") or "")
+        return {
+            "name": name or uid or "用户",
+            "uid": uid,
+            "balance": int(user.get("points", 0) or 0),
+            "streak": int(user.get("streak", 0) or 0),
+            "last_checkin": last,
+            "total_earned": int(user.get("total_earned", 0) or 0),
+            "total_spent": int(user.get("total_spent", 0) or 0),
+            "costs": {k: int(s["costs"].get(k, 0) or 0) for k in _POINTS_LABELS},
+            "labels": dict(_POINTS_LABELS),
+            "enabled": bool(s["enabled"]),
+            "today": today,
+            "today_checked": last == today,
+            "date_label": today,
+        }
+
+    def _points_card_text(self, d: dict) -> str:
+        costs = " ｜ ".join(f"{d['labels'][k]} {d['costs'][k]}" for k in d["labels"])
+        lines = [
+            "【暮黎资源·积分】",
+            f"👤 {d['name']}",
+            f"💰 当前积分：{d['balance']}",
+            f"🔥 连续签到：{d['streak']} 天 ｜ 📅 最近签到：{d['last_checkin'] or '从未签到'}",
+            f"🧾 累计获得 {d['total_earned']} ｜ 累计消耗 {d['total_spent']}",
+            f"📌 搜索消耗：{costs}",
+        ]
+        if d["enabled"]:
+            lines.append("📅 发送 /签到 领取每日积分。")
+        else:
+            lines.append("⚠️ 积分系统当前未开启（仅展示历史数据）。")
+        return "\n".join(lines)
+
+    def _points_card(self, event: AstrMessageEvent) -> str:
+        d = self._points_card_data(event)
+        if not d:
+            return "【暮黎资源·积分】\n⚠️ 积分数据读取失败，请稍后再试。"
+        return self._points_card_text(d)
+
+    async def _send_points_card(self, event: AstrMessageEvent) -> None:
+        """积分卡：优先发图片卡片，失败/未启用时回退文本。"""
+        d = self._points_card_data(event)
+        if not d:
+            await event.send(MessageChain([Plain(
+                "【暮黎资源·积分】\n⚠️ 积分数据读取失败，请稍后再试。")]))
+            return
+        cards_on, _ = self._list_card_cfg()
+        html = ""
+        if cards_on and points_card_html:
+            try:
+                html = points_card_html(**d)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 积分卡构建失败，回退文本: {e}")
+        img = None
+        if html and render_list_card:
+            try:
+                img = await asyncio.to_thread(render_list_card, html)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 积分卡渲染异常，回退文本: {e}")
+        if img and await self._send_card_image(event, img, "暮黎_积分.jpg"):
+            return
+        await event.send(MessageChain([Plain(self._points_card_text(d))]))
+
+    def _points_day(self) -> datetime.date:
+        """签到日期按插件时区计算（默认 Asia/Shanghai）。"""
+        try:
+            if self._timezone:
+                return datetime.datetime.now(self._timezone).date()
+        except Exception:
+            pass
+        return datetime.date.today()
+
+    def _recommend_source(self, kind: str) -> str:
+        """返回动态推荐应使用的源；空串表示该类型暂不做动态（回退静态清单）。"""
+        if kind == "movie":
+            cfg = self._get_config()
+            if not isinstance(cfg, dict):
+                return "a123tv"
+            forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
+            forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
+            client = self._get_muliy_client() if (forced_new or not forced_a123) else None
+            # 片库与 a123tv 各自从自己的首页随机取，保证推荐一定能在当前源搜到
+            return "muliy" if client is not None else "a123tv"
+        if kind == "game":
+            return self._game_source()
+        if kind == "software":
+            return "x6d"
+        return ""
+
+    def _dynamic_recommendation(self, kind: str, day: datetime.date):
+        """按当前搜索源取一个动态推荐；结果按「类型:源:日期」缓存一天。"""
+        source = self._recommend_source(kind)
+        if not source:
+            return None
+        cache_key = f"{kind}:{source}:{day.isoformat()}"
+        hit = self._rec_cache.get(cache_key)
+        if hit and hit[0] > time.time():
+            return hit[1]
+
+        item = None
+        try:
+            if kind == "movie":
+                if source == "muliy":
+                    client = self._get_muliy_client()
+                    item = get_random_movie_muliy(client) if client else None
+                else:
+                    item = get_random_movie()
+            elif kind == "game":
+                if source == "switch618":
+                    item = get_random_game_618(self._g_cookie())
+                else:
+                    item = get_random_game_xdgame()
+            elif kind == "software":
+                item = get_random_software_recent()
+            if isinstance(item, dict) and item.get("name"):
+                logger.info(f"[暮黎资源·签到] 动态推荐 {kind}/{source}: {item['name']}")
+            else:
+                item = None
+        except Exception as e:
+            logger.warning(f"[暮黎资源·签到] 动态推荐失败 {kind}/{source}: {e}")
+            item = None
+
+        # 成功缓存一天；失败只缓存 10 分钟，避免把临时故障锁死一整天
+        self._rec_cache[cache_key] = (time.time() + (86400 if item else 600), item)
+        return item
+
+    async def _pick_checkin_recs_async(self, s: dict, day: datetime.date) -> list:
+        pools = {
+            "game": list(s.get("recommend_games") or []),
+            "software": list(s.get("recommend_software") or []),
+            "movie": list(s.get("recommend_movies") or []),
+        }
+        if s.get("recommend_dynamic", True):
+            kinds = ("movie", "game", "software")
+            tasks = [
+                asyncio.wait_for(
+                    asyncio.to_thread(self._dynamic_recommendation, kind, day), timeout=9)
+                for kind in kinds
+            ]
+            got = await asyncio.gather(*tasks, return_exceptions=True)
+            for kind, item in zip(kinds, got):
+                if isinstance(item, BaseException) or not isinstance(item, dict):
+                    continue
+                if item.get("name"):
+                    pools[kind] = [item]
+        try:
+            return pick_recommendations(
+                pools["game"], pools["software"], pools["movie"], day)
+        except Exception:
+            return []
+
+    def _perform_checkin(self, event: AstrMessageEvent) -> dict:
+        """执行签到并返回原始结果；error 字段表示未开启 / 存储失败。"""
+        s = self._points_settings()
+        if not s["enabled"]:
+            return {"error": "disabled"}
+        key, uid, name = self._points_user(event)
+        try:
+            r = self._points_db().checkin(
+                key, s["checkin"], s["streak_bonus"], s["streak_max"], name, s["initial"])
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 签到失败: {e}")
+            return {"error": "io"}
+        r.update({"name": name or uid, "uid": uid, "key": key})
+        if not r.get("duplicate"):
+            logger.info(f"[暮黎资源·积分] 签到 {key} earned={r['earned']} "
+                        f"streak={r['streak']} balance={r['balance']}")
+        return r
+
+    def _format_checkin_text(self, r: dict) -> str:
+        if r.get("error") == "disabled":
+            return "【暮黎资源·签到】\n⚠️ 签到积分功能尚未开启，请联系管理员。"
+        if r.get("error"):
+            return "【暮黎资源·签到】\n⚠️ 签到数据保存失败，请稍后再试。"
+        if r.get("duplicate"):
+            return (f"【暮黎资源·签到】\n"
+                    f"📅 今天已经签到过啦，明天再来～\n"
+                    f"💰 当前积分：{r['balance']} ｜ 🔥 连续签到：{r['streak']} 天")
+        bonus_txt = f"（连续 {r['streak']} 天，额外 +{r['bonus']}）" if r.get("bonus") else ""
+        return (f"【暮黎资源·签到】\n"
+                f"✅ 签到成功，获得 {r['earned']} 积分{bonus_txt}\n"
+                f"💰 当前积分：{r['balance']} ｜ 🔥 连续签到：{r['streak']} 天\n"
+                f"📅 明天再来可继续累计连续签到。")
+
+    def _do_checkin(self, event: AstrMessageEvent) -> str:
+        """纯文本签到结果（保留给旧调用方 / 兜底）。"""
+        return self._format_checkin_text(self._perform_checkin(event))
+
+    async def _send_checkin(self, event: AstrMessageEvent) -> None:
+        """签到入口：优先发送 HTML 卡片图，失败时退回文本。"""
+        if getattr(event, "_muliy_checkin_sent", False):
+            return
+        try:
+            setattr(event, "_muliy_checkin_sent", True)
+        except Exception:
+            pass
+
+        r = self._perform_checkin(event)
+        text = self._format_checkin_text(r)
+        s = self._points_settings()
+        day = self._points_day()
+        recs = await self._pick_checkin_recs_async(s, day)
+
+        if not r.get("error") and s.get("card_enabled", True):
+            try:
+                img = await self._build_checkin_card(r, s, recs, day)
+            except Exception as e:
+                logger.warning(f"[暮黎资源·签到] 卡片生成失败，回退文本: {e}")
+                img = None
+            if img and await self._send_checkin_image(event, img):
+                return
+
+        if not r.get("error"):
+            rec_text = recommendation_text(recs)
+            if rec_text:
+                text = f"{text}\n\n{rec_text}"
+        try:
+            await event.send(MessageChain([Plain(text)]))
+        except Exception as e:
+            logger.error(f"[暮黎资源·签到] 文本发送失败: {e}")
+
+    async def _build_checkin_card(self, r: dict, s: dict, recs: list,
+                                  day: datetime.date) -> bytes | None:
+        """并行抓壁纸 / 左下信息模块 / 一言，拼 HTML 并渲染为图片。"""
+        cfg = self._get_config()
+        channel = (cfg.get("browser_channel", "") or "").strip() if isinstance(cfg, dict) else ""
+        exe = (cfg.get("browser_exe", "") or "").strip() if isinstance(cfg, dict) else ""
+        info_module = (s.get("info_module") or "epic").strip().lower()
+
+        tasks = [asyncio.wait_for(
+            asyncio.to_thread(fetch_bing_wallpaper, day.isoformat(), 5), timeout=7)]
+        if info_module == "off":
+            tasks.append(asyncio.sleep(0, result=None))
+        else:
+            tasks.append(asyncio.wait_for(
+                asyncio.to_thread(fetch_info, info_module, day,
+                                  s.get("weather_city", ""), 4), timeout=6))
+        tasks.append(asyncio.wait_for(
+            asyncio.to_thread(fetch_hitokoto, 4), timeout=5))
+        got = await asyncio.gather(*tasks, return_exceptions=True)
+
+        wallpaper = None if isinstance(got[0], BaseException) else got[0]
+        info = None if isinstance(got[1], BaseException) else got[1]
+        quote = None if isinstance(got[2], BaseException) else got[2]
+        if not isinstance(quote, dict) or not quote.get("text"):
+            quote = {"text": "生活明朗，万物可爱。", "from": "暮黎资源"}
+
+        html = build_checkin_html(
+            user_name=r.get("name") or "",
+            date_label=day.strftime("%Y年%m月%d日"),
+            weekday="星期" + "一二三四五六日"[day.weekday()],
+            earned=int(r.get("earned", 0) or 0),
+            bonus=int(r.get("bonus", 0) or 0),
+            streak=int(r.get("streak", 0) or 0),
+            balance=int(r.get("balance", 0) or 0),
+            duplicate=bool(r.get("duplicate")),
+            wallpaper=wallpaper,
+            info=info,
+            quote_data=quote,
+            recommendations=recs,
+            info_module=info_module,
+        )
+        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        img = await asyncio.to_thread(
+            render_checkin_png, html, font_path, 720, channel, exe)
+        if img:
+            logger.info(f"[暮黎资源·签到] 卡片渲染完成（Playwright，{len(img)//1024}KB）")
+            return img
+        img = await self._html_render_astrbot(html, 720)
+        if img:
+            img = await self._finalize_report_image(img, "签到卡片")
+            logger.info(f"[暮黎资源·签到] 卡片渲染完成（AstrBot T2I，{len(img)//1024}KB）")
+        return img
+
+    async def _send_checkin_image(self, event: AstrMessageEvent, img_bytes: bytes) -> bool:
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=_img_ext(img_bytes), prefix="checkin_")
+            os.close(fd)
+            with open(tmp, "wb") as f:
+                f.write(img_bytes)
+            await event.send(MessageChain([ImageComponent(file=tmp)]))
+            logger.info(f"[暮黎资源·签到] 卡片已发送（{len(img_bytes)//1024}KB）")
+            return True
+        except Exception as e:
+            logger.warning(f"[暮黎资源·签到] 图片发送失败，回退文本: {e}")
+            return False
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+
+    def _points_rank_text(self, limit: int = 10) -> str:
+        s = self._points_settings()
+        if not s["enabled"]:
+            return "【暮黎资源·积分排行】\n⚠️ 积分系统当前未开启。"
+        try:
+            rows = self._points_db().top(max(1, int(limit)))
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 读取排行失败: {e}")
+            return "【暮黎资源·积分排行】\n⚠️ 积分数据读取失败，请稍后再试。"
+        if not rows:
+            return "【暮黎资源·积分排行】\n📭 还没有人获得积分，发送 /签到 抢个第一吧～"
+        lines = [f"【暮黎资源·积分排行】（前 {len(rows)} 名）"]
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for i, (key, user) in enumerate(rows, 1):
+            nm = user.get("name") or key.split(":", 1)[-1]
+            lines.append(f"{medals.get(i, f'{i}.')} {nm} — {int(user.get('points', 0) or 0)} 积分")
+        return "\n".join(lines)
+
+
+    def _qq_platform_ids(self) -> set:
+        """从平台管理器里找出「确实是 QQ / OneBot」的实例 ID。
+
+        积分键里的平台段来自 event.get_platform_id()，而 AstrBot 允许给平台实例
+        起任意 ID（如 muli、qq-main），只靠关键字匹配会漏掉 → 头像一直取不到。
+        这里直接问平台管理器，用适配器名（aiocqhttp/onebot/napcat…）判定。
+        """
+        ids: set = set()
+        try:
+            insts = list(self.context.platform_manager.get_insts())
+        except Exception:
+            return ids
+        for p in insts:
+            try:
+                meta = p.meta()
+                pid = str(getattr(meta, "id", "") or "")
+                name = str(getattr(meta, "name", "") or "")
+            except Exception:
+                continue
+            blob = f"{pid} {name}".lower()
+            if any(k in blob for k in ("official", "guild")):
+                continue
+            if any(k in blob for k in ("aiocqhttp", "onebot", "cqhttp",
+                                       "qq", "napcat", "lagrange")):
+                if pid:
+                    ids.add(pid)
+        return ids
+
+    def _points_rank_data(self, event: AstrMessageEvent | None = None,
+                          limit: int = 10):
+        """读取排行榜数据，返回 (data, 错误文本)。"""
+        s = self._points_settings()
+        if not s["enabled"]:
+            return None, "【暮黎资源·积分排行】\n⚠️ 积分系统当前未开启。"
+        try:
+            all_rows = self._points_db().top(1000)
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 读取排行失败: {e}")
+            return None, "【暮黎资源·积分排行】\n⚠️ 积分数据读取失败，请稍后再试。"
+        if not all_rows:
+            return None, "【暮黎资源·积分排行】\n📭 还没有人获得积分，发送 /签到 抢个第一吧～"
+
+        me_key = self._points_user(event)[0] if event is not None else ""
+        me_rank = me_points = 0
+        for i, (k, u) in enumerate(all_rows, 1):
+            if k == me_key:
+                me_rank = i
+                me_points = int(u.get("points", 0) or 0)
+                break
+
+        top_rows = all_rows[:max(1, int(limit))]
+        keys = [k for k, _ in top_rows]
+        if me_key and me_rank > len(top_rows):
+            keys.append(me_key)
+        try:
+            avatars = fetch_point_avatars(keys, qq_platforms=self._qq_platform_ids())
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[暮黎资源·积分] 头像获取失败（改用首字占位）: {e}")
+            avatars = {}
+
+        rows = []
+        for i, (k, u) in enumerate(top_rows, 1):
+            _platform, uid = split_point_key(k)
+            rows.append({
+                "rank": i,
+                "name": u.get("name") or uid or "匿名用户",
+                "points": int(u.get("points", 0) or 0),
+                "streak": int(u.get("streak", 0) or 0),
+                "avatar": avatars.get(k, ""),
+                "me": k == me_key,
+            })
+        return {
+            "rows": rows,
+            "total": len(all_rows),
+            "me_key": me_key,
+            "me_rank": me_rank,
+            "me_points": me_points,
+            "date_label": self._points_day().strftime("%Y-%m-%d"),
+        }, ""
+
+    async def _send_points_rank_card(self, event: AstrMessageEvent,
+                                     limit: int = 10) -> None:
+        """积分排行榜：图片优先，失败回退文本。"""
+        data, err = None, ""
+        try:
+            data, err = await asyncio.to_thread(
+                self._points_rank_data, event, limit)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[列表卡片] 排行榜数据准备失败: {e}")
+            err = "【暮黎资源·积分排行】\n⚠️ 积分数据读取失败，请稍后再试。"
+        if not data:
+            await event.send(MessageChain([Plain(err or "积分排行读取失败，请稍后再试。")]))
+            return
+        cards_on, _ = self._list_card_cfg()
+        html = ""
+        if cards_on and points_rank_html:
+            try:
+                html = points_rank_html(**data)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 排行榜卡片构建失败，回退文本: {e}")
+        img = None
+        if html and render_list_card:
+            try:
+                img = await asyncio.to_thread(render_list_card, html)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 排行榜渲染异常，回退文本: {e}")
+        if img and await self._send_card_image(event, img, "暮黎_积分排行.jpg"):
+            return
+        await event.send(MessageChain([Plain(self._points_rank_text(limit))]))
+
     async def _check_cookie_silent(self) -> str | None:
         """
         静默检查 Cookie 有效性，不对外发消息。
@@ -998,12 +1622,12 @@ class MuliyResourcesPlugin(Star):
             if text == "下一页": ses["page"] = 0 if (ses.get("page", 0) + 1) * ps >= t else ses.get("page", 0) + 1
             else: pp = ses.get("page", 0) - 1; ses["page"] = (t + ps - 1) // ps - 1 if pp < 0 else pp
             ses["_updated"] = time.time()
-            await event.send(MessageChain([Plain(self._format_sw_page(ses))])); return
+            await self._send_search_page(event, "software", self._format_sw_page(ses), ses=ses); return
         if text.startswith("跳"):
             m = re.search(r"\d+", text)
             if m:
                 ps = ses.get("page_size", 8); t = len(ses["results"]); pt = (t + ps - 1) // ps; n = int(m.group())
-                if 1 <= n <= pt: ses["page"] = n - 1; ses["_updated"] = time.time(); await event.send(MessageChain([Plain(self._format_sw_page(ses))])); return
+                if 1 <= n <= pt: ses["page"] = n - 1; ses["_updated"] = time.time(); await self._send_search_page(event, "software", self._format_sw_page(ses), ses=ses); return
         num = self._parse_natural_number(text)
         if num == -2: num = len(ses["results"]) - (ses.get("page", 0) * ses.get("page_size", 8))
         if num == 0: self._search_sessions.delete(event); await event.send(MessageChain([Plain("已取消。")])); return
@@ -1038,12 +1662,12 @@ class MuliyResourcesPlugin(Star):
             if text == "下一页": ses["page"] = 0 if (ses.get("page", 0) + 1) * ps >= t else ses.get("page", 0) + 1
             else: pp = ses.get("page", 0) - 1; ses["page"] = (t + ps - 1) // ps - 1 if pp < 0 else pp
             ses["_updated"] = time.time()
-            await event.send(MessageChain([Plain(self._format_game_page(ses))])); return
+            await self._send_search_page(event, "game", self._format_game_page(ses), ses=ses); return
         if text.startswith("跳"):
             m = re.search(r"\d+", text)
             if m:
                 ps = ses.get("page_size", 8); t = len(ses["results"]); pt = (t + ps - 1) // ps; n = int(m.group())
-                if 1 <= n <= pt: ses["page"] = n - 1; ses["_updated"] = time.time(); await event.send(MessageChain([Plain(self._format_game_page(ses))])); return
+                if 1 <= n <= pt: ses["page"] = n - 1; ses["_updated"] = time.time(); await self._send_search_page(event, "game", self._format_game_page(ses), ses=ses); return
         num = self._parse_natural_number(text)
         if num == -2: num = len(ses["results"]) - (ses.get("page", 0) * ses.get("page_size", 8))
         if num == 0: self._sessions.delete(event); await event.send(MessageChain([Plain("已取消。")])); return
@@ -1083,6 +1707,9 @@ class MuliyResourcesPlugin(Star):
         allowed, reason, _ = await self._audit_search_keyword(event, game_name)
         if not allowed:
             return f"【暮黎资源】⚠️ {reason}"
+        _blocked = self._points_guard(event, "game")
+        if _blocked:
+            return _blocked
         config = self._get_config(); ps = 8
         fm = min(int(config.get("max_search_results",32) if isinstance(config,dict) else 32), 48)
         tag = "【暮黎资源】"
@@ -1104,6 +1731,7 @@ class MuliyResourcesPlugin(Star):
         if not results:
             logger.info(f"[暮黎资源] search_game('{game_name}') → 0条")
             return f"{tag} 未找到与「{game_name}」相关的游戏。请换个更精确的关键词再试。"
+        _charge_txt = self._points_charge(event, "game", game_name)
         # 防覆盖：已有同关键词会话则复用
         existing = self._sessions.get(event)
         if existing and existing.get("keyword") == game_name:
@@ -1114,8 +1742,8 @@ class MuliyResourcesPlugin(Star):
         t = len(results); pt = (t + ps - 1) // ps
         # ★v4 关键修复：工具自己直接发格式化页面（和翻页走同一条路径，风格 100% 一致）
         page_txt = self._format_game_page(self._sessions.get(event))
-        final_txt = tag + f" 🎮 游戏搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-        await event.send(MessageChain([Plain(final_txt)]))
+        final_txt = tag + f" 🎮 游戏搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+        await self._send_search_page(event, "game", final_txt, ses=self._sessions.get(event), note=_charge_txt)
         # 标记 _llm_handled 让 _strip_llm_chitchat_after_tool 清空 LLM 后续多嘴输出
         self._sessions.update(event, _llm_handled=True)
         logger.info(f"[暮黎资源] search_game('{game_name}') → {len(results)}条 → 直接 send")
@@ -1135,6 +1763,9 @@ class MuliyResourcesPlugin(Star):
         allowed, reason, _ = await self._audit_search_keyword(event, software_name)
         if not allowed:
             return f"【暮黎资源】⚠️ {reason}"
+        _blocked = self._points_guard(event, "software")
+        if _blocked:
+            return _blocked
         ps = 8; tag = "【暮黎资源】"
         try: results = await asyncio.to_thread(search_software, software_name, 32)
         except Exception as e:
@@ -1143,6 +1774,7 @@ class MuliyResourcesPlugin(Star):
         if not results:
             logger.info(f"[暮黎资源] search_software('{software_name}') → 0条")
             return f"{tag} 未找到与「{software_name}」相关的资源。请换个更精确的关键词再试。"
+        _charge_txt = self._points_charge(event, "software", software_name)
         existing = self._search_sessions.get(event)
         if existing and existing.get("keyword") == software_name:
             logger.info(f"[暮黎资源] search_software('{software_name}') → 复用已有会话")
@@ -1152,8 +1784,8 @@ class MuliyResourcesPlugin(Star):
         t = len(results); pt = (t + ps - 1) // ps
         # ★v4 关键修复：工具自己直接发格式化页面（和翻页走同一条路径，风格 100% 一致）
         page_txt = self._format_sw_page(self._search_sessions.get(event))
-        final_txt = tag + f" 💿 软件搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-        await event.send(MessageChain([Plain(final_txt)]))
+        final_txt = tag + f" 💿 软件搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+        await self._send_search_page(event, "software", final_txt, ses=self._search_sessions.get(event), note=_charge_txt)
         # 标记 _llm_handled 让 _strip_llm_chitchat_after_tool 清空 LLM 后续多嘴输出
         self._search_sessions.update(event, _llm_handled=True)
         logger.info(f"[暮黎资源] search_software('{software_name}') → {len(results)}条 → 直接 send")
@@ -1171,6 +1803,9 @@ class MuliyResourcesPlugin(Star):
         allowed, reason, _ = await self._audit_search_keyword(event, movie_name)
         if not allowed:
             return f"【暮黎资源】⚠️ {reason}"
+        _blocked = self._points_guard(event, "movie")
+        if _blocked:
+            return _blocked
         ps = 8; tag = "【暮黎资源】"
         # 影视源自动切换：配置了片库 Cookie → 新站（在线播放+网盘）；
         # 未配置 Cookie → 自动回退 a123tv 旧站（仅在线播放）。
@@ -1189,6 +1824,7 @@ class MuliyResourcesPlugin(Star):
                 return f"{tag} 影视搜索失败：{str(e)[:120]}"
             if not results:
                 return f"{tag} 未找到与「{movie_name}」相关的影视。请换个关键词。"
+            _charge_txt = self._points_charge(event, "movie", movie_name)
             self._movie_sessions_new.set(event, {
                 "stage": "select_movie_new", "keyword": movie_name,
                 "results": results, "page": 0, "page_size": ps,
@@ -1196,8 +1832,8 @@ class MuliyResourcesPlugin(Star):
             })
             t = len(results); pt = (t + ps - 1) // ps
             page_txt = format_movie_list_new(results, movie_name, 0, ps)
-            final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-            await event.send(MessageChain([Plain(final_txt)]))
+            final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+            await self._send_search_page(event, "movie_new", final_txt, results=results, keyword=movie_name, page=0, page_size=ps, note=_charge_txt)
             logger.info(f"[暮黎资源] search_movie(新站,'{movie_name}') → {len(results)}条 → 直接 send")
             return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
@@ -1209,13 +1845,14 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 影视搜索失败：{str(e)[:120]}"
         if not results:
             return f"{tag} 未找到与「{movie_name}」相关的影视。请换个关键词。"
+        _charge_txt = self._points_charge(event, "movie", movie_name)
         self._movie_sessions.set(event, {"stage": "select_movie", "keyword": movie_name,
                                          "results": results, "page": 0, "page_size": ps,
                                          "_updated": time.time(), "_llm_handled": True})
         t = len(results); pt = (t + ps - 1) // ps
         page_txt = self._format_mv_page(self._movie_sessions.get(event))
-        final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-        await event.send(MessageChain([Plain(final_txt)]))
+        final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+        await self._send_search_page(event, "movie", final_txt, ses=self._movie_sessions.get(event), note=_charge_txt)
         logger.info(f"[暮黎资源] search_movie('{movie_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
@@ -1233,6 +1870,9 @@ class MuliyResourcesPlugin(Star):
         cfg = self._get_config()
         if isinstance(cfg, dict) and not cfg.get("drama_enabled", True):
             return "【暮黎资源·短剧】短剧搜索已在后台关闭。"
+        _blocked = self._points_guard(event, "drama")
+        if _blocked:
+            return _blocked
         try:
             limit = int(cfg.get("drama_search_limit", 20) or 20) if isinstance(cfg, dict) else 20
         except (TypeError, ValueError):
@@ -1252,6 +1892,7 @@ class MuliyResourcesPlugin(Star):
         results = r.get("items", [])
         if not results:
             return f"{tag} 未找到与「{drama_name}」相关的短剧，换个关键词试试？"
+        _charge_txt = self._points_charge(event, "drama", drama_name)
         self._drama_sessions.set(event, {
             "stage": "select_drama", "keyword": drama_name, "results": results,
             "page": 0, "page_size": ps, "timeout": timeout,
@@ -1259,8 +1900,8 @@ class MuliyResourcesPlugin(Star):
         })
         t = len(results); pt = (t + ps - 1) // ps
         page_txt = self._format_drama_page(self._drama_sessions.get(event))
-        final_txt = tag + f" 🎬 短剧搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-        await event.send(MessageChain([Plain(final_txt)]))
+        final_txt = tag + f" 🎬 短剧搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+        await self._send_search_page(event, "drama", final_txt, ses=self._drama_sessions.get(event), note=_charge_txt)
         logger.info(f"[暮黎资源] search_drama('{drama_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个短剧结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
@@ -1276,6 +1917,9 @@ class MuliyResourcesPlugin(Star):
         allowed, reason, _ = await self._audit_search_keyword(event, novel_name)
         if not allowed:
             return f"【暮黎资源】⚠️ {reason}"
+        _blocked = self._points_guard(event, "novel")
+        if _blocked:
+            return _blocked
         ps = 8; tag = "【暮黎资源·小说】"
         base, token, limit, fmts, timeout, dl_timeout = self._novel_cfg()
         if not requests:
@@ -1292,15 +1936,24 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 小说搜索异常：{str(e)[:120]}"
         if not results:
             return f"{tag} 未找到与「{novel_name}」相关的小说，换个书名或作者名试试？"
+        _charge_txt = self._points_charge(event, "novel", novel_name)
         self._novel_sessions.set(event, {
             "keyword": novel_name, "results": results, "page": 0,
             "page_size": ps, "stage": "select_novel", "_updated": time.time(),
             "_llm_handled": True,
         })
         t = len(results); pt = (t + ps - 1) // ps
-        page_txt = self._format_novel_page(self._novel_sessions.get(event))
-        final_txt = tag + f" 📚 小说搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt
-        await event.send(MessageChain([Plain(final_txt)]))
+        ses_now = self._novel_sessions.get(event)
+        page_txt = self._format_novel_page(ses_now)
+        final_txt = tag + f" 📚 小说搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
+        card = ""
+        if novel_card_html:
+            try:
+                card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT, note=_charge_txt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
+        await self._send_list_card(event, html=card, text=final_txt,
+                                   total=t, label="小说列表")
         logger.info(f"[暮黎资源] search_novel('{novel_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个小说结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
@@ -1341,7 +1994,11 @@ class MuliyResourcesPlugin(Star):
                 if new_page != p:
                     self._movie_sessions_new.update(event, page=new_page, _llm_handled=True)
                     new_txt = format_movie_list_new(r, ses.get("keyword", ""), new_page, ps)
-                    await event.send(MessageChain([Plain(tag + f" 🎬 影视搜索结果（第 {new_page+1}/{pt} 页）：\n\n" + new_txt)]))
+                    await self._send_search_page(
+                        event, "movie_new",
+                        tag + f" 🎬 影视搜索结果（第 {new_page+1}/{pt} 页）：\n\n" + new_txt,
+                        results=r, keyword=ses.get("keyword", ""),
+                        page=new_page, page_size=ps)
                     return f"{tag} 翻页到第{new_page+1}页。等待用户选择。"
             num = num0 if num0 != -2 else pc
             if num < 1 or num > pc:
@@ -1416,7 +2073,8 @@ class MuliyResourcesPlugin(Star):
                                             selected_pan_type=sel_type,
                                             page=0, _llm_handled=True)
             panlist = ses.get("resources", {}).get("panlist", [])
-            await event.send(MessageChain([Plain(tag + "\n" + format_pan_list(panlist, 0, type_filter=sel_type))]))
+            await self._send_pan_list_card(
+                event, ses.get("detail", {}), panlist, 0, sel_type, prefix=tag + "\n")
             return f"{tag} 已发送「{sel_type}」网盘资源列表。等待用户选网盘。"
 
         # ===== 阶段3a：选择播放节点 =====
@@ -1490,7 +2148,9 @@ class MuliyResourcesPlugin(Star):
                     if m: new_page = max(0, min(pt - 1, int(m.group()) - 1))
                 if new_page != p:
                     self._movie_sessions_new.update(event, page=new_page, _llm_handled=True)
-                    await event.send(MessageChain([Plain(tag + "\n" + format_pan_list(panlist, new_page, type_filter=sel_type))]))
+                    await self._send_pan_list_card(
+                        event, ses.get("detail", {}), panlist, new_page,
+                        sel_type, prefix=tag + "\n")
                     return f"{tag} 网盘翻页到第{new_page+1}页。等待用户选择。"
             num = num0 if num0 != -2 else pc
             if num < 1 or num > pc:
@@ -1742,7 +2402,7 @@ class MuliyResourcesPlugin(Star):
             page_txt = self._format_game_page(ses)
             t = len(ses["results"])
             final_txt = tag + f" 🎮 游戏搜索结果（共 {t} 个，第 {new_page+1}/{pt} 页）：\n\n" + page_txt
-            await event.send(MessageChain([Plain(final_txt)]))
+            await self._send_search_page(event, "game", final_txt, ses=ses)
             self._sessions.update(event, _llm_handled=True)
             logger.info(f"[暮黎资源] 翻页 游戏 第{cur+1}→{new_page+1}页 (共{t}条) → 直接 send")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页，共 {t} 个结果。用户后续操作由 on_any_message 处理。"
@@ -1759,7 +2419,7 @@ class MuliyResourcesPlugin(Star):
             page_txt = self._format_sw_page(ses2)
             t = len(ses2["results"])
             final_txt = tag + f" 💿 软件搜索结果（共 {t} 个，第 {new_page+1}/{pt} 页）：\n\n" + page_txt
-            await event.send(MessageChain([Plain(final_txt)]))
+            await self._send_search_page(event, "software", final_txt, ses=ses2)
             self._search_sessions.update(event, _llm_handled=True)
             logger.info(f"[暮黎资源] 翻页 软件 第{cur+1}→{new_page+1}页 (共{t}条) → 直接 send")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页，共 {t} 个结果。用户后续操作由 on_any_message 处理。"
@@ -1776,7 +2436,7 @@ class MuliyResourcesPlugin(Star):
             page_txt = self._format_mv_page(ses3)
             t = len(ses3["results"])
             final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 {new_page+1}/{pt} 页）：\n\n" + page_txt
-            await event.send(MessageChain([Plain(final_txt)]))
+            await self._send_search_page(event, "movie", final_txt, ses=ses3)
             self._movie_sessions.update(event, _llm_handled=True)
             logger.info(f"[暮黎资源] 翻页 影视 第{cur+1}→{new_page+1}页 (共{t}条) → 直接 send")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页，共 {t} 个结果。用户后续操作由 on_any_message 处理。"
@@ -1807,9 +2467,13 @@ class MuliyResourcesPlugin(Star):
             self._movie_sessions_new.update(event, page=new_page, _llm_handled=True)
             if ses4.get("stage") == "select_movie_new":
                 page_txt = format_movie_list_new(r, kw, new_page, ps)
+                await self._send_search_page(
+                    event, "movie_new", tag + "\n" + page_txt,
+                    results=r, keyword=kw, page=new_page, page_size=ps)
             else:
-                page_txt = format_pan_list(r, new_page, type_filter=sel_type)
-            await event.send(MessageChain([Plain(tag + "\n" + page_txt)]))
+                await self._send_pan_list_card(
+                    event, ses4.get("detail", {}), r, new_page,
+                    sel_type, prefix=tag + "\n")
             logger.info(f"[暮黎资源] 翻页 新站影视 第{cur+1}→{new_page+1}页")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页。用户后续操作由 on_any_message 处理。"
 
@@ -2113,6 +2777,98 @@ class MuliyResourcesPlugin(Star):
 
 # ==================== 命令 ====================
 
+    # ---------- 全局积分 / 每日签到 ----------
+
+    @filter.command("签到")
+    async def cmd_checkin(self, event: AstrMessageEvent):
+        """每日签到领取积分（跨群聊/私聊全局累计，带签到卡片）。"""
+        await self._send_checkin(event)
+
+    @filter.command("每日签到")
+    async def cmd_checkin_alias(self, event: AstrMessageEvent):
+        """每日签到（别名）。"""
+        await self._send_checkin(event)
+
+    @filter.command("积分")
+    async def cmd_points(self, event: AstrMessageEvent):
+        """查看自己的积分、连续签到与搜索消耗（图片卡片）。"""
+        await self._send_points_card(event)
+
+    @filter.command("我的积分")
+    async def cmd_points_alias(self, event: AstrMessageEvent):
+        """查看我的积分（别名）。"""
+        await self._send_points_card(event)
+
+    @filter.command("积分排行")
+    async def cmd_points_rank(self, event: AstrMessageEvent):
+        """查看积分排行榜（前 10 名，带头像卡片）。"""
+        await self._send_points_rank_card(event, 10)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("积分管理")
+    async def cmd_points_admin(self, event: AstrMessageEvent):
+        """管理员调整用户积分。
+
+        用法：
+        - /积分管理 <用户ID> <数量>        数量为正增加、为负扣除
+        - /积分管理 设置 <用户ID> <数量>   直接设置余额
+        - /积分管理 查询 <用户ID>          查看该用户积分
+        """
+        text = re.sub(r"^/?积分管理\s*", "", event.message_str.strip())
+        text = text.replace("\u3000", " ").strip()
+        parts = text.split()
+        usage = ("【暮黎资源·积分管理】\n"
+                 "用法：\n"
+                 "/积分管理 <用户ID> <数量>（正数增加，负数扣除）\n"
+                 "/积分管理 设置 <用户ID> <数量>\n"
+                 "/积分管理 查询 <用户ID>")
+        if not parts or parts[0] in ("帮助", "help", "说明"):
+            yield event.plain_result(usage); return
+
+        platform = str(event.get_platform_id() or "unknown")
+        action = "调整"
+        if len(parts) >= 2 and parts[0] in ("设置", "set", "查询", "查"):
+            action = parts[0]
+            parts = parts[1:]
+        if len(parts) < 2:
+            yield event.plain_result(usage); return
+
+        raw_uid = parts[0].lstrip("@")
+        if ":" in raw_uid:
+            key = raw_uid
+            uid = raw_uid.split(":", 1)[-1]
+        else:
+            uid = raw_uid
+            key = PointsStore.make_key(platform, uid)
+        try:
+            amount = int(parts[1])
+        except (TypeError, ValueError):
+            yield event.plain_result("❌ 数量必须是整数（例如 50 或 -20）。"); return
+
+        store = self._points_db()
+        s = self._points_settings()
+        try:
+            if action in ("查询", "查"):
+                user = store.get(key, "", s["initial"])
+                yield event.plain_result(
+                    f"【暮黎资源·积分管理】\n👤 {user.get('name') or uid}\n"
+                    f"💰 当前积分：{int(user.get('points', 0) or 0)}\n"
+                    f"🔥 连续签到：{int(user.get('streak', 0) or 0)} 天 ｜ "
+                    f"📅 最近签到：{user.get('last_checkin') or '从未签到'}"); return
+
+            if action in ("设置", "set"):
+                balance = store.set_balance(key, max(0, amount), "")
+                yield event.plain_result(
+                    f"【暮黎资源·积分管理】\n✅ 已将 {uid} 的积分设置为 {balance}。"); return
+
+            balance = store.add(key, amount, "", s["initial"])
+            verb = "增加" if amount >= 0 else "扣除"
+            yield event.plain_result(
+                f"【暮黎资源·积分管理】\n✅ 已为 {uid} {verb} {abs(amount)} 积分，当前 {balance} 积分。")
+        except Exception as e:
+            logger.warning(f"[暮黎资源·积分] 管理员调整失败: {e}")
+            yield event.plain_result(f"❌ 积分操作失败：{str(e)[:100]}")
+
     @filter.command("找游戏")
     async def cmd_game_search(self, event: AstrMessageEvent):
         keyword = clean_search_keyword(event.message_str.strip())
@@ -2166,6 +2922,9 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"影视搜索: 关键词=[{keyword}]")
         if not keyword:
             yield event.plain_result("请发送：/找影视 <影视名>"); return
+        _blocked = self._points_guard(event, "movie")
+        if _blocked:
+            yield event.plain_result(_blocked); return
 
         # —— 源自动切换：配了片库 Cookie → 新站（在线播放+网盘）；
         #    movie_source 支持关键字强制指定源："片库" 强制新站、"a123tv" 强制旧站（向后兼容）——
@@ -2185,6 +2944,7 @@ class MuliyResourcesPlugin(Star):
             if not results:
                 yield event.plain_result(f"{tag} 未找到与「{keyword}」相关的影视。请换个关键词。")
                 return
+            _charge_txt = self._points_charge(event, "movie", keyword)
             self._movie_sessions_new.set(event, {
                 "stage": "select_movie_new", "keyword": keyword,
                 "results": results, "page": 0, "page_size": 8,
@@ -2192,7 +2952,11 @@ class MuliyResourcesPlugin(Star):
             })
             t = len(results); pt = (t + 7) // 8
             page_txt = format_movie_list_new(results, keyword, 0, 8)
-            yield event.plain_result(f"{tag} 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt)
+            await self._send_search_page(
+                event, "movie_new",
+                f"{tag} 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt,
+                results=results, keyword=keyword, page=0, page_size=8,
+                note=_charge_txt)
             logger.info(f"[暮黎资源] /找影视(新站,'{keyword}') → {len(results)}条")
             return
 
@@ -2385,6 +3149,9 @@ class MuliyResourcesPlugin(Star):
                 "请发送：/找小说 <书名或作者>\n例如：/找小说 斗破苍穹"); return
         if not requests:
             yield event.plain_result("❌ 缺少 requests 依赖"); return
+        _blocked = self._points_guard(event, "novel")
+        if _blocked:
+            yield event.plain_result(_blocked); return
 
         base, token, limit, fmts, timeout, dl_timeout = self._novel_cfg()
         try:
@@ -2406,7 +3173,17 @@ class MuliyResourcesPlugin(Star):
             "keyword": keyword, "results": results, "page": 0,
             "page_size": page_size, "stage": "select_novel", "_updated": time.time(),
         })
-        yield event.plain_result(self._format_novel_page(self._novel_sessions.get(event)))
+        _charge_txt = self._points_charge(event, "novel", keyword)
+        ses_now = self._novel_sessions.get(event)
+        text = self._format_novel_page(ses_now) + _charge_txt
+        card = ""
+        if novel_card_html:
+            try:
+                card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT, note=_charge_txt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
+        await self._send_list_card(event, html=card, text=text,
+                                   total=len(results), label="小说列表")
 
     @filter.command("novel_status")
     async def cmd_novel_status(self, event: AstrMessageEvent):
@@ -2931,11 +3708,11 @@ class MuliyResourcesPlugin(Star):
                 if self._using_framework_scheduler:
                     sch = self._framework_scheduler()
                     if sch:
-                        j = sch.get_job(jid)
-                        if j and j.next_run_time: return j.next_run_time.strftime("%Y-%m-%d %H:%M")
+                        dt = self._job_next_run(sch.get_job(jid), self._timezone)
+                        if dt: return dt.strftime("%Y-%m-%d %H:%M")
                 elif self._apscheduler:
-                    j = self._apscheduler.get_job(jid)
-                    if j and j.next_run_time: return j.next_run_time.strftime("%Y-%m-%d %H:%M")
+                    dt = self._job_next_run(self._apscheduler.get_job(jid), self._timezone)
+                    if dt: return dt.strftime("%Y-%m-%d %H:%M")
             except Exception:
                 pass
             return "未知"
@@ -3087,6 +3864,9 @@ class MuliyResourcesPlugin(Star):
     async def _run_game_search_flow(self, event: AstrMessageEvent, keyword: str):
         """完整的游戏搜索交互流程（async generator）。
         使用 session_waiter 拦截后续用户输入，阻止 AngelHeart 介入。"""
+        _blocked = self._points_guard(event, "game")
+        if _blocked:
+            yield event.plain_result(_blocked); return
         if not session_waiter:
             # 降级：直接发送搜索结果
             try:
@@ -3102,13 +3882,19 @@ class MuliyResourcesPlugin(Star):
                     sw_results = []
                 if sw_results:
                     s = {"keyword": keyword, "results": sw_results, "page": 0, "page_size": 8}
-                    yield event.plain_result(f"🎮 游戏库未找到「{keyword}」，但在软件库找到：\n\n" + self._format_sw_page(s))
+                    _charge_txt = self._points_charge(event, "software", keyword)
+                    await self._send_search_page(
+                        event, "software",
+                        f"🎮 游戏库未找到「{keyword}」，但在软件库找到：\n\n"
+                        + self._format_sw_page(s) + _charge_txt,
+                        ses=s, note=_charge_txt)
                     self._search_sessions.set(event, {"stage": "select_software", **s})
                     return
                 yield event.plain_result(f"😕 未找到「{keyword}」的游戏或软件资源。")
                 return
+            _charge_txt = self._points_charge(event, "game", keyword)
             s = {"keyword": keyword, "results": results, "page": 0, "page_size": 8}
-            yield event.plain_result(self._format_game_page(s))
+            await self._send_search_page(event, "game", self._format_game_page(s) + _charge_txt, ses=s, note=_charge_txt)
             self._sessions.set(event, {"stage": "select_game", **s})
             return
 
@@ -3157,7 +3943,8 @@ class MuliyResourcesPlugin(Star):
         page_size = 8
         session = {"keyword": keyword, "results": results, "page": 0,
                     "page_size": page_size, "_updated": time.time()}
-        yield event.plain_result(self._format_game_page(session))
+        _charge_txt = self._points_charge(event, "game", keyword)
+        await self._send_search_page(event, "game", self._format_game_page(session) + _charge_txt, ses=session, note=_charge_txt)
 
         # === 阶段 1：游戏选择 ===
         selected_game = None
@@ -3178,7 +3965,7 @@ class MuliyResourcesPlugin(Star):
                 else:
                     pp = session.get("page", 0) - 1
                     session["page"] = (t + ps - 1) // ps - 1 if pp < 0 else pp
-                await ev.send(MessageChain([Plain(self._format_game_page(session))]))
+                await self._send_search_page(ev, "game", self._format_game_page(session), ses=session)
                 return  # 继续等待
             if text.startswith("跳"):
                 m2 = re.search(r"\d+", text)
@@ -3189,7 +3976,7 @@ class MuliyResourcesPlugin(Star):
                     n = int(m2.group())
                     if 1 <= n <= pt:
                         session["page"] = n - 1
-                        await ev.send(MessageChain([Plain(self._format_game_page(session))]))
+                        await self._send_search_page(ev, "game", self._format_game_page(session), ses=session)
                 return
 
             # 数字选择
@@ -3361,6 +4148,9 @@ class MuliyResourcesPlugin(Star):
 
     async def _run_software_search_flow(self, event: AstrMessageEvent, keyword: str):
         """完整的软件搜索交互流程（async generator）。"""
+        _blocked = self._points_guard(event, "software")
+        if _blocked:
+            yield event.plain_result(_blocked); return
         if not session_waiter:
             try:
                 results = await asyncio.to_thread(search_software, keyword, 32)
@@ -3375,13 +4165,19 @@ class MuliyResourcesPlugin(Star):
                     gm_results = []
                 if gm_results:
                     s = {"keyword": keyword, "results": gm_results, "page": 0, "page_size": 8}
-                    yield event.plain_result(f"💿 软件库未找到「{keyword}」，但在游戏库找到：\n\n" + self._format_game_page(s))
+                    _charge_txt = self._points_charge(event, "game", keyword)
+                    await self._send_search_page(
+                        event, "game",
+                        f"💿 软件库未找到「{keyword}」，但在游戏库找到：\n\n"
+                        + self._format_game_page(s) + _charge_txt,
+                        ses=s, note=_charge_txt)
                     self._sessions.set(event, {"stage": "select_game", **s})
                     return
                 yield event.plain_result(f"😕 未找到「{keyword}」的软件或游戏资源。")
                 return
+            _charge_txt = self._points_charge(event, "software", keyword)
             s = {"keyword": keyword, "results": results, "page": 0, "page_size": 8}
-            yield event.plain_result(self._format_sw_page(s))
+            await self._send_search_page(event, "software", self._format_sw_page(s) + _charge_txt, ses=s, note=_charge_txt)
             self._search_sessions.set(event, {"stage": "select_software", **s})
             return
 
@@ -3409,7 +4205,8 @@ class MuliyResourcesPlugin(Star):
         page_size = 8
         session = {"keyword": keyword, "results": results, "page": 0,
                     "page_size": page_size, "_updated": time.time()}
-        yield event.plain_result(self._format_sw_page(session))
+        _charge_txt = self._points_charge(event, "software", keyword)
+        await self._send_search_page(event, "software", self._format_sw_page(session) + _charge_txt, ses=session, note=_charge_txt)
 
         # === 阶段 1：软件选择 ===
         selected_sw = None
@@ -3429,7 +4226,7 @@ class MuliyResourcesPlugin(Star):
                 else:
                     pp = session.get("page", 0) - 1
                     session["page"] = (t + ps - 1) // ps - 1 if pp < 0 else pp
-                await ev.send(MessageChain([Plain(self._format_sw_page(session))]))
+                await self._send_search_page(ev, "software", self._format_sw_page(session), ses=session)
                 return
             if text.startswith("跳"):
                 m2 = re.search(r"\d+", text)
@@ -3440,7 +4237,7 @@ class MuliyResourcesPlugin(Star):
                     n = int(m2.group())
                     if 1 <= n <= pt:
                         session["page"] = n - 1
-                        await ev.send(MessageChain([Plain(self._format_sw_page(session))]))
+                        await self._send_search_page(ev, "software", self._format_sw_page(session), ses=session)
                 return
 
             m2 = re.search(r"\d+", text)
@@ -3587,6 +4384,9 @@ class MuliyResourcesPlugin(Star):
         """完整的影视搜索交互流程：
         搜索 → 选影视 → 选集数（剧时）→ 选线路 → 合并转发
         """
+        _blocked = self._points_guard(event, "movie")
+        if _blocked:
+            yield event.plain_result(_blocked); return
         tag = "【暮黎资源】"
 
         # 第一步：搜索
@@ -3602,7 +4402,8 @@ class MuliyResourcesPlugin(Star):
         page_size = 8
         session = {"keyword": keyword, "results": results, "page": 0,
                    "page_size": page_size, "_updated": time.time()}
-        yield event.plain_result(self._format_mv_page(session))
+        _charge_txt = self._points_charge(event, "movie", keyword)
+        await self._send_search_page(event, "movie", self._format_mv_page(session) + _charge_txt, ses=session, note=_charge_txt)
 
         # 第二步：用户选影视
         @session_waiter(timeout=SESSION_TIMEOUT)
@@ -3621,7 +4422,7 @@ class MuliyResourcesPlugin(Star):
                 else:
                     pp = cur - 1
                     session["page"] = (t + ps - 1) // ps - 1 if pp < 0 else pp
-                await ev.send(MessageChain([Plain(self._format_mv_page(session))]))
+                await self._send_search_page(ev, "movie", self._format_mv_page(session), ses=session)
                 return
             if text.startswith("跳"):
                 m2 = re.search(r"\d+", text)
@@ -3632,7 +4433,7 @@ class MuliyResourcesPlugin(Star):
                     n = int(m2.group())
                     if 1 <= n <= pt:
                         session["page"] = n - 1
-                        await ev.send(MessageChain([Plain(self._format_mv_page(session))]))
+                        await self._send_search_page(ev, "movie", self._format_mv_page(session), ses=session)
                 return
 
             # 取消
@@ -5071,7 +5872,7 @@ class MuliyResourcesPlugin(Star):
                             ses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
                     ses["_updated"] = time.time()
                     # ★关键：用 event.send 立即发格式化页面
-                    await event.send(MessageChain([Plain(self._format_game_page(ses))]))
+                    await self._send_search_page(event, "game", self._format_game_page(ses), ses=ses)
                     return
 
                 # 数字/自然语言选择 → 插件处理（调详情 + 列网盘）
@@ -5189,7 +5990,7 @@ class MuliyResourcesPlugin(Star):
                             ses2["page"] = max(0, min(pt - 1, int(m.group()) - 1))
                     ses2["_updated"] = time.time()
                     # ★关键：用 event.send 立即发格式化页面（保证响应），不走 LLM 排版
-                    await event.send(MessageChain([Plain(self._format_sw_page(ses2))]))
+                    await self._send_search_page(event, "software", self._format_sw_page(ses2), ses=ses2)
                     return
 
                 # 数字/自然语言选择 → 让插件处理（调详情 + 列网盘），保持原来逻辑
@@ -5305,7 +6106,7 @@ class MuliyResourcesPlugin(Star):
                         if m:
                             new_page = max(0, min(pt - 1, int(m.group()) - 1))
                     self._movie_sessions.update(event, page=new_page, _updated=time.time())
-                    await event.send(MessageChain([Plain(self._format_mv_page(self._movie_sessions.get(event)))]))
+                    await self._send_search_page(event, "movie", self._format_mv_page(self._movie_sessions.get(event)), ses=self._movie_sessions.get(event))
                     return
                 # 数字选择
                 number = self._parse_natural_number(text)
@@ -5474,7 +6275,7 @@ class MuliyResourcesPlugin(Star):
                             pt = (t + ps - 1) // ps
                             dses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
                     dses["_updated"] = time.time()
-                    await event.send(MessageChain([Plain(self._format_drama_page(self._drama_sessions.get(event)))]))
+                    await self._send_search_page(event, "drama", self._format_drama_page(self._drama_sessions.get(event)), ses=self._drama_sessions.get(event))
                     return
 
                 # 数字/自然语言选择 → 取详情 + 返回网盘链接
@@ -5541,7 +6342,16 @@ class MuliyResourcesPlugin(Star):
                         pt = (t + ps - 1) // ps
                         nses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
                 nses["_updated"] = time.time()
-                await event.send(MessageChain([Plain(self._format_novel_page(self._novel_sessions.get(event)))]))
+                ses_now = self._novel_sessions.get(event)
+                card = ""
+                if novel_card_html:
+                    try:
+                        card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
+                await self._send_list_card(
+                    event, html=card, text=self._format_novel_page(ses_now),
+                    total=len(r), label="小说列表")
                 return
             # 选书
             if stage == "select_novel":
@@ -5563,8 +6373,10 @@ class MuliyResourcesPlugin(Star):
                 fmt_menu = (
                     f"📚 已选择：《{sel.get('book_name') or '未知'}》／{sel.get('author') or '佚名'}\n"
                     f"请选择下载格式（回复数字或格式名）：\n"
-                    + "\n".join(f"  {emoji_index(i, len(NOVEL_FORMATS))} {f.upper()}"
-                                for i, f in enumerate(NOVEL_FORMATS, 1))
+                    + "\n".join(
+                        f"  {emoji_index(i, len(NOVEL_FORMATS))} {f.upper()}"
+                        + ("（打包为 zip）" if f == "html" else "")
+                        for i, f in enumerate(NOVEL_FORMATS, 1))
                     + f"\n\n回复 1-{len(NOVEL_FORMATS)} 选择；回复「下载 / 确认」使用默认 TXT；回复 0 取消。"
                 )
                 await event.send(MessageChain([Plain(fmt_menu)]))
@@ -5602,31 +6414,28 @@ class MuliyResourcesPlugin(Star):
                 results = []
                 for fmt in fmt_list:
                     try:
-                        # 1) 触发服务端抓取整本（同步）
-                        res = await asyncio.to_thread(
-                            fetch_novel, sel, base, token, fmt, dl_timeout)
-                        # 2) 插件侧直接拉取文件字节（不再发 localhost 链接 / WebUI 预览）
+                        # 1) 服务端抓取整本 + 插件侧拉取字节 + 按文件头校验真实格式。
+                        #    download_novel 会在「同名旧文件 / 错格式」时自动换候选，
+                        #    避免把上次的 TXT 改名成 .epub / .pdf 发出去。
                         dl = await asyncio.to_thread(
-                            download_novel_file, base, res["file_name"], token, dl_timeout)
+                            download_novel, sel, base, token, fmt, dl_timeout)
                         content = dl["content"]
-                        fname = dl["file_name"] or res["file_name"]
+                        fname = dl["file_name"]
+                        ext = dl.get("ext") or (
+                            fname.rsplit(".", 1)[-1].lower() if "." in fname else fmt)
                         if not content:
                             raise NovelApiError("下载到的文件内容为空，书源可能已失效",
-                                                 stage="download")
-                        # 3) 落盘后以 base64 经 OneBot 文件上传接口发送。
-                        #    注意：群消息里若直接传绝对路径给 FileComponent，客户端
-                        #    （napcat）读不到 AstrBot 容器内的 /tmp 而报 ENOENT；用
-                        #    base64 内嵌可彻底规避。复用已验证的 _upload_zip。
-                        ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname
-                               else fmt)
-                        if ext not in NOVEL_FORMATS:
-                            ext = fmt
+                                                stage="download")
+                        # 2) 落盘后发送：优先 base64 经 OneBot 文件接口（规避
+                        #    「客户端读不到 AstrBot 容器内 /tmp」的 ENOENT），
+                        #    失败再退 AstrBot 文件组件，并把真实原因带回来。
                         fd, tp = tempfile.mkstemp(suffix=f".{ext}", prefix="novel_")
                         os.close(fd)
                         with open(tp, "wb") as f:
                             f.write(content)
                         try:
-                            ok = await self._upload_zip(tp, fname, event=event)
+                            ok, reason = await self._send_file_to_chat(
+                                tp, fname, event=event, label=fmt.upper())
                         finally:
                             if os.path.exists(tp):
                                 try:
@@ -5634,23 +6443,27 @@ class MuliyResourcesPlugin(Star):
                                 except Exception:
                                     pass
                         if ok:
-                            results.append((fmt, fname, None))
+                            results.append((fmt, fname, None, len(content)))
                         else:
-                            results.append((fmt, None,
-                                            "文件上传失败（OneBot 客户端不可达，请检查连接）"))
+                            results.append((fmt, None, reason or "文件发送失败", 0))
                     except Exception as e:
                         msg = e.message if isinstance(e, NovelApiError) else str(e)[:200]
-                        results.append((fmt, None, msg))
+                        results.append((fmt, None, msg, 0))
                 ok_count = sum(1 for r in results if r[1])
                 lines = [
                     f"✅ 下载完成：《{book_name}》／{author}",
                     f"📦 已发送 {ok_count}/{len(fmt_list)} 个格式",
                 ]
-                for fmt, fname, err in results:
+                for fmt, fname, err, size in results:
                     if err:
-                        lines.append(f"❌ {fmt.upper()}：{err}（可换源/格式重试）")
+                        lines.append(f"❌ {fmt.upper()}：{err}")
+                    else:
+                        lines.append(f"✅ {fmt.upper()}：{fname}（{_format_size(size)}）")
+                if any(r[0] == "html" and r[1] for r in results):
+                    lines.append("💡 HTML 版是 zip 压缩包，解压后打开 0_目录.txt 或章节页即可。")
                 if ok_count == 0:
-                    lines.append("💡 全部格式生成失败，请换一个书源或格式重试。")
+                    lines.append("💡 全部格式失败：PDF 多为 so-novel 缺中文字体（见上方提示），"
+                                 "其余可换一个书源或改用 TXT 重试。")
                 await event.send(MessageChain([Plain("\n".join(lines))]))
                 self._novel_sessions.delete(event)
                 return
@@ -5668,6 +6481,33 @@ class MuliyResourcesPlugin(Star):
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _job_next_run(job, tz=None):
+        """读取调度任务的「下次运行时间」，取不到就返回 None。
+
+        APScheduler 3.x 的 Job 在 **scheduler 尚未 start** 时不会写入
+        next_run_time（任务先挂在 _pending_jobs 里），直接访问会抛
+        `'Job' object has no attribute 'next_run_time'`。
+        插件 initialize 早于 AstrBot 启动 cron_manager，必然踩到这条路径，
+        所以这里统一用 getattr 并回退到 trigger 现场推算。
+        """
+        if job is None:
+            return None
+        try:
+            nxt = getattr(job, "next_run_time", None)
+        except Exception:
+            nxt = None
+        if nxt is not None:
+            return nxt
+        trig = getattr(job, "trigger", None)
+        if trig is None:
+            return None
+        try:
+            now = datetime.datetime.now(tz) if tz else datetime.datetime.now()
+            return trig.get_next_fire_time(None, now)
+        except Exception:
+            return None
 
     # ==================== 日报运行状态持久化（防止重装/重启后重复补发） ====================
     # 四个日报的「今日已发送日期」原本只存在内存：插件一重装/热重载就归零，
@@ -5778,12 +6618,15 @@ class MuliyResourcesPlugin(Star):
                 try:
                     sch.add_job(func, CronTrigger(hour=int(jh), minute=int(jm), **tz_kw),
                                 id=job_id, replace_existing=True, misfire_grace_time=600)
-                    self._scheduled_job_ids.append(job_id)
-                    j = sch.get_job(job_id)
-                    nxt = j.next_run_time.strftime("%Y-%m-%d %H:%M") if (j and j.next_run_time) else "?"
-                    logger.info(f"[暮黎资源] 已注册官方定时任务: {name} @ {int(jh):02d}:{int(jm):02d} (Asia/Shanghai) 下次运行: {nxt}")
                 except Exception as e:
                     logger.error(f"[暮黎资源] 注册官方定时任务失败 ({name}): {e}")
+                    continue
+                self._scheduled_job_ids.append(job_id)
+                # 插件初始化早于 AstrBot 启动 cron_manager：此时任务挂在
+                # _pending_jobs，Job 上还没有 next_run_time，不能直接点访问。
+                nxt_dt = self._job_next_run(sch.get_job(job_id), self._timezone)
+                nxt = nxt_dt.strftime("%Y-%m-%d %H:%M") if nxt_dt else "待调度器启动"
+                logger.info(f"[暮黎资源] 已注册官方定时任务: {name} @ {int(jh):02d}:{int(jm):02d} (Asia/Shanghai) 下次运行: {nxt}")
             # 配置热更新守护：每 600s 检测时间配置变更并重新注册
             if self._heartbeat_task: self._heartbeat_task.cancel()
             self._heartbeat_task = asyncio.create_task(self._sw_heartbeat(), name="sw_heartbeat")
@@ -5958,14 +6801,14 @@ class MuliyResourcesPlugin(Star):
                             logger.warning("[暮黎资源] 官方定时任务丢失，重新注册"); await self._start_sw_scheduler(); break
                 else:
                     if not self._apscheduler or not self._apscheduler.running: await self._start_sw_scheduler(); continue
-                    j = self._apscheduler.get_job(self._scheduler_job_id)
-                    if not j or not j.next_run_time: self._schedule_sw_next()
-                    jg = self._apscheduler.get_job(self._game_scheduler_job_id)
-                    if not jg or not jg.next_run_time: self._schedule_game_next()
-                    jm = self._apscheduler.get_job(self._movie_scheduler_job_id)
-                    if not jm or not jm.next_run_time: self._schedule_movie_next()
-                    jd = self._apscheduler.get_job(self._drama_scheduler_job_id)
-                    if not jd or not jd.next_run_time: self._schedule_drama_next()
+                    if not self._job_next_run(self._apscheduler.get_job(self._scheduler_job_id), self._timezone):
+                        self._schedule_sw_next()
+                    if not self._job_next_run(self._apscheduler.get_job(self._game_scheduler_job_id), self._timezone):
+                        self._schedule_game_next()
+                    if not self._job_next_run(self._apscheduler.get_job(self._movie_scheduler_job_id), self._timezone):
+                        self._schedule_movie_next()
+                    if not self._job_next_run(self._apscheduler.get_job(self._drama_scheduler_job_id), self._timezone):
+                        self._schedule_drama_next()
             except asyncio.CancelledError: return
             except Exception: pass
 
@@ -6580,6 +7423,126 @@ class MuliyResourcesPlugin(Star):
                 except Exception:
                     pass
 
+    # ==================== 长列表图片卡片（小说 / 网盘资源）====================
+    # 列表条目多时纯文本刷屏、扫读费劲，这里把整页列表渲染成一张图。
+    # 图片只负责「好看好读」，回复数字选条目 / 翻页指令的交互完全不变。
+
+    def _list_card_cfg(self):
+        """读取列表卡片配置：(是否启用, 触发条数阈值)。"""
+        c = self._get_config()
+        enabled = c.get("list_card_enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() not in ("", "0", "false", "no", "off")
+        try:
+            threshold = int(c.get("list_card_threshold", 5) or 5)
+        except (TypeError, ValueError):
+            threshold = 5
+        return bool(enabled), max(1, threshold)
+
+    async def _send_card_image(self, event: AstrMessageEvent, img_bytes: bytes,
+                               name: str = "") -> bool:
+        """把卡片图片以「图片」形式发到当前会话，失败返回 False。"""
+        if not img_bytes:
+            return False
+        if len(img_bytes) > 3 * 1024 * 1024 and hasattr(self, "_compress_game_image"):
+            try:
+                img_bytes = await asyncio.to_thread(self._compress_game_image, img_bytes)
+            except Exception:
+                pass
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=_img_ext(img_bytes), prefix="listcard_")
+            os.close(fd)
+            with open(tmp, "wb") as f:
+                f.write(img_bytes)
+            await event.send(MessageChain([ImageComponent(file=tmp)]))
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[列表卡片] 图片发送失败，回退文本: {type(e).__name__}: {e!r}")
+            return False
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+
+    async def _send_list_card(self, event: AstrMessageEvent, *, html: str, text: str,
+                              total: int, label: str = "列表") -> bool:
+        """超长列表优先发图片卡片；未启用 / 条目不多 / 渲染失败时发文本。
+
+        触发条件：条目数超过阈值，**或**文本已经很长（长标题 4~5 条就够刷屏）。
+        返回是否成功发了图片。无论走哪条路都只发一条消息。
+        """
+        enabled, threshold = self._list_card_cfg()
+        long_text = len(text) > 400   # 纯文本超过约 400 字，即使条目少也出图
+        if (not enabled or not html or render_list_card is None
+                or (total <= threshold and not long_text)):
+            await event.send(MessageChain([Plain(text)]))
+            return False
+        img = None
+        try:
+            img = await asyncio.to_thread(render_list_card, html)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[列表卡片] {label} 渲染异常，回退文本: {e}")
+        if not img:
+            await event.send(MessageChain([Plain(text)]))
+            return False
+        if await self._send_card_image(event, img, f"暮黎_{label}.jpg"):
+            logger.info(f"[列表卡片] {label} 已发图片（{total} 条，{len(img) // 1024}KB）")
+            return True
+        await event.send(MessageChain([Plain(text)]))
+        return False
+
+    async def _send_search_page(self, event: AstrMessageEvent, kind: str, text: str,
+                                ses: dict | None = None, *,
+                                results: list | None = None, keyword: str = "",
+                                page: int = 0, page_size: int = 8,
+                                note: str = "") -> None:
+        """游戏 / 软件 / 影视 / 短剧搜索列表：统一走长列表图片卡片。"""
+        total = (len(results) if results is not None
+                 else len((ses or {}).get("results") or []))
+        html = ""
+        try:
+            if kind == "game" and game_card_html:
+                html = game_card_html(ses or {}, note=note)
+            elif kind == "software" and software_card_html:
+                html = software_card_html(ses or {}, note=note)
+            elif kind == "movie" and movie_card_html:
+                html = movie_card_html(ses or {}, note=note)
+            elif kind == "movie_new" and movie_new_card_html:
+                html = movie_new_card_html(results or [], keyword, page, page_size,
+                                           note=note)
+            elif kind == "drama" and drama_card_html:
+                html = drama_card_html(ses or {}, note=note)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[列表卡片] {kind} 卡片构建失败，回退文本: {e}")
+        label = {"game": "游戏列表", "software": "软件列表", "movie": "影视列表",
+                 "movie_new": "影视列表", "drama": "短剧列表"}.get(kind, "列表")
+        await self._send_list_card(event, html=html, text=text, total=total,
+                                   label=label)
+
+    async def _send_pan_list_card(self, event: AstrMessageEvent, detail: dict,
+                                  panlist: list, page: int = 0,
+                                  type_filter: str = "", prefix: str = "") -> bool:
+        """网盘资源列表：整页渲染成图片（分页口径与 format_pan_list 一致）。"""
+        panlist = panlist or []
+        filtered = ([p for p in panlist if p.get("type", "") == type_filter]
+                    if type_filter else panlist)
+        text = prefix + format_pan_list(panlist, page, type_filter=type_filter)
+        html = ""
+        if pan_card_html:
+            try:
+                html = pan_card_html(
+                    panlist, page=page, page_size=12, type_filter=type_filter,
+                    title=(detail or {}).get("name", ""),
+                    year=str((detail or {}).get("year", "") or ""),
+                    timeout=120)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 网盘卡片构建失败，回退文本: {e}")
+        return await self._send_list_card(event, html=html, text=text,
+                                          total=len(filtered), label="网盘列表")
+
     async def _sw_send_report(self, img_bytes, zp, text: str = ""):
         config = self._get_config()
         gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
@@ -6597,22 +7560,79 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[暮黎资源] 软件日报本次成功推送 {sent}/{len(gids)} 个群")
         return sent
 
+    async def _send_file_to_chat(self, path: str, name: str, event=None,
+                                 gid=None, uid=None,
+                                 label: str = "文件") -> tuple[bool, str]:
+        """把本地文件发到当前会话，返回 (是否成功, 失败原因)。
+
+        发送顺序：
+          ① OneBot upload_group_file / upload_private_file（base64 内嵌，
+             规避「napcat 读不到 AstrBot 容器内 /tmp」的 ENOENT）；
+          ② AstrBot FileComponent（机器人与客户端同机/共享挂载时可用）。
+
+        旧实现对异常 `except: pass`，所有失败都被统一报成
+        「OneBot 客户端不可达」，用户无法排查；这里把真实原因记日志并回传。
+        """
+        if not path or not os.path.exists(path):
+            return False, "临时文件已丢失，请重试"
+        size = os.path.getsize(path)
+        gg = gid or (event.get_group_id() if event else None)
+        uu = uid or (event.get_sender_id() if event else None)
+        pid = (event.get_platform_id() or "") if event else ""
+        errors: list[str] = []
+
+        client = self._get_best_client(event)
+        if client and size <= 40 * 1024 * 1024:
+            try:
+                if event and size > 8 * 1024 * 1024:
+                    await event.send(MessageChain([Plain(
+                        f"📤 正在上传 {label}（{_format_size(size)}），大文件请稍候…")]))
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                if gg:
+                    await client.call_action(action="upload_group_file", group_id=int(gg),
+                                             file=f"base64://{b64}", name=name)
+                    return True, ""
+                if uu and str(uu).isdigit():
+                    await client.call_action(action="upload_private_file", user_id=int(uu),
+                                             file=f"base64://{b64}", name=name)
+                    return True, ""
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"OneBot 直传失败（{type(e).__name__}）")
+                logger.warning(f"[暮黎资源] {label} OneBot 直传失败: "
+                               f"{type(e).__name__}: {e!r}")
+        elif client:
+            errors.append(f"文件较大（{_format_size(size)}），跳过 base64 直传")
+
+        # ② AstrBot 文件组件兜底
+        targets = []
+        if event is not None:
+            targets.append(("event", ""))
+        if pid and uu:
+            targets.append(("context", f"{pid}:FriendMessage:{uu}"))
+        if pid and gg:
+            targets.append(("context", f"{pid}:GroupMessage:{gg}"))
+        for kind, umo in targets:
+            try:
+                chain = MessageChain([FileComponent(file=path, name=name)])
+                if kind == "event":
+                    await event.send(chain)
+                else:
+                    await self.context.send_message(umo, chain)
+                return True, ""
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"文件组件发送失败（{type(e).__name__}）")
+                logger.warning(f"[暮黎资源] {label} 文件组件发送失败({kind}): "
+                               f"{type(e).__name__}: {e!r}")
+        # 去重保序，避免提示里重复同一句
+        reason = "；".join(dict.fromkeys(errors))
+        return False, reason or "当前平台不支持文件发送"
+
     async def _upload_zip(self, zp, zn, event=None, gid=None, uid=None):
-        if not zp or not os.path.exists(zp): return False
-        try:
-            sz = _format_size(os.path.getsize(zp))
-            gg = gid or (event and event.get_group_id()); uu = uid or (event and event.get_sender_id())
-            if event: await event.send(MessageChain([Plain(f"📤 上传({sz})...")]))
-            client = self._get_best_client(event)
-            if not client: return False
-            with open(zp,"rb") as f: b64=base64.b64encode(f.read()).decode("utf-8")
-            if gg: await client.call_action(action="upload_group_file",group_id=int(gg),file=f"base64://{b64}",name=zn); return True
-            elif uu:
-                if str(uu).isdigit(): await client.call_action(action="upload_private_file",user_id=int(uu),file=f"base64://{b64}",name=zn)
-                else: await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uu}",MessageChain([FileComponent(file=zp,name=zn)]))
-                return True
-        except: pass
-        return False
+        """兼容旧调用：只关心成功/失败。"""
+        ok, _reason = await self._send_file_to_chat(
+            zp, zn, event=event, gid=gid, uid=uid, label="文件")
+        return ok
 
     # ==================== 游戏日报（XDGAME） ====================
     def _game_cached_path(self, ds: str) -> str:

@@ -364,6 +364,29 @@
       }
     }
   },
+  "list_card": {
+    "description": "长列表图片卡片",
+    "hint": "小说搜索结果、影视网盘资源等条目较多的列表，自动渲染成图片发送，避免纯文本刷屏。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "list_card_enabled": {
+        "type": "bool",
+        "description": "启用长列表图片",
+        "default": true,
+        "hint": "开启后条目超过阈值时发图片；需安装 playwright（插件自带 Chromium 或本机 Chrome）。关闭后全部回到纯文本。"
+      },
+      "list_card_threshold": {
+        "type": "int",
+        "description": "触发图片的条目数阈值",
+        "default": 5,
+        "min": 1,
+        "max": 50,
+        "hint": "结果条数大于该值就出图；默认 5。条目少但纯文本很长时也会自动出图。",
+        "condition": {"list_card_enabled": true}
+      }
+    }
+  },
   "shortdrama": {
     "description": "短剧搜索与日报",
     "hint": "网盘贴吧短剧搜索与夸克网盘资源链接，及每日短剧日报。",
@@ -493,6 +516,165 @@
         "default": "✅ 验证成功，欢迎加入群聊！",
         "hint": "验证通过时会先撤回机器人本次发的验证消息，只保留这一条；留空则静默通过（不发送任何消息）。",
         "condition": {"join_verify_enabled": true}
+      }
+    }
+  },
+  "points": {
+    "description": "签到与积分",
+    "hint": "开启后用户可通过 /签到 领取积分，搜索资源按类型扣除积分；积分按用户跨群聊/私聊全局共享。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "points_enabled": {
+        "type": "bool",
+        "description": "签到积分总开关",
+        "default": false,
+        "hint": "默认关闭。开启后 /签到 可领积分，搜索资源会检查并扣除积分；关闭时搜索不扣积分。"
+      },
+      "points_initial": {
+        "type": "int",
+        "description": "新用户初始积分",
+        "default": 0,
+        "min": 0,
+        "max": 1000000,
+        "hint": "用户第一次签到或第一次被扣费时自动开户并赠送该积分；默认 0。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_points": {
+        "type": "int",
+        "description": "每日签到获得积分",
+        "default": 10,
+        "min": 0,
+        "max": 10000,
+        "hint": "每天首次 /签到 获得的基础积分；当天重复签到不再发放。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_streak_bonus": {
+        "type": "int",
+        "description": "连续签到每日额外加成",
+        "default": 0,
+        "min": 0,
+        "max": 1000,
+        "hint": "从连续第 2 天起，每天额外增加该积分；默认 0 表示不加成。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_streak_max": {
+        "type": "int",
+        "description": "连续加成最多累计天数",
+        "default": 7,
+        "min": 1,
+        "max": 365,
+        "hint": "连续签到加成最多按这么多天计算（例如 7 天：第 8 天起不再增加加成）。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_card_enabled": {
+        "type": "bool",
+        "description": "签到成功卡片（HTML 出图）",
+        "default": true,
+        "hint": "开启后 /签到 会生成一张含 Bing 每日壁纸、左下信息模块、每日一言和资源推荐的卡片图；出图失败会自动回退纯文字。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_info_module": {
+        "type": "string",
+        "description": "卡片左下内容模块",
+        "default": "epic",
+        "hint": "epic：Epic 喜加一（默认，推荐）；history：历史上的今天；poem：今日诗词；weather：实时天气；off：关闭。填其它值按 epic 处理。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_weather_city": {
+        "type": "string",
+        "description": "天气城市（仅 weather 模式）",
+        "default": "",
+        "hint": "仅当 checkin_info_module=weather 时生效。留空表示按服务器出口 IP 自动定位（不是你本人的位置）；可填「北京」「上海」「广州」等固定城市。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_recommend_dynamic": {
+        "type": "bool",
+        "description": "推荐优先从当前搜索源动态获取",
+        "default": true,
+        "hint": "开启后：影视按当前源随机取一部（a123tv 首页 / 片库首页）；游戏按当前 game_source 从 xdgame / switch618 随机取一款；软件从 x6d 列表随机取一款。获取失败自动回退下面的静态清单。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_recommend_games": {
+        "type": "list",
+        "description": "签到推荐游戏清单",
+        "default": [
+          "黑神话：悟空|国产动作大作，战斗手感扎实",
+          "塞尔达传说：王国之泪|开放世界探索，随便逛都能玩很久",
+          "双人成行|双人合作解谜，适合和朋友一起"
+        ],
+        "items": {"type": "string"},
+        "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一款；留空则不推荐游戏。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_recommend_software": {
+        "type": "list",
+        "description": "签到推荐软件清单",
+        "default": [
+          "Everything|毫秒级本地文件搜索，装机必备",
+          "PotPlayer|轻量全能播放器，格式支持很全",
+          "7-Zip|开源压缩工具，干净无广告"
+        ],
+        "items": {"type": "string"},
+        "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一款；留空则不推荐软件。",
+        "condition": {"points_enabled": true}
+      },
+      "checkin_recommend_movies": {
+        "type": "list",
+        "description": "签到推荐影视清单",
+        "default": [
+          "流浪地球2|国产科幻，视效和故事都在线",
+          "庆余年|古装权谋剧，适合连着追",
+          "疯狂动物城|轻松合家欢，随时都能看"
+        ],
+        "items": {"type": "string"},
+        "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一部；留空则不推荐影视。",
+        "condition": {"points_enabled": true}
+      },
+      "points_cost_game": {
+        "type": "int",
+        "description": "搜索游戏消耗积分",
+        "default": 5,
+        "min": 0,
+        "max": 10000,
+        "hint": "每次成功搜到游戏结果扣一次；0 表示免费。下同。",
+        "condition": {"points_enabled": true}
+      },
+      "points_cost_software": {
+        "type": "int",
+        "description": "搜索软件消耗积分",
+        "default": 5,
+        "min": 0,
+        "max": 10000,
+        "hint": "每次成功搜到软件结果扣一次；0 表示免费。",
+        "condition": {"points_enabled": true}
+      },
+      "points_cost_movie": {
+        "type": "int",
+        "description": "搜索影视消耗积分",
+        "default": 5,
+        "min": 0,
+        "max": 10000,
+        "hint": "每次成功搜到影视结果扣一次；0 表示免费。",
+        "condition": {"points_enabled": true}
+      },
+      "points_cost_drama": {
+        "type": "int",
+        "description": "搜索短剧消耗积分",
+        "default": 5,
+        "min": 0,
+        "max": 10000,
+        "hint": "每次成功搜到短剧结果扣一次；0 表示免费。",
+        "condition": {"points_enabled": true}
+      },
+      "points_cost_novel": {
+        "type": "int",
+        "description": "搜索小说消耗积分",
+        "default": 5,
+        "min": 0,
+        "max": 10000,
+        "hint": "每次成功搜到小说结果扣一次；0 表示免费。",
+        "condition": {"points_enabled": true}
       }
     }
   }

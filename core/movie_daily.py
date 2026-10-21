@@ -28,6 +28,7 @@ HTML 后用 Playwright 渲染为图片发送。
 import os
 import re
 import io
+import random
 import time
 import json
 import base64
@@ -40,6 +41,7 @@ from PIL import Image
 from .constants import logger, MULIY_UA, MULIY_IMG_HOST
 from .muliy_site import MuliySiteClient, solve_pow, cover_url
 from .mdi_icons import svg as _svg
+from .brand import logo_img
 
 # ty -> 中文类别名（用于区块标题与过滤）
 SECTION_TY = {"mv": "电影", "tv": "剧集", "ac": "动漫"}
@@ -248,6 +250,30 @@ _A123_CAT_TO_TITLE = {
     "连续剧": "最近更新的剧集",
     "动漫": "最近更新的动漫",
 }
+
+
+def get_random_movie_muliy(client) -> dict | None:
+    """从片库首页随机取一部影视，用于签到推荐（不下载封面/简介）。"""
+    try:
+        html = _fetch_homepage_html(client)
+        if not html:
+            return None
+        base = client._get_base()
+        items = []
+        for sec in parse_inlist(html):
+            for it in _section_items(sec, 8, base):
+                title = (it.get("title") or "").strip()
+                if not title or len(title) > 28:
+                    continue
+                desc = " · ".join(
+                    x for x in (it.get("type_name"), it.get("status")) if x
+                ) or "片库影视"
+                items.append({"name": title, "desc": desc, "query": title})
+        if not items:
+            return None
+        return random.choice(items)
+    except Exception:
+        return None
 
 
 def fetch_movie_daily_a123tv(max_per_section: int = 24, sections_filter: list = None,
@@ -467,6 +493,8 @@ def build_glass_html(items: list, date_label: str, source_label: str = "片库")
 
     body_html = "\n".join(cards_blocks)
     n = len(items)
+    _logo = logo_img(40)
+    brand_logo = (f'<div class="logo">{_logo}</div>' if _logo else "")
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
@@ -499,7 +527,9 @@ body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC',
   box-shadow:0 14px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.35)}}
 .header::before{{content:"";position:absolute;left:-30%;top:0;width:160%;height:3px;
   background:linear-gradient(90deg,transparent,#f0abfc,#67e8f9,#a5b4fc,transparent)}}
-.header .logo{{font-size:30px;line-height:1;margin-bottom:6px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35))}}
+.header .logo{{width:58px;height:58px;margin:0 auto 10px;background:#fff;border-radius:18px;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 8px 22px rgba(0,0,0,.38)}}
+.header .logo img{{width:42px;height:42px;display:block}}
 .header h1{{font-size:28px;font-weight:800;letter-spacing:3px;
   background:linear-gradient(90deg,#c4b5fd,#f0abfc,#67e8f9,#a5f3fc);-webkit-background-clip:text;
   background-clip:text;color:transparent}}
@@ -558,7 +588,7 @@ body{{position:relative;min-height:100vh;font-family:'reportfont','PingFang SC',
 <div class="bg"><i></i><i></i><i></i><i></i></div>
 <div class="wrap">
 <div class="header">
-  <div class="logo">{_svg("movie", 30, "currentColor")}</div>
+  {brand_logo}
   <h1>暮黎影视日报</h1>
   <div class="date">{date_label}</div>
   <div class="sub">今日影视新鲜速递 · 回复片名即可追剧</div>

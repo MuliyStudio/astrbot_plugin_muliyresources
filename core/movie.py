@@ -8,6 +8,7 @@
                  "episodes": [{"n","label","url"}] | [],
                  "sources":  [{"n","label","url"}]}     # 切换线路（采集源）
 """
+import random
 import re
 import time
 import requests
@@ -192,6 +193,40 @@ def search_movies(keyword: str, max_results: int = 24) -> list:
             break
     logger.info(f"影视搜索完成: {len(results)} 个结果")
     return results
+
+
+def get_random_movie() -> dict | None:
+    """从 a123tv 首页随机取一部影视，用于签到推荐（不依赖关键词）。
+
+    返回 {"name": 标题, "desc": "年份 · 分类"}；失败返回 None。
+    """
+    html = _get_html(MV_BASE_URL, retries=2, timeout=12)
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    blocked = ("伦理", "福利", "写真", "里番", "成人", "无码", "色情", "情色", "三级")
+    items = []
+    seen = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not _RE_DETAIL.match(href):
+            continue
+        raw = a.get_text(" ", strip=True)
+        if not raw or len(raw) < 2:
+            continue
+        title, category, year, _meta = _clean_title(raw)
+        if (not title or len(title) > 28
+                or any(k in category or k in title for k in blocked)):
+            continue
+        url = _fix_url(href)
+        if url in seen:
+            continue
+        seen.add(url)
+        desc = " · ".join(x for x in (year, category) if x) or "a123tv 影视"
+        items.append({"name": title, "desc": desc, "query": title})
+    if not items:
+        return None
+    return random.choice(items)
 
 
 # ==================== 详情 ====================

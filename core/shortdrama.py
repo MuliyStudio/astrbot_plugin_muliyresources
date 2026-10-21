@@ -34,6 +34,7 @@ import requests
 
 from .constants import logger
 from .mdi_icons import svg as _svg
+from .brand import logo_img
 
 DRAMA_BASE = "https://www.wangpant8.com"
 DRAMA_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -374,6 +375,8 @@ def build_drama_html(items: list, date_label: str) -> str:
             f'<span class="txt">{title}</span></li>'
         )
     list_html = "\n".join(rows) or '<li class="item"><span class="txt">今日暂无上新</span></li>'
+    _logo = logo_img(34)
+    brand_logo = (f'<div class="h-brand">{_logo}</div>' if _logo else "")
 
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
@@ -390,6 +393,8 @@ body{{font-family:{_FONT_SANS};color:#1f2328;background:#f6f4ef;
 .topbar{{height:4px;background:linear-gradient(90deg,#f5a623,#e8792b 45%,rgba(232,121,43,0.15) 72%,transparent)}}
 .wrap{{max-width:720px;margin:0 auto;padding:34px 30px 0}}
 .header{{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:18px}}
+.h-brand{{display:flex;align-items:center;margin-bottom:8px}}
+.h-brand img{{width:34px;height:34px;display:block}}
 .h-title{{font-family:{_FONT_SERIF};font-size:38px;font-weight:800;letter-spacing:1.5px;color:#1c1f24;line-height:1.05}}
 .h-sub{{margin-top:13px;display:flex;align-items:center;gap:9px;font-size:15px;color:#8a8577}}
 .h-sub .ico{{display:inline-flex;align-items:center}}
@@ -418,6 +423,7 @@ body{{font-family:{_FONT_SANS};color:#1f2328;background:#f6f4ef;
 <div class="wrap">
   <div class="header">
     <div>
+      {brand_logo}
       <div class="h-title">暮黎短剧日报</div>
       <div class="h-sub"><span class="ico">{_svg("event", 15, "#e8792b")}</span><span class="date">{_esc(date_label)}</span><span class="dot">·</span><span>农历 {lunar}</span></div>
     </div>

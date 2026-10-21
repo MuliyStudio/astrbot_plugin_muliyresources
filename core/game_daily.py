@@ -14,6 +14,7 @@ import os
 import re
 import io
 import base64
+import random
 import time
 import datetime
 import tempfile
@@ -24,6 +25,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from .constants import GAME_BASE_URL, logger
+from .brand import logo_img
 
 # ==================== 常量 ====================
 GAME_LIST_URL = GAME_BASE_URL + "/list/1/"
@@ -135,6 +137,25 @@ def parse_game_list(html: str) -> list:
                 "shots_b64": [],
             })
     return games
+
+
+def get_random_game_xdgame() -> dict | None:
+    """从 xdgame 列表页随机取一款游戏，用于签到推荐（不抓详情）。"""
+    html = _get_html(GAME_LIST_URL, retries=2, timeout=12)
+    if not html:
+        return None
+    blocked = ("绅士", "黄油", "成人", "里番", "色情", "福利")
+    games = [
+        g for g in parse_game_list(html)
+        if g.get("title") and len(g["title"]) <= 30
+        and not any(k in (g.get("category") or "") or k in g["title"] for k in blocked)
+    ]
+    if not games:
+        return None
+    game = random.choice(games)
+    desc = " · ".join(x for x in (game.get("category"), game.get("size")) if x)
+    query = (game["title"].split("/")[0] or game["title"]).strip()
+    return {"name": game["title"], "desc": desc or "xdgame 游戏", "query": query}
 
 
 def _is_today(time_text: str) -> bool:
@@ -356,6 +377,8 @@ def build_cartoon_html(games: list, date_label: str, source_label: str = "XDGAME
 
     cards_html = "\n".join(cards)
     n = len(games)
+    _logo = logo_img(40)
+    brand_logo = f'<div class="brand-logo">{_logo}</div>' if _logo else ""
     return f'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -377,6 +400,10 @@ body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC
   box-shadow:0 12px 30px rgba(155,107,255,0.35);position:relative;overflow:hidden}}
 .header h1{{font-size:30px;font-weight:800;letter-spacing:2px;
   text-shadow:0 3px 0 rgba(0,0,0,0.12)}}
+.header .brand-logo{{position:relative;z-index:1;width:56px;height:56px;margin:0 auto 12px;
+  background:#fff;border-radius:18px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 20px rgba(0,0,0,0.18)}}
+.header .brand-logo img{{width:40px;height:40px;display:block}}
 .header .date{{margin-top:8px;display:inline-block;background:rgba(255,255,255,0.25);
   padding:6px 18px;border-radius:20px;font-size:16px;font-weight:700}}
 .header .sub{{margin-top:8px;font-size:13px;opacity:0.9}}
@@ -422,6 +449,7 @@ body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC
 <body><div class="wrap">
 <div class="header">
   <span class="deco d1"><svg viewBox="0 0 48 32" width="36" height="24" fill="rgba(255,255,255,0.85)"><rect x="2" y="8" width="44" height="20" rx="10"/><circle cx="13" cy="18" r="3" fill="#fff"/><circle cx="19" cy="18" r="3" fill="#fff"/><rect x="32" y="15" width="3" height="7" fill="#fff"/><rect x="30.5" y="18.5" width="6" height="3" fill="#fff"/></svg></span><span class="deco d2"><svg viewBox="0 0 24 24" width="34" height="34" fill="rgba(255,255,255,0.85)"><path d="M12 2l3 6.3 6.9.9-5 4.9 1.2 6.9L12 18.8 5.9 21l1.2-6.9-5-4.9 6.9-.9z"/></svg></span>
+  {brand_logo}
   <h1>暮黎游戏日报</h1>
   <div class="date">{date_label}</div>
   <div class="sub">游戏日报新鲜出炉，@机器人搜索游戏名称即可</div>
