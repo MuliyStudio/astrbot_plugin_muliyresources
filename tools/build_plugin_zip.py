@@ -17,7 +17,7 @@ DIST = os.path.join(ROOT, "dist")
 INCLUDE_FILES = {
     "main.py", "metadata.yaml", "requirements.txt", "_conf_schema.json",
     "README.md", "LICENSE", "CHANGELOG.md", "SO-NOVEL部署指南.md",
-    "SourceHanSansCN-Heavy.otf", "logo.png",
+    "logo.png",
 }
 INCLUDE_DIRS = ("core", "assets")
 EXCLUDE_DIRS = {"__pycache__", "preview", "screenshots", "badges", "tools",
@@ -79,7 +79,7 @@ def main():
     for s, r in tops:
         print(f"  {s / 1024:8.0f} KB  {r}")
     required = {"main.py", "metadata.yaml", "core/brand.py",
-                "assets/logo_mark_128.png", "SourceHanSansCN-Heavy.otf"}
+                "assets/logo_mark_128.png", "assets/fonts/MuliHeavy.woff2"}
     missing = required - {r for r, _ in files}
     print("缺失必需文件：", "无" if not missing else missing)
 

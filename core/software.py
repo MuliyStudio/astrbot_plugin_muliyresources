@@ -474,7 +474,7 @@ def build_summer_html(softwares: list, date_label: str, source_label: str = "小
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>暮黎软件日报 - {date_label}</title>
 <style>
-@font-face{{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}}
+@font-face{{font-family:'reportfont';src:url('MuliHeavy.woff2') format('woff2');font-weight:normal;font-display:swap}}
 *{{margin:0;padding:0;box-sizing:border-box}}
 .mdi{{vertical-align:middle;margin-right:2px}}
 body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif;

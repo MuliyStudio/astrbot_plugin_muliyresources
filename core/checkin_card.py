@@ -485,7 +485,7 @@ def _e(value) -> str:
 
 
 _CSS = """
-@font-face{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}
+@font-face{font-family:'reportfont';src:url('MuliHeavy.woff2') format('woff2');font-weight:normal;font-display:swap}
 *{margin:0;padding:0;box-sizing:border-box}
 body{
   font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei','reportfont','Noto Sans CJK SC',sans-serif;
@@ -781,8 +781,13 @@ def render_checkin_png(html_text: str, font_path: str = "", width: int = 720,
     tmpdir = tempfile.mkdtemp(prefix="checkin_card_")
     html_path = os.path.join(tmpdir, "checkin.html")
     try:
-        if font_path and os.path.exists(font_path):
-            shutil.copyfile(font_path, os.path.join(tmpdir, "report.otf"))
+        fonts_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "assets", "fonts")
+        for _name in ("MuliHeavy.woff2",):
+            _src = os.path.join(fonts_dir, _name)
+            if os.path.exists(_src):
+                shutil.copyfile(_src, os.path.join(tmpdir, _name))
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_text)
         with sync_playwright() as p:

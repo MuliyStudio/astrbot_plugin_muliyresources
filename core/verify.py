@@ -16,6 +16,7 @@
 上层会降级为纯文本题目（提示用户直接回复答案）。
 """
 
+import os
 import random
 from io import BytesIO
 
@@ -25,9 +26,10 @@ try:
 except Exception:  # noqa: BLE001 —— 缺 Pillow 时给出降级信号，不影响插件加载
     PIL_AVAILABLE = False
 
-# 兜底字体候选（插件自带思源黑体优先，其次各系统常见等宽/黑体）
+# 兜底字体候选（插件自带思源黑体子集优先，其次各系统常见等宽/黑体）
+_PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FONT_CANDIDATES = (
-    "SourceHanSansCN-Heavy.otf",
+    os.path.join(_PLUGIN_ROOT, "assets", "fonts", "MuliHeavy.ttf"),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "C:/Windows/Fonts/arialbd.ttf",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",

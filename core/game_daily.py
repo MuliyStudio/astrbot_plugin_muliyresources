@@ -384,7 +384,7 @@ def build_cartoon_html(games: list, date_label: str, source_label: str = "XDGAME
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>暮黎游戏日报 - {date_label}</title>
 <style>
-@font-face{{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}}
+@font-face{{font-family:'reportfont';src:url('MuliHeavy.woff2') format('woff2');font-weight:normal;font-display:swap}}
 *{{margin:0;padding:0;box-sizing:border-box}}
 .ic{{vertical-align:middle;margin-right:2px}}
 body{{font-family:'reportfont','PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Hiragino Sans GB',sans-serif;
@@ -473,8 +473,13 @@ def render_html_to_png(html_text: str, font_path: str = "", width: int = 700,
     html_path = os.path.join(tmpdir, "report.html")
     try:
         import shutil
-        if font_path and os.path.exists(font_path):
-            shutil.copyfile(font_path, os.path.join(tmpdir, "report.otf"))
+        fonts_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "assets", "fonts")
+        for _name in ("MuliHeavy.woff2",):
+            _src = os.path.join(fonts_dir, _name)
+            if os.path.exists(_src):
+                shutil.copyfile(_src, os.path.join(tmpdir, _name))
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_text)
         with sync_playwright() as p:

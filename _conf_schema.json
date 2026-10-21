@@ -1,7 +1,52 @@
 {
+  "list_card": {
+    "description": "长列表图片卡片",
+    "hint": "搜索结果条目多时自动出图；关闭后全部回到纯文本。高级项已收起。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "list_card_enabled": {
+        "type": "bool",
+        "description": "启用长列表图片",
+        "default": true,
+        "hint": "开启后条目超过阈值时发图片；需安装 playwright（插件自带 Chromium 或本机 Chrome）。关闭后全部回到纯文本。"
+      },
+      "list_card_threshold": {
+        "type": "int",
+        "description": "触发图片的条目数阈值",
+        "default": 5,
+        "min": 1,
+        "max": 50,
+        "hint": "结果条数大于该值就出图；默认 5。条目少但纯文本很长时也会自动出图。",
+        "condition": {
+          "list_card_enabled": true
+        }
+      }
+    }
+  },
+  "browser": {
+    "description": "浏览器",
+    "hint": "本地 Chromium 渲染（可选）；留空使用插件自带浏览器或 AstrBot 内置渲染。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "browser_channel": {
+        "type": "string",
+        "description": "Playwright 浏览器",
+        "default": "",
+        "hint": "填 chrome 用本机 Chrome；留空用插件自带 Chromium。"
+      },
+      "browser_exe": {
+        "type": "string",
+        "description": "浏览器可执行路径（留空=自动）",
+        "default": "",
+        "hint": "留空自动选择。"
+      }
+    }
+  },
   "game": {
     "description": "游戏资源",
-    "hint": "游戏搜索源与游戏日报设置。",
+    "hint": "游戏搜索源、结果上限、账号凭据与游戏日报；凭据/日报时间在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -19,6 +64,34 @@
         "max": 48,
         "hint": "默认 32，最大 48。"
       },
+      "xdgame_username": {
+        "type": "string",
+        "description": "xdgame.com 账号",
+        "default": "",
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。",
+        "collapsed": true
+      },
+      "xdgame_password": {
+        "type": "string",
+        "description": "xdgame.com 密码",
+        "default": "",
+        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。",
+        "collapsed": true
+      },
+      "cookie": {
+        "type": "text",
+        "description": "xdgame.com Cookie",
+        "default": "",
+        "hint": "自动登录后写入，一般无需手填。",
+        "collapsed": true
+      },
+      "switch618_cookie": {
+        "type": "text",
+        "description": "switch618.com 登录 Cookie",
+        "default": "",
+        "hint": "switch618 源扫码登录后自动写入，一般无需手填。",
+        "collapsed": true
+      },
       "game_report_enabled": {
         "type": "bool",
         "description": "游戏日报总开关",
@@ -32,7 +105,10 @@
         "min": 1,
         "max": 50,
         "hint": "默认 24，最大 50。",
-        "condition": {"game_report_enabled": true}
+        "condition": {
+          "game_report_enabled": true
+        },
+        "collapsed": true
       },
       "game_schedule_hour": {
         "type": "int",
@@ -41,7 +117,10 @@
         "min": 0,
         "max": 23,
         "hint": "游戏日报独立定时，与软件/影视/短剧日报分开。",
-        "condition": {"game_report_enabled": true}
+        "condition": {
+          "game_report_enabled": true
+        },
+        "collapsed": true
       },
       "game_schedule_minute": {
         "type": "int",
@@ -50,45 +129,29 @@
         "min": 0,
         "max": 59,
         "hint": "独立于其它日报。",
-        "condition": {"game_report_enabled": true}
+        "condition": {
+          "game_report_enabled": true
+        },
+        "collapsed": true
       },
       "game_group_ids": {
         "type": "list",
         "description": "游戏日报推送群 ID",
         "default": [],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "填入群号，可多个；留空则不推送。",
-        "condition": {"game_report_enabled": true}
-      },
-      "xdgame_username": {
-        "type": "string",
-        "description": "xdgame.com 账号",
-        "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。"
-      },
-      "xdgame_password": {
-        "type": "string",
-        "description": "xdgame.com 密码",
-        "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。"
-      },
-      "cookie": {
-        "type": "text",
-        "description": "xdgame.com Cookie",
-        "default": "",
-        "hint": "自动登录后写入，一般无需手填。"
-      },
-      "switch618_cookie": {
-        "type": "text",
-        "description": "switch618.com 登录 Cookie",
-        "default": "",
-        "hint": "switch618 源扫码登录后自动写入，一般无需手填。"
+        "condition": {
+          "game_report_enabled": true
+        },
+        "collapsed": true
       }
     }
   },
   "software": {
     "description": "软件资源",
-    "hint": "软件日报独立定时推送设置。",
+    "hint": "软件日报的推送时间与目标群。",
     "type": "object",
     "default": {},
     "items": {
@@ -112,14 +175,17 @@
         "type": "list",
         "description": "软件日报推送群 ID",
         "default": [],
-        "items": {"type": "string"},
-        "hint": "填入群号，可多个；留空则不推送。"
+        "items": {
+          "type": "string"
+        },
+        "hint": "填入群号，可多个；留空则不推送。",
+        "collapsed": true
       }
     }
   },
   "movie": {
     "description": "影视资源",
-    "hint": "影视搜索源与影视日报设置。",
+    "hint": "影视搜索源、片库登录凭据与影视日报；高级项在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -129,13 +195,42 @@
         "default": "",
         "hint": "留空自动：有片库登录走片库新站，否则回退 a123tv；也可填「片库」/「a123tv」强制。"
       },
+      "muliy_release_url": {
+        "type": "string",
+        "description": "影视发布页地址（选填）",
+        "default": "",
+        "hint": "留空即用默认发布页，一般无需填写。",
+        "collapsed": true
+      },
       "muliy_cache_ttl": {
         "type": "int",
         "description": "新站登录态缓存秒数",
         "default": 3600,
         "min": 300,
         "max": 86400,
-        "hint": "默认 3600 秒，到期自动重登。"
+        "hint": "默认 3600 秒，到期自动重登。",
+        "collapsed": true
+      },
+      "muliy_username": {
+        "type": "string",
+        "description": "片库（新站）账号（选填）",
+        "default": "",
+        "hint": "选填。与密码搭配，插件自动登录片库新站，无需搬 Cookie。",
+        "collapsed": true
+      },
+      "muliy_password": {
+        "type": "string",
+        "description": "片库（新站）密码（选填）",
+        "default": "",
+        "hint": "选填。与账号搭配自动登录。",
+        "collapsed": true
+      },
+      "muliy_cookie": {
+        "type": "text",
+        "description": "片库（新站）Cookie（选填，可用账号密码替代）",
+        "default": "",
+        "hint": "选填。含 app_auth、PHPSESSID 即可；勿填 browser_verified / browser_pow（插件会自动求解）。",
+        "collapsed": true
       },
       "movie_report_enabled": {
         "type": "bool",
@@ -150,7 +245,27 @@
         "min": 1,
         "max": 50,
         "hint": "电影/剧集/动漫每块各取前 N 部，默认 24。",
-        "condition": {"movie_report_enabled": true}
+        "condition": {
+          "movie_report_enabled": true
+        },
+        "collapsed": true
+      },
+      "movie_sections": {
+        "type": "list",
+        "description": "影视日报包含的区块",
+        "default": [
+          "mv",
+          "tv",
+          "ac"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "hint": "mv=电影 / tv=剧集 / ac=动漫，可多选。",
+        "condition": {
+          "movie_report_enabled": true
+        },
+        "collapsed": true
       },
       "movie_schedule_hour": {
         "type": "int",
@@ -159,7 +274,10 @@
         "min": 0,
         "max": 23,
         "hint": "影视日报独立定时，与软件/游戏/短剧日报分开。",
-        "condition": {"movie_report_enabled": true}
+        "condition": {
+          "movie_report_enabled": true
+        },
+        "collapsed": true
       },
       "movie_schedule_minute": {
         "type": "int",
@@ -168,53 +286,174 @@
         "min": 0,
         "max": 59,
         "hint": "独立于其它日报。",
-        "condition": {"movie_report_enabled": true}
+        "condition": {
+          "movie_report_enabled": true
+        },
+        "collapsed": true
       },
       "movie_group_ids": {
         "type": "list",
         "description": "影视日报推送群 ID",
         "default": [],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "填入群号，可多个；留空则不推送。",
-        "condition": {"movie_report_enabled": true}
+        "condition": {
+          "movie_report_enabled": true
+        },
+        "collapsed": true
+      }
+    }
+  },
+  "shortdrama": {
+    "description": "短剧搜索与日报",
+    "hint": "短剧搜索与短剧日报；日报时间/群在「更多配置」里。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "drama_enabled": {
+        "type": "bool",
+        "description": "短剧搜索总开关",
+        "default": true,
+        "hint": "开启后支持「搜短剧XX / 看短剧XX」，选中返回夸克网盘链接。"
       },
-      "movie_sections": {
+      "drama_search_limit": {
+        "type": "int",
+        "description": "单次搜索结果上限",
+        "default": 20,
+        "min": 4,
+        "max": 40,
+        "hint": "默认 20。"
+      },
+      "drama_timeout": {
+        "type": "int",
+        "description": "请求超时（秒）",
+        "default": 15,
+        "min": 5,
+        "max": 60,
+        "hint": "默认 15 秒。",
+        "collapsed": true
+      },
+      "drama_report_enabled": {
+        "type": "bool",
+        "description": "短剧日报总开关",
+        "default": true,
+        "hint": "开启后按本组时间每天推送短剧日报到「短剧日报推送群」。"
+      },
+      "drama_report_max": {
+        "type": "int",
+        "description": "短剧日报每期最多部数",
+        "default": 12,
+        "min": 1,
+        "max": 30,
+        "hint": "默认 12，最大 30（每部需额外请求详情页）。",
+        "condition": {
+          "drama_report_enabled": true
+        },
+        "collapsed": true
+      },
+      "drama_schedule_hour": {
+        "type": "int",
+        "description": "短剧日报推送小时（0-23）",
+        "default": 21,
+        "min": 0,
+        "max": 23,
+        "hint": "短剧日报独立定时，与软件/游戏/影视日报分开。",
+        "condition": {
+          "drama_report_enabled": true
+        },
+        "collapsed": true
+      },
+      "drama_schedule_minute": {
+        "type": "int",
+        "description": "短剧日报推送分钟（0-59）",
+        "default": 0,
+        "min": 0,
+        "max": 59,
+        "hint": "独立于其它日报。",
+        "condition": {
+          "drama_report_enabled": true
+        },
+        "collapsed": true
+      },
+      "drama_group_ids": {
         "type": "list",
-        "description": "影视日报包含的区块",
-        "default": ["mv", "tv", "ac"],
-        "items": {"type": "string"},
-        "hint": "mv=电影 / tv=剧集 / ac=动漫，可多选。",
-        "condition": {"movie_report_enabled": true}
-      },
-      "muliy_release_url": {
+        "description": "短剧日报推送群 ID",
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "hint": "填入群号，可多个；留空则不推送。",
+        "condition": {
+          "drama_report_enabled": true
+        },
+        "collapsed": true
+      }
+    }
+  },
+  "novel": {
+    "description": "小说搜索与下载",
+    "hint": "so-novel 服务地址与下载格式；令牌、超时在「更多配置」里。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "sonovel_base_url": {
         "type": "string",
-        "description": "影视发布页地址（选填）",
-        "default": "",
-        "hint": "留空即用默认发布页，一般无需填写。"
+        "description": "so-novel Web 服务地址",
+        "default": "http://127.0.0.1:7765",
+        "hint": "so-novel 以 Web 模式启动后的地址，默认 http://127.0.0.1:7765。"
       },
-      "muliy_username": {
+      "sonovel_format": {
+        "type": "list",
+        "description": "默认下载格式（可多选）",
+        "default": [
+          "txt"
+        ],
+        "items": {
+          "type": "string"
+        },
+        "hint": "txt / epub / html / pdf，推荐至少保留 txt。"
+      },
+      "sonovel_token": {
         "type": "string",
-        "description": "片库（新站）账号（选填）",
+        "description": "访问令牌（可选）",
         "default": "",
-        "hint": "选填。与密码搭配，插件自动登录片库新站，无需搬 Cookie。"
+        "hint": "官方 servlet 不鉴权，留空即可。",
+        "collapsed": true
       },
-      "muliy_password": {
-        "type": "string",
-        "description": "片库（新站）密码（选填）",
-        "default": "",
-        "hint": "选填。与账号搭配自动登录。"
+      "sonovel_search_limit": {
+        "type": "int",
+        "description": "每源搜索结果上限",
+        "default": 20,
+        "min": 1,
+        "max": 50,
+        "hint": "默认 20。",
+        "collapsed": true
       },
-      "muliy_cookie": {
-        "type": "text",
-        "description": "片库（新站）Cookie（选填，可用账号密码替代）",
-        "default": "",
-        "hint": "选填。含 app_auth、PHPSESSID 即可；勿填 browser_verified / browser_pow（插件会自动求解）。"
+      "sonovel_timeout": {
+        "type": "int",
+        "description": "搜索/接口网络超时（秒）",
+        "default": 30,
+        "min": 5,
+        "max": 120,
+        "hint": "默认 30 秒。",
+        "collapsed": true
+      },
+      "sonovel_download_timeout": {
+        "type": "int",
+        "description": "整本下载超时（秒）",
+        "default": 600,
+        "min": 30,
+        "max": 1800,
+        "hint": "默认 600 秒，大书可能需数分钟。",
+        "collapsed": true
       }
     }
   },
   "music": {
     "description": "网易云音乐",
-    "hint": "网易云语音名片 / 歌曲解析设置。",
+    "hint": "网易云语音名片；自建接口、Cookie、代理在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -236,12 +475,21 @@
         "default": "standard",
         "hint": "standard/exhigh/lossless/hires/sky/jymaster；部分需会员。"
       },
+      "wyy_audio_format": {
+        "type": "string",
+        "description": "语音音频格式",
+        "default": "wav",
+        "hint": "mp3（QQ 兼容好，推荐）/ wav。"
+      },
       "wyy_custom_url": {
         "type": "string",
         "description": "自建 NeteaseCloudMusicApi 地址",
         "default": "",
         "hint": "仅 wyy_backend=custom 时需要，如 http://127.0.0.1:3000。",
-        "condition": {"wyy_backend": "custom"}
+        "condition": {
+          "wyy_backend": "custom"
+        },
+        "collapsed": true
       },
       "wyy_clip_seconds": {
         "type": "int",
@@ -249,31 +497,28 @@
         "default": 600,
         "min": 10,
         "max": 600,
-        "hint": "默认 600（10 分钟）；建议 180-400。"
-      },
-      "wyy_audio_format": {
-        "type": "string",
-        "description": "语音音频格式",
-        "default": "wav",
-        "hint": "mp3（QQ 兼容好，推荐）/ wav。"
+        "hint": "默认 600（10 分钟）；建议 180-400。",
+        "collapsed": true
       },
       "wyy_cookie": {
         "type": "string",
         "description": "黑胶会员 Cookie（用于解析 VIP 歌曲）",
         "default": "",
-        "hint": "留空只能解析免费歌；填会员 Cookie（含 MUSIC_U）可解析 VIP。"
+        "hint": "留空只能解析免费歌；填会员 Cookie（含 MUSIC_U）可解析 VIP。",
+        "collapsed": true
       },
       "wyy_proxy": {
         "type": "string",
         "description": "网易云请求代理（可选）",
         "default": "",
-        "hint": "留空直连；服务器 IP 被风控时填代理。"
+        "hint": "留空直连；服务器 IP 被风控时填代理。",
+        "collapsed": true
       }
     }
   },
   "vip_video": {
     "description": "VIP 视频解析",
-    "hint": "爱奇艺/腾讯/优酷/芒果等 VIP 视频链接自动解析设置。",
+    "hint": "爱奇艺/腾讯/优酷/芒果 VIP 链接解析。",
     "type": "object",
     "default": {},
     "items": {
@@ -289,178 +534,14 @@
         "default": 25000,
         "min": 8000,
         "max": 60000,
-        "hint": "默认 25000 毫秒。"
-      }
-    }
-  },
-  "browser": {
-    "description": "浏览器",
-    "hint": "Playwright 渲染所用浏览器，游戏日报与 VIP 解析共用。",
-    "type": "object",
-    "default": {},
-    "items": {
-      "browser_channel": {
-        "type": "string",
-        "description": "Playwright 浏览器",
-        "default": "",
-        "hint": "填 chrome 用本机 Chrome；留空用插件自带 Chromium。"
-      },
-      "browser_exe": {
-        "type": "string",
-        "description": "浏览器可执行路径（留空=自动）",
-        "default": "",
-        "hint": "留空自动选择。"
-      }
-    }
-  },
-  "novel": {
-    "description": "小说搜索与下载",
-    "hint": "基于 so-novel 的多源聚合搜索/下载，需另起一个 so-novel 实例（Web 模式）。",
-    "type": "object",
-    "default": {},
-    "items": {
-      "sonovel_base_url": {
-        "type": "string",
-        "description": "so-novel Web 服务地址",
-        "default": "http://127.0.0.1:7765",
-        "hint": "so-novel 以 Web 模式启动后的地址，默认 http://127.0.0.1:7765。"
-      },
-      "sonovel_token": {
-        "type": "string",
-        "description": "访问令牌（可选）",
-        "default": "",
-        "hint": "官方 servlet 不鉴权，留空即可。"
-      },
-      "sonovel_search_limit": {
-        "type": "int",
-        "description": "每源搜索结果上限",
-        "default": 20,
-        "min": 1,
-        "max": 50,
-        "hint": "默认 20。"
-      },
-      "sonovel_format": {
-        "type": "list",
-        "description": "默认下载格式（可多选）",
-        "default": ["txt"],
-        "items": {"type": "string"},
-        "hint": "txt / epub / html / pdf，推荐至少保留 txt。"
-      },
-      "sonovel_timeout": {
-        "type": "int",
-        "description": "搜索/接口网络超时（秒）",
-        "default": 30,
-        "min": 5,
-        "max": 120,
-        "hint": "默认 30 秒。"
-      },
-      "sonovel_download_timeout": {
-        "type": "int",
-        "description": "整本下载超时（秒）",
-        "default": 600,
-        "min": 30,
-        "max": 1800,
-        "hint": "默认 600 秒，大书可能需数分钟。"
-      }
-    }
-  },
-  "list_card": {
-    "description": "长列表图片卡片",
-    "hint": "小说搜索结果、影视网盘资源等条目较多的列表，自动渲染成图片发送，避免纯文本刷屏。",
-    "type": "object",
-    "default": {},
-    "items": {
-      "list_card_enabled": {
-        "type": "bool",
-        "description": "启用长列表图片",
-        "default": true,
-        "hint": "开启后条目超过阈值时发图片；需安装 playwright（插件自带 Chromium 或本机 Chrome）。关闭后全部回到纯文本。"
-      },
-      "list_card_threshold": {
-        "type": "int",
-        "description": "触发图片的条目数阈值",
-        "default": 5,
-        "min": 1,
-        "max": 50,
-        "hint": "结果条数大于该值就出图；默认 5。条目少但纯文本很长时也会自动出图。",
-        "condition": {"list_card_enabled": true}
-      }
-    }
-  },
-  "shortdrama": {
-    "description": "短剧搜索与日报",
-    "hint": "网盘贴吧短剧搜索与夸克网盘资源链接，及每日短剧日报。",
-    "type": "object",
-    "default": {},
-    "items": {
-      "drama_enabled": {
-        "type": "bool",
-        "description": "短剧搜索总开关",
-        "default": true,
-        "hint": "开启后支持「搜短剧XX / 看短剧XX」，选中返回夸克网盘链接。"
-      },
-      "drama_search_limit": {
-        "type": "int",
-        "description": "单次搜索结果上限",
-        "default": 20,
-        "min": 4,
-        "max": 40,
-        "hint": "默认 20。"
-      },
-      "drama_report_enabled": {
-        "type": "bool",
-        "description": "短剧日报总开关",
-        "default": true,
-        "hint": "开启后按本组时间每天推送短剧日报到「短剧日报推送群」。"
-      },
-      "drama_report_max": {
-        "type": "int",
-        "description": "短剧日报每期最多部数",
-        "default": 12,
-        "min": 1,
-        "max": 30,
-        "hint": "默认 12，最大 30（每部需额外请求详情页）。",
-        "condition": {"drama_report_enabled": true}
-      },
-      "drama_schedule_hour": {
-        "type": "int",
-        "description": "短剧日报推送小时（0-23）",
-        "default": 21,
-        "min": 0,
-        "max": 23,
-        "hint": "短剧日报独立定时，与软件/游戏/影视日报分开。",
-        "condition": {"drama_report_enabled": true}
-      },
-      "drama_schedule_minute": {
-        "type": "int",
-        "description": "短剧日报推送分钟（0-59）",
-        "default": 0,
-        "min": 0,
-        "max": 59,
-        "hint": "独立于其它日报。",
-        "condition": {"drama_report_enabled": true}
-      },
-      "drama_group_ids": {
-        "type": "list",
-        "description": "短剧日报推送群 ID",
-        "default": [],
-        "items": {"type": "string"},
-        "hint": "填入群号，可多个；留空则不推送。",
-        "condition": {"drama_report_enabled": true}
-      },
-      "drama_timeout": {
-        "type": "int",
-        "description": "请求超时（秒）",
-        "default": 15,
-        "min": 5,
-        "max": 60,
-        "hint": "默认 15 秒。"
+        "hint": "默认 25000 毫秒。",
+        "collapsed": true
       }
     }
   },
   "verify": {
     "description": "入群审核（QQ）",
-    "hint": "新成员入群后 @ 他并发送图形验证码，限时回复正确答案；答错达上限或超时移出群聊。仅支持 QQ（aiocqhttp / OneBot v11），且机器人需为群管理员。",
+    "hint": "QQ 新成员图形验证码审核；超时/机会/撤回等在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -474,9 +555,13 @@
         "type": "list",
         "description": "生效群 ID（白名单）",
         "default": [],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "只在这些群启用审核；留空表示所有群生效。建议填写，避免影响其它群。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        }
       },
       "join_verify_timeout": {
         "type": "int",
@@ -485,7 +570,10 @@
         "min": 30,
         "max": 600,
         "hint": "默认 120 秒（2 分钟）。超时未通过将被移出群聊。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        },
+        "collapsed": true
       },
       "join_verify_max_attempts": {
         "type": "int",
@@ -494,34 +582,46 @@
         "min": 1,
         "max": 5,
         "hint": "默认 2 次，即第 2 次答错立即移出群聊（仅统计含数字的发言）。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        },
+        "collapsed": true
       },
       "join_verify_recall": {
         "type": "bool",
         "description": "验证期间撤回消息（成员发言 + 机器人验证消息）",
         "default": true,
         "hint": "开启后（需机器人有管理权限）会撤回待验证成员的消息防刷屏，并在验证结束（通过/失败/超时）时把机器人本次发的验证消息一并撤回，做到不留痕。关闭则仅提示、不撤回。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        },
+        "collapsed": true
       },
       "join_verify_kick": {
         "type": "bool",
         "description": "验证失败时移出群聊",
         "default": true,
         "hint": "关闭后只撤回首屏消息，不踢人（适合先观察）。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        },
+        "collapsed": true
       },
       "join_verify_welcome_text": {
         "type": "string",
         "description": "验证通过后的欢迎词",
         "default": "✅ 验证成功，欢迎加入群聊！",
         "hint": "验证通过时会先撤回机器人本次发的验证消息，只保留这一条；留空则静默通过（不发送任何消息）。",
-        "condition": {"join_verify_enabled": true}
+        "condition": {
+          "join_verify_enabled": true
+        },
+        "collapsed": true
       }
     }
   },
   "points": {
     "description": "签到与积分",
-    "hint": "开启后用户可通过 /签到 领取积分，搜索资源按类型扣除积分；积分按用户跨群聊/私聊全局共享。",
+    "hint": "签到与积分系统；初始积分、连续加成、推荐清单、搜索消耗在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -538,7 +638,10 @@
         "min": 0,
         "max": 1000000,
         "hint": "用户第一次签到或第一次被扣费时自动开户并赠送该积分；默认 0。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_points": {
         "type": "int",
@@ -547,7 +650,9 @@
         "min": 0,
         "max": 10000,
         "hint": "每天首次 /签到 获得的基础积分；当天重复签到不再发放。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        }
       },
       "checkin_streak_bonus": {
         "type": "int",
@@ -556,7 +661,10 @@
         "min": 0,
         "max": 1000,
         "hint": "从连续第 2 天起，每天额外增加该积分；默认 0 表示不加成。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_streak_max": {
         "type": "int",
@@ -565,35 +673,52 @@
         "min": 1,
         "max": 365,
         "hint": "连续签到加成最多按这么多天计算（例如 7 天：第 8 天起不再增加加成）。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_card_enabled": {
         "type": "bool",
         "description": "签到成功卡片（HTML 出图）",
         "default": true,
         "hint": "开启后 /签到 会生成一张含 Bing 每日壁纸、左下信息模块、每日一言和资源推荐的卡片图；出图失败会自动回退纯文字。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        }
       },
       "checkin_info_module": {
         "type": "string",
         "description": "卡片左下内容模块",
         "default": "epic",
         "hint": "epic：Epic 喜加一（默认，推荐）；history：历史上的今天；poem：今日诗词；weather：实时天气；off：关闭。填其它值按 epic 处理。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true
+        }
       },
       "checkin_weather_city": {
         "type": "string",
         "description": "天气城市（仅 weather 模式）",
         "default": "",
         "hint": "仅当 checkin_info_module=weather 时生效。留空表示按服务器出口 IP 自动定位（不是你本人的位置）；可填「北京」「上海」「广州」等固定城市。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true,
+          "checkin_info_module": "weather"
+        },
+        "collapsed": true
       },
       "checkin_recommend_dynamic": {
         "type": "bool",
         "description": "推荐优先从当前搜索源动态获取",
         "default": true,
         "hint": "开启后：影视按当前源随机取一部（a123tv 首页 / 片库首页）；游戏按当前 game_source 从 xdgame / switch618 随机取一款；软件从 x6d 列表随机取一款。获取失败自动回退下面的静态清单。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_recommend_games": {
         "type": "list",
@@ -603,9 +728,15 @@
           "塞尔达传说：王国之泪|开放世界探索，随便逛都能玩很久",
           "双人成行|双人合作解谜，适合和朋友一起"
         ],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一款；留空则不推荐游戏。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_recommend_software": {
         "type": "list",
@@ -615,9 +746,15 @@
           "PotPlayer|轻量全能播放器，格式支持很全",
           "7-Zip|开源压缩工具，干净无广告"
         ],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一款；留空则不推荐软件。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true
+        },
+        "collapsed": true
       },
       "checkin_recommend_movies": {
         "type": "list",
@@ -627,9 +764,15 @@
           "庆余年|古装权谋剧，适合连着追",
           "疯狂动物城|轻松合家欢，随时都能看"
         ],
-        "items": {"type": "string"},
+        "items": {
+          "type": "string"
+        },
         "hint": "每行一款，格式：名称|一句话推荐。每天按日期轮换一部；留空则不推荐影视。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true,
+          "checkin_card_enabled": true
+        },
+        "collapsed": true
       },
       "points_cost_game": {
         "type": "int",
@@ -638,7 +781,10 @@
         "min": 0,
         "max": 10000,
         "hint": "每次成功搜到游戏结果扣一次；0 表示免费。下同。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "points_cost_software": {
         "type": "int",
@@ -647,7 +793,10 @@
         "min": 0,
         "max": 10000,
         "hint": "每次成功搜到软件结果扣一次；0 表示免费。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "points_cost_movie": {
         "type": "int",
@@ -656,7 +805,10 @@
         "min": 0,
         "max": 10000,
         "hint": "每次成功搜到影视结果扣一次；0 表示免费。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "points_cost_drama": {
         "type": "int",
@@ -665,7 +817,10 @@
         "min": 0,
         "max": 10000,
         "hint": "每次成功搜到短剧结果扣一次；0 表示免费。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       },
       "points_cost_novel": {
         "type": "int",
@@ -674,7 +829,10 @@
         "min": 0,
         "max": 10000,
         "hint": "每次成功搜到小说结果扣一次；0 表示免费。",
-        "condition": {"points_enabled": true}
+        "condition": {
+          "points_enabled": true
+        },
+        "collapsed": true
       }
     }
   }

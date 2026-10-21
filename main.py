@@ -270,7 +270,7 @@ _POINTS_LABELS = {
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.0")
+          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.1")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -1321,7 +1321,7 @@ class MuliyResourcesPlugin(Star):
             recommendations=recs,
             info_module=info_module,
         )
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         img = await asyncio.to_thread(
             render_checkin_png, html, font_path, 720, channel, exe)
         if img:
@@ -3031,7 +3031,7 @@ class MuliyResourcesPlugin(Star):
             yield event.plain_result("📭 今日暂无短剧更新。"); return
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         html = build_drama_html(items, date_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
@@ -3623,7 +3623,7 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.warning(f"[软件日报] 封面下载异常: {e}")
         html = build_summer_html(sws, date_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
@@ -6898,7 +6898,7 @@ class MuliyResourcesPlugin(Star):
     async def _movie_build_and_send(self, items: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         html = build_glass_html(items, date_label, source_label="片库")
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         config = self._get_config()
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
@@ -7040,7 +7040,7 @@ class MuliyResourcesPlugin(Star):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         src_label = result.get("source", "片库")
         html = build_glass_html(items, date_label, source_label=src_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
@@ -7108,7 +7108,7 @@ class MuliyResourcesPlugin(Star):
     async def _drama_build_and_send(self, items: list, ts: str):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         html = build_drama_html(items, date_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         config = self._get_config()
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
@@ -7659,7 +7659,7 @@ class MuliyResourcesPlugin(Star):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         src_label = "switch618" if self._game_source() == "switch618" else "XDGAME"
         html = build_cartoon_html(games, date_label, source_label=src_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         config = self._get_config()
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
@@ -7824,7 +7824,7 @@ class MuliyResourcesPlugin(Star):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         src_label = "switch618" if self._game_source() == "switch618" else "XDGAME"
         html = build_cartoon_html(games, date_label, source_label=src_label)
-        font_path = os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
         exe = (config.get("browser_exe", "") or "") if isinstance(config, dict) else ""
         img_bytes = None
@@ -7899,7 +7899,7 @@ class MuliyResourcesPlugin(Star):
         return None
 
     def _join_verify_font(self) -> str:
-        return os.path.join(os.path.dirname(__file__), "SourceHanSansCN-Heavy.otf")
+        return os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
 
     async def _send_group_msg(self, client, group_id, text: str = "",
                               at_user: str = "", image_b64: str = ""):

@@ -13,7 +13,7 @@ cards 为条目列表，每项：
   desc : str        —— 简介/剧情摘要
 
 布局：顶部标题条 + 每条目一张卡片（封面缩略图 + 标题 + 标签 + 简介）+ 页脚。
-全部用 Pillow 绘制，中文字体取插件自带的 SourceHanSansCN-Heavy.otf（思源黑体）。
+全部用 Pillow 绘制，中文字体取插件自带的思源黑体子集（assets/fonts/MuliHeavy.ttf）。
 """
 import base64
 import io

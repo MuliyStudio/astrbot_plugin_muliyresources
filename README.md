@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.0" alt="版本"></a>
+  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.1" alt="版本"></a>
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/astrbot.svg" alt="AstrBot 版本">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/platform.svg" alt="支持平台">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/novel.svg" alt="so-novel">
@@ -204,6 +204,9 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 在 AstrBot WebUI → 插件设置 →「暮黎资源聚合」中，按分组填写。**大部分留空即可用默认功能。**
 
+> 配置页已按使用频率重排：图片渲染 → 游戏 / 软件 / 影视 → 短剧 / 小说 → 音乐 / VIP / 审核 / 积分。
+> 账号凭据、日报时间、超时等高级项默认收进每组的「**更多配置**」，展开才显示；关掉某个总开关（日报、积分、入群审核）时，相关项会自动隐藏。
+
 ### 🎮 游戏（game）
 
 | 配置项 | 默认 | 说明 |
@@ -262,7 +265,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 卡片用本地渲染：插件初始化时后台预热 Chromium，单张约 0.1–0.3 秒，同一张卡片 10 分钟内命中缓存；空闲 10 分钟自动释放浏览器内存。渲染失败或未安装 Playwright 时自动回退文本，功能不受影响。
 
-字体为 SIL OFL 授权的思源黑体 / 思源宋体子集（GB2312 常用字 + 标点，约 4.5 MB），随插件打包，不依赖服务器装没装中文字体。卡片文本会自动去掉 emoji 与装饰符号，不依赖 emoji 字体。
+字体为 SIL OFL 授权的思源黑体 / 思源宋体子集（GB2312 常用字 + 标点）：卡片用 4.5 MB，日报用 Heavy 子集 3.4 MB，随插件打包，不依赖服务器装没装中文字体。卡片文本会自动去掉 emoji 与装饰符号，不依赖 emoji 字体。
 
 ### 📺 短剧（shortdrama）
 

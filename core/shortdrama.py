@@ -383,7 +383,7 @@ def build_drama_html(items: list, date_label: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>暮黎短剧日报 - {_esc(date_label)}</title>
 <style>
-@font-face{{font-family:'reportfont';src:url('report.otf') format('opentype');font-weight:normal;font-display:swap}}
+@font-face{{font-family:'reportfont';src:url('MuliHeavy.woff2') format('woff2');font-weight:normal;font-display:swap}}
 *{{margin:0;padding:0;box-sizing:border-box}}
 html{{background:#f6f4ef;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 body{{font-family:{_FONT_SANS};color:#1f2328;background:#f6f4ef;
