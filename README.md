@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.1" alt="版本"></a>
+  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.3" alt="版本"></a>
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/astrbot.svg" alt="AstrBot 版本">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/platform.svg" alt="支持平台">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/novel.svg" alt="so-novel">
