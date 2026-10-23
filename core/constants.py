@@ -70,9 +70,12 @@ SW_HEADERS = {
 MV_BASE_URL = "https://a123tv.com"
 # a123tv 真搜索接口：/s/{URL编码关键词}.html（之前用的 /index.php?m=vod-search&wd= 返回首页热度列表，不是真搜索）
 MV_SEARCH_URL = MV_BASE_URL + "/s/{keyword}.html"
-# 影视源关键字：movie_source 配置可填这两个值强制指定源
-MV_SOURCE_KEYWORD_NEW = "片库"     # 新站（片库）关键字，描述：最全最新的影视资源网站
-MV_SOURCE_KEYWORD_OLD = "a123tv"   # 旧站关键字
+# 影视源关键字：movie_source 配置可填这些值强制指定源
+MV_SOURCE_KEYWORD_NEW = "new"      # 新站（pdy0.com，片库注册站）关键字
+MV_SOURCE_KEYWORD_OLD = "old"      # 旧站（片库主站）关键字
+# 兼容别名（用户可能沿用旧写法）
+MV_SOURCE_ALIASES_NEW = {"new", "pdy", "pdy0", "片库注册站"}
+MV_SOURCE_ALIASES_OLD = {"old", "片库", "muliy", "a123tv"}
 MV_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

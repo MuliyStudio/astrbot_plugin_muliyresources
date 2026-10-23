@@ -133,6 +133,28 @@ class PointsStore:
             except (TypeError, ValueError):
                 return 0
 
+    def peek(self, key: str) -> Optional[dict]:
+        """只读查询：不存在时返回 None，不会像 get() 那样顺手建档。"""
+        with self._lock:
+            user = self._data.get("users", {}).get(key)
+            return dict(user) if isinstance(user, dict) else None
+
+    def find_keys(self, user_id: str) -> list[str]:
+        """按纯用户 ID 反查所有平台的存储键。
+
+        积分键是「平台:用户ID」，管理员通常只记得 QQ 号；
+        同一用户换平台/换适配器后键会变，这里做一次兜底匹配。
+        """
+        uid = str(user_id or "").strip()
+        if not uid:
+            return []
+        suffix = f":{uid}"
+        with self._lock:
+            return sorted(
+                str(k) for k in (self._data.get("users") or {})
+                if str(k).endswith(suffix)
+            )
+
     def top(self, limit: int = 10) -> list[tuple[str, dict]]:
         with self._lock:
             rows = []

@@ -7,6 +7,8 @@ Pillow
 pycryptodome
 qrcode
 playwright
+# 可选：pdy0 搜索验证码自动识别（体积较大，约 100MB；不装则把验证码图发给用户手动输入）
+# ddddocr
 # 可选：安装 Chromium 可获得 HTML 高清渲染的日报图（国内可加
 # PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright 加速）。
 # 不安装也完全可用：日报会自动用 AstrBot 内置 html_render（官方 T2I 服务）或

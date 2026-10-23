@@ -8,7 +8,7 @@ core/constants.py  — 常量定义
 core/session.py    — 会话管理器
 core/game.py       — 游戏搜索相关函数
 core/software.py   — 软件日报&搜索相关函数
-core/movie.py      — 影视搜索相关函数 (a123tv.com)
+core/movie.py      — 旧 a123tv 影视搜索函数（已停用，仅保留兼容）
 """
 
 import asyncio, base64, concurrent.futures, datetime, io, json, os, re, sys, tempfile, time, traceback, zipfile, zoneinfo
@@ -62,9 +62,12 @@ from .core.game_daily import (
     get_today_games, build_cartoon_html, render_html_to_png, get_random_game_xdgame,
 )
 from .core.movie_daily import (
-    fetch_movie_daily, fetch_movie_daily_auto, build_glass_html,
-    render_glass_to_png, gen_report_zip as gen_movie_report_zip,
+    fetch_movie_daily, fetch_movie_daily_auto, fetch_movie_daily_pdy,
+    build_glass_html, render_glass_to_png, gen_report_zip as gen_movie_report_zip,
     get_random_movie_muliy,
+)
+from .core.pdy_site import (
+    PdySiteClient, PdyCaptchaRequired, PDY_BASE_URL, PDY_RELEASE_URL, discover_domains,
 )
 from .core.shortdrama import (
     search_dramas, get_drama_detail, fetch_latest_dramas,
@@ -116,7 +119,7 @@ from .core.netease import (
 from .core.audio_clip import ffmpeg_available, get_duration_seconds, compute_clip_range, cut_clip
 from .core.vip_capture import (
     is_vip_video_url, analyze_vip_link, build_interface_link,
-    verify_interface_playable, VIP_INTERFACES,
+    verify_interface_playable, fetch_muliy_interfaces, VIP_INTERFACES,
     resolve_iqiyi_share, is_iqiyi_share_url, follow_iqiyi_redirect,
     normalize_video_url,
 )
@@ -217,7 +220,7 @@ _CONF_GROUPS = {
     ],
     "software": ["schedule_hour", "schedule_minute", "group_ids"],
     "movie": [
-        "movie_source", "muliy_cache_ttl", "muliy_release_url",
+        "movie_source", "pdy_auto_captcha", "muliy_cache_ttl", "muliy_release_url",
         "movie_report_enabled", "movie_report_max",
         "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections",
         "muliy_username", "muliy_password", "muliy_cookie",
@@ -270,7 +273,7 @@ _POINTS_LABELS = {
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(片库新站/a123tv) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.1")
+          "暮黎资源聚合 - 影视搜索(pdy0/片库) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到&管理 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.1")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -278,11 +281,16 @@ class MuliyResourcesPlugin(Star):
         self._plugin_config = self._migrate_config(config)
         self._sessions = SessionManager()
         self._search_sessions = SearchSessionManager()
-        self._movie_sessions = SearchSessionManager()   # 影视会话 (a123tv)
-        self._movie_sessions_new = SearchSessionManager()  # 影视会话 (片库新站)
+        self._movie_sessions = SearchSessionManager()   # 影视会话（旧 a123tv 流程，仅保留兼容）
+        self._movie_sessions_new = SearchSessionManager()  # 影视会话（pdy0 / 片库主站共用）
         self._novel_sessions = SearchSessionManager()  # 小说会话 (so-novel)
         self._drama_sessions = SearchSessionManager()  # 短剧会话 (wangpant8)
-        self._muliy_client: MuliySiteClient | None = None  # 新站客户端（懒加载）
+        self._muliy_client: MuliySiteClient | None = None  # 片库主站客户端（懒加载）
+        self._pdy_client: PdySiteClient | None = None      # pdy0 客户端（懒加载）
+        # pdy0 搜索验证码：等待用户手动输入 {key: {...}}；全局同时只保留一个
+        self._pdy_pending: dict = {}
+        self._pdy_ocr = None
+        self._pdy_ocr_checked = False
         # 后台任务引用（防止被GC）
         self._bg_tasks: list[asyncio.Task] = []
         # 软件日报调度
@@ -315,6 +323,10 @@ class MuliyResourcesPlugin(Star):
         self._scheduled_job_ids: list[str] = []
         # VIP 解析：等待用户「选接口」的待处理会话 {unified_msg_origin: {...}}
         self._vip_pending: dict = {}
+        # VIP 解析接口：片库 /zjx 实时获取 + 磁盘缓存
+        self._vip_interfaces: list = []
+        self._vip_if_ts: float = 0.0
+        self._vip_if_lock = None
         # 入群审核：待验证成员 {f"{group_id}:{user_id}": {...}} 与超时任务
         self._join_verify: dict = {}
         self._join_verify_tasks: dict = {}
@@ -372,6 +384,11 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[暮黎资源] 本地配置恢复失败: {e}")
         # 恢复各日报「今日已发送」状态：重装/热重载后不再重复补发当天日报
         self._load_report_state()
+        # VIP 解析接口缓存（片库 /zjx 上次抓取结果，避免每次开浏览器）
+        try:
+            self._load_vip_interface_cache()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[暮黎资源] VIP 接口缓存载入跳过: {e}")
         await self._start_sw_scheduler()
         # 影视源 / 游戏源：按 cookie 是否配置自动决定（替代手动 movie_source 切换）
         try:
@@ -380,7 +397,7 @@ class MuliyResourcesPlugin(Star):
             release_url = (cfg.get("muliy_release_url") or "").strip()
             if release_url:
                 set_release_url(release_url)
-            # 影视源：配置了 Cookie 或账号密码 → 片库新站（自动登录），否则回退 a123tv 旧站
+            # 影视源：默认 pdy0（免登录）；movie_source=old 时用片库主站（需 Cookie/账号密码）
             cookies = (cfg.get("muliy_cookie") or "").strip()
             username = (cfg.get("muliy_username") or "").strip()
             password = (cfg.get("muliy_password") or "").strip()
@@ -389,9 +406,9 @@ class MuliyResourcesPlugin(Star):
                 self._muliy_client = MuliySiteClient(
                     base_url="", cache_ttl=ttl, cookies=cookies,
                     username=username, password=password)
-                logger.info(f"[暮黎资源] 影视源=片库新站 ({'cookie' if cookies else '账号密码'}登录模式)")
+                logger.info(f"[暮黎资源] 片库主站备用源已就绪 ({'cookie' if cookies else '账号密码'}登录模式)")
             else:
-                logger.warning("[暮黎资源] 未配置片库 Cookie/账号密码，影视搜索回退 a123tv 旧站")
+                logger.info("[暮黎资源] 影视源=pdy0（默认）；未配置片库主站凭据，movie_source=old 将不可用")
                 self._muliy_client = None
         except Exception as e:
             logger.warning(f"[暮黎资源] 客户端初始化失败: {e}")
@@ -417,6 +434,257 @@ class MuliyResourcesPlugin(Star):
         except Exception:
             return None
         return self._muliy_client
+
+    # ==================== 影视源选择（pdy0 / 片库主站） ====================
+
+    def _movie_source(self) -> str:
+        """当前影视搜索源：pdy（默认，pdy0.com） / muliy（movie_source=old）。"""
+        try:
+            cfg = self._get_config() or {}
+        except Exception:
+            cfg = {}
+        ms = str(cfg.get("movie_source") or "").strip().lower()
+        if ms in MV_SOURCE_ALIASES_OLD:
+            return "muliy"
+        return "pdy"
+
+    def _get_pdy_client(self) -> PdySiteClient:
+        """pdy0 客户端（懒加载，cookie/验证状态存插件 data 目录）。"""
+        if self._pdy_client is None:
+            self._pdy_client = PdySiteClient(
+                base_url=PDY_BASE_URL,
+                cookie_path=os.path.join(self._plugin_data_dir(), "pdy_cookies.json"),
+            )
+        return self._pdy_client
+
+    def _get_movie_client(self, source: str = ""):
+        source = source or self._movie_source()
+        if source == "muliy":
+            return self._get_muliy_client()
+        return self._get_pdy_client()
+
+    @staticmethod
+    def _pdy_pending_key(event: AstrMessageEvent) -> str:
+        try:
+            chat = str(event.unified_msg_origin or "")
+        except Exception:
+            chat = ""
+        try:
+            uid = str(event.get_sender_id() or "")
+        except Exception:
+            uid = ""
+        return f"{chat}|{uid}"
+
+    async def _send_pdy_captcha(self, event: AstrMessageEvent, keyword: str,
+                                image: bytes) -> None:
+        """把 pdy0 搜索验证码发给用户，并记录待输入状态。"""
+        key = self._pdy_pending_key(event)
+        self._pdy_pending[key] = {
+            "keyword": keyword,
+            "ts": time.time(),
+            "attempts": 1,
+        }
+        # 只保留最新一个（验证码是全局会话级的）
+        for k in list(self._pdy_pending):
+            if k != key:
+                self._pdy_pending.pop(k, None)
+        if not image:
+            self._pdy_pending.pop(key, None)
+            await event.send(MessageChain([Plain(
+                "❌ pdy0 验证码获取失败，请稍后重新发送搜索指令。")]))
+            return
+        prompt = (
+            "🔐 pdy0 搜索需要图片验证码。\n"
+            "请把图片里的验证码（3-6 位字母数字）直接发给我，120 秒内有效，回复 0 取消。\n"
+            "💡 安装 ddddocr 后可自动识别：pip install ddddocr")
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=_img_ext(image), prefix="pdy_cap_")
+            os.close(fd)
+            with open(tmp, "wb") as f:
+                f.write(image)
+            # 图片 + 提示文字放在同一条消息里发送
+            await event.send(MessageChain([ImageComponent(file=tmp), Plain(prompt)]))
+        except Exception as e:
+            logger.warning(f"[pdy_site] 验证码图片发送失败，回退纯文本: {e}")
+            await event.send(MessageChain([Plain(prompt)]))
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+
+    async def _pdy_ocr_ready(self) -> bool:
+        """懒加载 ddddocr；未安装/加载失败返回 False（走手动输入）。"""
+        if self._pdy_ocr_checked:
+            return self._pdy_ocr is not None
+        self._pdy_ocr_checked = True
+        try:
+            import importlib.util
+            if importlib.util.find_spec("ddddocr") is None:
+                logger.info("[pdy_site] 未安装 ddddocr，验证码将交给用户手动输入")
+                return False
+
+            def _load():
+                import ddddocr
+                return ddddocr.DdddOcr(show_ad=False)
+
+            self._pdy_ocr = await asyncio.to_thread(_load)
+            logger.info("[pdy_site] ddddocr 已加载，尝试验证码自动识别")
+        except Exception as e:
+            logger.warning(f"[pdy_site] ddddocr 加载失败，改用手动输入: {e}")
+            self._pdy_ocr = None
+        return self._pdy_ocr is not None
+
+    async def _pdy_try_auto_captcha(self, image: bytes) -> bool:
+        """用 ddddocr 自动识别验证码；最多换 3 张图重试。"""
+        try:
+            cfg = self._get_config() or {}
+        except Exception:
+            cfg = {}
+        if not bool(cfg.get("pdy_auto_captcha", True)):
+            return False
+        if not await self._pdy_ocr_ready():
+            return False
+        client = self._get_pdy_client()
+        img = image
+        for i in range(3):
+            try:
+                code = await asyncio.to_thread(self._pdy_ocr.classification, img)
+                if code and await asyncio.to_thread(client.verify, code):
+                    logger.info(f"[pdy_site] 验证码自动识别成功（第 {i+1} 次）: {code!r}")
+                    return True
+            except Exception as e:
+                logger.warning(f"[pdy_site] 自动识别异常: {e}")
+            try:
+                img = await asyncio.to_thread(client.fetch_captcha, False)
+            except Exception:
+                break
+        return False
+
+    async def _search_movie_source(self, event: AstrMessageEvent, keyword: str,
+                                   source: str = "") -> dict:
+        """按源搜索影视。返回 {"status": ok/empty/captcha_sent/no_client/error, ...}。"""
+        source = source or self._movie_source()
+        if source == "muliy":
+            client = self._get_muliy_client()
+            if not client:
+                return {"status": "no_client", "source": source,
+                        "msg": "片库主站未配置 Cookie/账号密码，无法使用 movie_source=old。"}
+            try:
+                results = await asyncio.to_thread(client.search, keyword, 24)
+            except Exception as e:
+                logger.error(f"[暮黎资源] 影视搜索(片库,'{keyword}') 失败: {e}")
+                return {"status": "error", "source": source, "msg": str(e)[:120]}
+            return {"status": "ok" if results else "empty",
+                    "source": source, "results": results}
+
+        # pdy0：可能遇到图片验证码
+        client = self._get_pdy_client()
+        for _ in range(2):
+            try:
+                results = await asyncio.to_thread(client.search, keyword, 24)
+                return {"status": "ok" if results else "empty",
+                        "source": source, "results": results}
+            except PdyCaptchaRequired as cap:
+                if await self._pdy_try_auto_captcha(cap.image):
+                    continue
+                # 自动识别失败时，会话里的验证码已被刷新过，重新取一张给用户
+                img = cap.image
+                try:
+                    img = await asyncio.to_thread(client.fetch_captcha, False) or img
+                except Exception:
+                    pass
+                await self._send_pdy_captcha(event, keyword, img)
+                return {"status": "captcha_sent", "source": source}
+            except Exception as e:
+                logger.error(f"[暮黎资源] 影视搜索(pdy0,'{keyword}') 失败: {e}")
+                return {"status": "error", "source": source, "msg": str(e)[:120]}
+        return {"status": "error", "source": source, "msg": "验证码重试次数过多，请稍后再试。"}
+
+    async def _send_movie_results(self, event: AstrMessageEvent, keyword: str,
+                                  results: list, source: str) -> None:
+        """统一发送影视搜索结果（pdy0 / 片库共用同一套会话状态机）。"""
+        tag = "【暮黎资源】"
+        ps = 8
+        _charge_txt = self._points_charge(event, "movie", keyword)
+        self._movie_sessions_new.set(event, {
+            "stage": "select_movie_new", "keyword": keyword,
+            "results": results, "page": 0, "page_size": ps,
+            "source": source,
+            "_updated": time.time(), "_llm_handled": True,
+        })
+        t = len(results); pt = (t + ps - 1) // ps
+        page_txt = format_movie_list_new(results, keyword, 0, ps)
+        await self._send_search_page(
+            event, "movie_new",
+            tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt,
+            results=results, keyword=keyword, page=0, page_size=ps,
+            note=_charge_txt)
+
+    async def _handle_pdy_captcha_reply(self, event: AstrMessageEvent, text: str) -> bool:
+        """处理用户发来的 pdy0 验证码。返回 True 表示已消费该消息。"""
+        key = self._pdy_pending_key(event)
+        pending = self._pdy_pending.get(key)
+        if not pending:
+            return False
+        if time.time() - pending.get("ts", 0) > 120:
+            self._pdy_pending.pop(key, None)
+            return False
+        # 支持「@机器人 5064」这种带 @ 的回复
+        code_text = re.sub(r"\[CQ:at,[^\]]+\]", "", text or "")
+        code_text = re.sub(r"^@\S+\s*", "", code_text).strip()
+        if code_text in ("0", "取消", "算了", "不要", "取消搜索"):
+            self._pdy_pending.pop(key, None)
+            event.stop_event()
+            await event.send(MessageChain([Plain("已取消 pdy0 验证码输入。")]))
+            return True
+        if not re.fullmatch(r"[0-9A-Za-z]{3,6}", code_text):
+            # 不像验证码：如果是新命令就放行，否则提示重新输入
+            if code_text.startswith(("/", "／")):
+                self._pdy_pending.pop(key, None)
+                return False
+            event.stop_event()
+            await event.send(MessageChain([Plain(
+                "请输入图片里的验证码（3-6 位字母数字），回复 0 取消。")]))
+            return True
+
+        self._pdy_pending.pop(key, None)
+        event.stop_event()
+        client = self._get_pdy_client()
+        ok = await asyncio.to_thread(client.verify, code_text)
+        if not ok:
+            attempts = int(pending.get("attempts", 1))
+            if attempts >= 3:
+                await event.send(MessageChain([Plain(
+                    "❌ 验证码连续错误，已取消本次搜索。请稍后重新发送搜索指令。")]))
+                return True
+            try:
+                img = await asyncio.to_thread(client.fetch_captcha, False)
+            except Exception:
+                img = b""
+            if img:
+                await self._send_pdy_captcha(event, pending.get("keyword", ""), img)
+                self._pdy_pending[key]["attempts"] = attempts + 1
+            else:
+                await event.send(MessageChain([Plain("❌ 获取验证码失败，请稍后重试。")]))
+            return True
+
+        await event.send(MessageChain([Plain("✅ pdy0 验证通过，正在继续搜索...")]))
+        keyword = pending.get("keyword", "")
+        if not keyword:
+            return True
+        r = await self._search_movie_source(event, keyword, "pdy")
+        if r.get("status") == "ok":
+            await self._send_movie_results(event, keyword, r.get("results", []), "pdy")
+        elif r.get("status") == "empty":
+            await event.send(MessageChain([Plain(
+                f"【暮黎资源】未找到与「{keyword}」相关的影视，请换个关键词。")]))
+        elif r.get("status") != "captcha_sent":
+            await event.send(MessageChain([Plain(
+                f"【暮黎资源】影视搜索失败：{r.get('msg') or '未知错误'}")]))
+        return True
 
     async def terminate(self):
         logger.info("暮黎资源聚合插件终止")
@@ -1134,14 +1402,7 @@ class MuliyResourcesPlugin(Star):
     def _recommend_source(self, kind: str) -> str:
         """返回动态推荐应使用的源；空串表示该类型暂不做动态（回退静态清单）。"""
         if kind == "movie":
-            cfg = self._get_config()
-            if not isinstance(cfg, dict):
-                return "a123tv"
-            forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
-            forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
-            client = self._get_muliy_client() if (forced_new or not forced_a123) else None
-            # 片库与 a123tv 各自从自己的首页随机取，保证推荐一定能在当前源搜到
-            return "muliy" if client is not None else "a123tv"
+            return "pdy" if self._movie_source() == "pdy" else "muliy"
         if kind == "game":
             return self._game_source()
         if kind == "software":
@@ -1161,7 +1422,9 @@ class MuliyResourcesPlugin(Star):
         item = None
         try:
             if kind == "movie":
-                if source == "muliy":
+                if source == "pdy":
+                    item = self._get_pdy_client().random_movie()
+                elif source == "muliy":
                     client = self._get_muliy_client()
                     item = get_random_movie_muliy(client) if client else None
                 else:
@@ -1795,7 +2058,7 @@ class MuliyResourcesPlugin(Star):
     async def llm_search_movie(self, event: AstrMessageEvent, movie_name: str):
         """搜索影视资源。用户说"找影视/看电影/我想看/影视名"时调用。
         流程：搜索→选序号→获取详情→选[1]在线播放/[2]网盘资源，后续交互由系统自动处理。
-        源自动切换：配了片库 Cookie 走新站（在线+网盘），否则回退 a123tv（仅在线）。
+        默认源 pdy0（片库注册站，免登录，可能弹图片验证码）；movie_source=old 时用片库主站。
         Args:
             movie_name(string): 影视名称（如"怪物"、"庆余年"）
         """
@@ -1806,55 +2069,24 @@ class MuliyResourcesPlugin(Star):
         _blocked = self._points_guard(event, "movie")
         if _blocked:
             return _blocked
-        ps = 8; tag = "【暮黎资源】"
-        # 影视源自动切换：配置了片库 Cookie → 新站（在线播放+网盘）；
-        # 未配置 Cookie → 自动回退 a123tv 旧站（仅在线播放）。
-        # movie_source 配置支持关键字强制指定源：
-        #   "片库" → 强制新站（片库）；"a123tv" → 强制旧站（向后兼容）。
-        cfg = self._get_config()
-        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
-        forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
-        client = self._get_muliy_client() if (forced_new or not forced_a123) else None
-        if client:
-            # ===== 新站流程 =====
-            try:
-                results = await asyncio.to_thread(client.search, movie_name, 24)
-            except Exception as e:
-                logger.error(f"[暮黎资源] search_movie(新站,'{movie_name}') 失败: {e}")
-                return f"{tag} 影视搜索失败：{str(e)[:120]}"
-            if not results:
-                return f"{tag} 未找到与「{movie_name}」相关的影视。请换个关键词。"
-            _charge_txt = self._points_charge(event, "movie", movie_name)
-            self._movie_sessions_new.set(event, {
-                "stage": "select_movie_new", "keyword": movie_name,
-                "results": results, "page": 0, "page_size": ps,
-                "_updated": time.time(), "_llm_handled": True,
-            })
-            t = len(results); pt = (t + ps - 1) // ps
-            page_txt = format_movie_list_new(results, movie_name, 0, ps)
-            final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
-            await self._send_search_page(event, "movie_new", final_txt, results=results, keyword=movie_name, page=0, page_size=ps, note=_charge_txt)
-            logger.info(f"[暮黎资源] search_movie(新站,'{movie_name}') → {len(results)}条 → 直接 send")
-            return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
-
-        # ===== 旧站 a123tv 流程（保留） =====
-        try:
-            results = await asyncio.to_thread(search_movies, movie_name, 24)
-        except Exception as e:
-            logger.error(f"[暮黎资源] search_movie('{movie_name}') 失败: {e}")
-            return f"{tag} 影视搜索失败：{str(e)[:120]}"
-        if not results:
+        tag = "【暮黎资源】"
+        source = self._movie_source()
+        r = await self._search_movie_source(event, movie_name, source)
+        st = r.get("status")
+        if st == "captcha_sent":
+            return (f"{tag} pdy0 搜索需要图片验证码，已把验证码图片发给用户。"
+                    f"用户回复验证码后系统会自动继续搜索，不要自行编造结果。")
+        if st == "empty":
             return f"{tag} 未找到与「{movie_name}」相关的影视。请换个关键词。"
-        _charge_txt = self._points_charge(event, "movie", movie_name)
-        self._movie_sessions.set(event, {"stage": "select_movie", "keyword": movie_name,
-                                         "results": results, "page": 0, "page_size": ps,
-                                         "_updated": time.time(), "_llm_handled": True})
-        t = len(results); pt = (t + ps - 1) // ps
-        page_txt = self._format_mv_page(self._movie_sessions.get(event))
-        final_txt = tag + f" 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt
-        await self._send_search_page(event, "movie", final_txt, ses=self._movie_sessions.get(event), note=_charge_txt)
-        logger.info(f"[暮黎资源] search_movie('{movie_name}') → {len(results)}条 → 直接 send")
-        return f"[已发送给用户] {len(results)} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
+        if st == "no_client":
+            return f"{tag} {r.get('msg')}"
+        if st != "ok":
+            return f"{tag} 影视搜索失败：{r.get('msg') or '未知错误'}"
+        results = r.get("results", [])
+        await self._send_movie_results(event, movie_name, results, source)
+        t = len(results); pt = (t + 7) // 8
+        logger.info(f"[暮黎资源] search_movie({source},'{movie_name}') → {t}条 → 直接 send")
+        return f"[已发送给用户] {t} 个影视结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
     @filter.llm_tool(name="search_drama")
     async def llm_search_drama(self, event: AstrMessageEvent, drama_name: str):
@@ -1968,10 +2200,11 @@ class MuliyResourcesPlugin(Star):
             return f"{tag} 会话已失效，请重新搜索影视。"
         stage = ses.get("stage")
         text = selection.strip()
-        client = self._get_muliy_client()
+        source = ses.get("source") or self._movie_source()
+        client = self._get_movie_client(source)
         if not client:
             self._movie_sessions_new.delete(event)
-            return f"{tag} 新站客户端未配置，请在插件配置填写账号密码。"
+            return f"{tag} 片库主站未配置，请在插件配置填写账号密码或 Cookie。"
 
         num0 = self._parse_natural_number(text)
         if num0 == 0 or text in ("取消", "不要", "不要了", "算了", "取消搜索"):
@@ -2021,7 +2254,8 @@ class MuliyResourcesPlugin(Star):
                 return f"{tag} 该影视暂无资源。"
             self._movie_sessions_new.set(event, {
                 "stage": "select_res_type", "detail": detail, "resources": resources,
-                "selected": sel, "page": 0, "_updated": time.time(), "_llm_handled": True,
+                "selected": sel, "page": 0, "source": source,
+                "_updated": time.time(), "_llm_handled": True,
             })
             await event.send(MessageChain([Plain(tag + "\n" + format_resource_type(detail, resources))]))
             return f"{tag} 已发送资源类型选择（在线播放/网盘）。等待用户回复 1 或 2。"
@@ -2812,59 +3046,236 @@ class MuliyResourcesPlugin(Star):
         用法：
         - /积分管理 <用户ID> <数量>        数量为正增加、为负扣除
         - /积分管理 设置 <用户ID> <数量>   直接设置余额
-        - /积分管理 查询 <用户ID>          查看该用户积分
+        - /积分管理 查询 [用户ID]          查看该用户积分（省略 ID 查自己）
+        目标支持：纯用户ID / 平台:用户ID / @某人 / 引用回复某人。
         """
-        text = re.sub(r"^/?积分管理\s*", "", event.message_str.strip())
-        text = text.replace("\u3000", " ").strip()
-        parts = text.split()
         usage = ("【暮黎资源·积分管理】\n"
                  "用法：\n"
                  "/积分管理 <用户ID> <数量>（正数增加，负数扣除）\n"
                  "/积分管理 设置 <用户ID> <数量>\n"
-                 "/积分管理 查询 <用户ID>")
-        if not parts or parts[0] in ("帮助", "help", "说明"):
+                 "/积分管理 查询 [用户ID]\n"
+                 "目标也可用 @某人 / 回复 <数量>（引用对象） / 平台:用户ID")
+        text = re.sub(r"^/?\s*积分管理\s*", "", event.message_str.strip())
+        text = text.replace("\u3000", " ").strip()
+        parts = [p for p in text.split() if p]
+        if not parts or parts[0] in ("帮助", "help", "说明", "?", "？"):
             yield event.plain_result(usage); return
+        logger.info(f"[暮黎资源·积分] 积分管理命令: sender={event.get_sender_id()} "
+                    f"platform={event.get_platform_id()} text={text[:80]!r}")
+
+        # —— 动作解析：省略动作时默认「调整」（兼容 /积分管理 123 50） ——
+        action_alias = {
+            "设置": "设置", "set": "设置", "重置": "设置", "reset": "设置",
+            "查询": "查询", "查": "查询", "query": "查询", "info": "查询", "余额": "查询",
+            "增加": "增加", "加": "增加", "add": "增加", "奖励": "增加",
+            "扣除": "扣除", "扣": "扣除", "减": "扣除", "remove": "扣除",
+        }
+        action = "调整"
+        if parts[0].lower() in action_alias:
+            action = action_alias[parts[0].lower()]
+            parts = parts[1:]
 
         platform = str(event.get_platform_id() or "unknown")
-        action = "调整"
-        if len(parts) >= 2 and parts[0] in ("设置", "set", "查询", "查"):
-            action = parts[0]
-            parts = parts[1:]
-        if len(parts) < 2:
-            yield event.plain_result(usage); return
-
-        raw_uid = parts[0].lstrip("@")
-        if ":" in raw_uid:
-            key = raw_uid
-            uid = raw_uid.split(":", 1)[-1]
-        else:
-            uid = raw_uid
-            key = PointsStore.make_key(platform, uid)
-        try:
-            amount = int(parts[1])
-        except (TypeError, ValueError):
-            yield event.plain_result("❌ 数量必须是整数（例如 50 或 -20）。"); return
-
         store = self._points_db()
+
+        # —— 目标解析：文本 ID / @ / 引用回复 / 省略（查询自己） ——
+        def _at_target() -> str:
+            """从消息组件里取 @ 的用户 ID。
+
+            AstrBot 的 At 组件 type 是 ComponentType 枚举，直接比较字符串会失败；
+            这里优先看 qq 字段（最稳），再兼容 OneBot raw_message / CQ 码。
+            """
+            chain = []
+            try:
+                if hasattr(event, "get_messages"):
+                    chain = event.get_messages() or []
+                if not chain:
+                    chain = getattr(getattr(event, "message_obj", None), "message", None) or []
+            except Exception:
+                chain = []
+            for comp in chain:
+                qq = getattr(comp, "qq", None)
+                if qq is None:
+                    # 兼容 dict 形式 {"type":"at","data":{"qq":"123"}}
+                    if isinstance(comp, dict) and str(comp.get("type", "")).lower() == "at":
+                        qq = (comp.get("data") or {}).get("qq")
+                    else:
+                        continue
+                qq_s = str(qq).strip()
+                if not qq_s or qq_s in ("all", "everyone", "0"):
+                    continue
+                try:
+                    if qq_s == str(event.get_self_id()):
+                        continue  # 跳过 @机器人自己
+                except Exception:
+                    pass
+                return qq_s
+
+            # 兜底：从 raw_message / 原文本里解析 [CQ:at,qq=...] / [At:...]
+            sources = []
+            try:
+                sources.append(getattr(getattr(event, "message_obj", None), "raw_message", None))
+            except Exception:
+                pass
+            sources.append(text)
+            for src in sources:
+                if isinstance(src, dict):
+                    for item in (src.get("message") or []):
+                        if isinstance(item, dict) and str(item.get("type", "")).lower() == "at":
+                            qq = (item.get("data") or {}).get("qq")
+                            if qq and str(qq) not in ("all", "everyone", "0"):
+                                return str(qq)
+                    src = json.dumps(src, ensure_ascii=False)
+                if not isinstance(src, str):
+                    continue
+                m = re.search(r"\[CQ:at,qq=([^,\]]+)", src)
+                if m:
+                    return m.group(1)
+                m = re.search(r"\[At[:：]([^\]]+)\]", src, re.I)
+                if m:
+                    return m.group(1).strip()
+            return ""
+
+        def _reply_target() -> str:
+            try:
+                obj = getattr(getattr(event, "message_obj", None), "reply", None)
+                if obj is None:
+                    return ""
+                for attr in ("sender_id", "user_id"):
+                    v = getattr(obj, attr, None)
+                    if isinstance(v, (str, int)) and str(v):
+                        return str(v)
+                sender = getattr(obj, "sender", None)
+                for attr in ("user_id", "id"):
+                    v = getattr(sender, attr, None)
+                    if isinstance(v, (str, int)) and str(v):
+                        return str(v)
+            except Exception:
+                pass
+            return ""
+
+        def _target_from_text(raw: str) -> str:
+            raw = str(raw or "").strip()
+            m = re.fullmatch(r"\[at[:：]([^\]]+)\]", raw, re.I)
+            if m:
+                return m.group(1).strip()
+            m = re.fullmatch(r"\[CQ:at,qq=([^,\]]+).*\]", raw, re.I)
+            if m:
+                return m.group(1).strip()
+            return raw.lstrip("@")
+
+        raw_uid = parts[0] if parts else ""
+        raw_uid = raw_uid.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        rest = parts[1:] if parts else []
+        self_words = {"我", "自己", "me", "self"}
+        reply_words = {"回复", "对方", "他", "她", "楼上", "reply"}
+        if raw_uid.lower() in self_words:
+            raw_uid, _, _ = self._points_user(event)
+        elif re.fullmatch(r"\[at[:：][^\]]+\]", raw_uid, re.I):
+            raw_uid = _target_from_text(raw_uid)
+        elif raw_uid.startswith("@") or raw_uid.lower() in reply_words:
+            auto = _at_target() or _reply_target()
+            if not auto:
+                yield event.plain_result("❌ 没识别到目标用户，请直接填写用户ID（如 123456）。"); return
+            raw_uid = auto
+        if not raw_uid:
+            if action == "查询":
+                raw_uid, _, _ = self._points_user(event)
+                # 引用回复时优先查被回复的人（省略 ID + 回复 = 查对方）
+                raw_uid = _reply_target() or raw_uid
+            else:
+                yield event.plain_result(usage); return
+
+        # —— 存储键解析：纯 ID 时按当前平台优先，跨平台单命中自动兜底 ——
+        def _resolve_key(raw: str) -> tuple[str, str, str]:
+            raw = raw.strip()
+            if not raw:
+                return "", "", "❌ 未找到目标用户，请提供用户ID或 @某人。"
+            if ":" in raw:
+                plat, uid = raw.split(":", 1)
+                return PointsStore.make_key(plat, uid), uid, ""
+            key = PointsStore.make_key(platform, raw)
+            keys = store.find_keys(raw)
+            if key in keys or not keys:
+                return key, raw, ""
+            if len(keys) == 1:
+                return keys[0], raw, ""
+            options = "\n".join(f"· /积分管理 查询 {k}" for k in keys[:5])
+            return "", raw, (f"⚠️ 用户 {raw} 在多个平台有记录，请带上平台前缀：\n{options}")
+
+        def _to_int(raw: str) -> Optional[int]:
+            s = str(raw).strip().translate(str.maketrans("０１２３４５６７８９＋－", "0123456789+-"))
+            s = s.replace(",", "").replace("，", "").replace(" ", "")
+            if s.startswith("+"):
+                s = s[1:]
+            if not re.fullmatch(r"[+-]?\d+", s or ""):
+                return None
+            try:
+                return int(s)
+            except ValueError:
+                return None
+
+        key, uid, err = _resolve_key(raw_uid)
+        if err:
+            yield event.plain_result(err); return
+
         s = self._points_settings()
         try:
-            if action in ("查询", "查"):
-                user = store.get(key, "", s["initial"])
-                yield event.plain_result(
-                    f"【暮黎资源·积分管理】\n👤 {user.get('name') or uid}\n"
-                    f"💰 当前积分：{int(user.get('points', 0) or 0)}\n"
-                    f"🔥 连续签到：{int(user.get('streak', 0) or 0)} 天 ｜ "
-                    f"📅 最近签到：{user.get('last_checkin') or '从未签到'}"); return
+            user = store.peek(key)
+            before = int((user or {}).get("points", 0) or 0)
+            if user is None and action != "设置":
+                # 首次调整会按「初始积分」建档，展示时把初始值算进起始余额
+                before = int(s["initial"] or 0)
+            name = str((user or {}).get("name") or uid)
 
-            if action in ("设置", "set"):
-                balance = store.set_balance(key, max(0, amount), "")
+            if action == "查询":
+                if user is None:
+                    yield event.plain_result(
+                        f"【暮黎资源·积分管理】\n👤 {uid}\n"
+                        f"💰 当前积分：0（暂无记录，发送 /签到 后自动建档）"); return
                 yield event.plain_result(
-                    f"【暮黎资源·积分管理】\n✅ 已将 {uid} 的积分设置为 {balance}。"); return
+                    f"【暮黎资源·积分管理】\n👤 {name}\n"
+                    f"🆔 {key}\n"
+                    f"💰 当前积分：{before}\n"
+                    f"🔥 连续签到：{int(user.get('streak', 0) or 0)} 天 ｜ "
+                    f"📅 最近签到：{user.get('last_checkin') or '从未签到'}\n"
+                    f"🧾 累计获得 {int(user.get('total_earned', 0) or 0)} ｜ "
+                    f"累计消耗 {int(user.get('total_spent', 0) or 0)}"); return
+
+            if action == "设置":
+                if not rest:
+                    yield event.plain_result("❌ 请提供要设置的积分数量。\n例如：/积分管理 设置 123456 100"); return
+                amount = _to_int(rest[0])
+                if amount is None:
+                    yield event.plain_result("❌ 数量必须是整数（例如 100）。"); return
+                balance = store.set_balance(key, max(0, amount), "")
+                logger.info(f"[暮黎资源·积分] 管理员 {event.get_sender_id()} 设置 {key} "
+                            f"{before} -> {balance}")
+                yield event.plain_result(
+                    f"【暮黎资源·积分管理】\n✅ 已将 {name}（{key}）的积分从 {before} 设置为 {balance}。"); return
+
+            if not rest:
+                yield event.plain_result("❌ 请提供增减数量（正数增加，负数扣除）。\n例如：/积分管理 123456 50"); return
+            amount = _to_int(rest[0])
+            if amount is None:
+                yield event.plain_result("❌ 数量必须是整数（例如 50 或 -20）。"); return
+            if action == "增加":
+                amount = abs(amount)
+            elif action == "扣除":
+                amount = -abs(amount)
 
             balance = store.add(key, amount, "", s["initial"])
-            verb = "增加" if amount >= 0 else "扣除"
+            delta = balance - before
+            logger.info(f"[暮黎资源·积分] 管理员 {event.get_sender_id()} 调整 {key} "
+                        f"amount={amount} {before} -> {balance}")
+            if amount > 0:
+                verb, tip = "增加", f"+{delta}"
+            else:
+                verb = "扣除"
+                tip = f"-{abs(delta)}" if delta else "0（余额已为 0）"
             yield event.plain_result(
-                f"【暮黎资源·积分管理】\n✅ 已为 {uid} {verb} {abs(amount)} 积分，当前 {balance} 积分。")
+                f"【暮黎资源·积分管理】\n✅ 已为 {name}（{key}）{verb} {abs(amount)} 积分，"
+                f"{tip}，当前 {balance} 积分。")
         except Exception as e:
             logger.warning(f"[暮黎资源·积分] 管理员调整失败: {e}")
             yield event.plain_result(f"❌ 积分操作失败：{str(e)[:100]}")
@@ -2911,8 +3322,7 @@ class MuliyResourcesPlugin(Star):
 
     @filter.command("找影视")
     async def cmd_movie_search(self, event: AstrMessageEvent):
-        """影视搜索 — 源自动切换：配置了 muliy_cookie → 片库新站（在线+网盘）；
-        未配置或 movie_source=a123tv → 回退 a123tv 旧站（仅在线播放）。"""
+        """影视搜索 — 默认 pdy0（片库注册站，免登录）；movie_source=old 时用片库主站。"""
         keyword = event.message_str.strip()
         keyword = re.sub(r"^/?找影视\s*", "", keyword)
         # —— 关键词审核：大模型判定涉黄/违禁，命中则拦截，不执行搜索 ——
@@ -2926,71 +3336,72 @@ class MuliyResourcesPlugin(Star):
         if _blocked:
             yield event.plain_result(_blocked); return
 
-        # —— 源自动切换：配了片库 Cookie → 新站（在线播放+网盘）；
-        #    movie_source 支持关键字强制指定源："片库" 强制新站、"a123tv" 强制旧站（向后兼容）——
-        cfg = self._get_config()
-        forced_a123 = (cfg.get("movie_source") or "").strip().lower() == MV_SOURCE_KEYWORD_OLD
-        forced_new = (cfg.get("movie_source") or "").strip() == MV_SOURCE_KEYWORD_NEW
-        client = self._get_muliy_client() if (forced_new or not forced_a123) else None
-        if client:
-            # ===== 片库新站流程（与 llm_search_movie 一致，会话状态机处理后续选择） =====
-            tag = "【暮黎资源】"
-            try:
-                results = await asyncio.to_thread(client.search, keyword, 24)
-            except Exception as e:
-                logger.error(f"[暮黎资源] /找影视(新站,'{keyword}') 失败: {e}")
-                yield event.plain_result(f"{tag} 影视搜索失败：{str(e)[:120]}")
-                return
-            if not results:
-                yield event.plain_result(f"{tag} 未找到与「{keyword}」相关的影视。请换个关键词。")
-                return
-            _charge_txt = self._points_charge(event, "movie", keyword)
-            self._movie_sessions_new.set(event, {
-                "stage": "select_movie_new", "keyword": keyword,
-                "results": results, "page": 0, "page_size": 8,
-                "_updated": time.time(), "_llm_handled": True,
-            })
-            t = len(results); pt = (t + 7) // 8
-            page_txt = format_movie_list_new(results, keyword, 0, 8)
-            await self._send_search_page(
-                event, "movie_new",
-                f"{tag} 🎬 影视搜索结果（共 {t} 个，第 1/{pt} 页）：\n\n" + page_txt + _charge_txt,
-                results=results, keyword=keyword, page=0, page_size=8,
-                note=_charge_txt)
-            logger.info(f"[暮黎资源] /找影视(新站,'{keyword}') → {len(results)}条")
+        tag = "【暮黎资源】"
+        source = self._movie_source()
+        r = await self._search_movie_source(event, keyword, source)
+        st = r.get("status")
+        if st == "captcha_sent":
             return
-
-        # ===== 旧站 a123tv 流程（保留） =====
-        if not requests:
-            yield event.plain_result("❌ 缺少 requests"); return
-        if not BeautifulSoup:
-            yield event.plain_result("❌ 缺少 beautifulsoup4"); return
-        async for result in self._run_movie_search_flow(event, keyword):
-            yield result
+        if st == "empty":
+            yield event.plain_result(f"{tag} 未找到与「{keyword}」相关的影视。请换个关键词。"); return
+        if st == "no_client":
+            yield event.plain_result(f"{tag} {r.get('msg')}"); return
+        if st != "ok":
+            yield event.plain_result(f"{tag} 影视搜索失败：{r.get('msg') or '未知错误'}"); return
+        await self._send_movie_results(event, keyword, r.get("results", []), source)
+        logger.info(f"[暮黎资源] /找影视({source},'{keyword}') → {len(r.get('results', []))}条")
 
     @filter.command("movie_status")
     async def cmd_movie_status(self, event: AstrMessageEvent):
-        """检查 a123tv.com 是否可达 + 当前搜索状态。"""
+        """检查当前影视源（pdy0 / 片库主站）状态。"""
+        source = self._movie_source()
+        if source == "pdy":
+            try:
+                client = self._get_pdy_client()
+                domains = await asyncio.to_thread(discover_domains)
+                base = domains[0][0] if domains else client.base_url
+                r = await asyncio.to_thread(
+                    requests.get, base,
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                ok = r.status_code == 200 and "片库" in r.text
+                if ok:
+                    online = " / ".join(u.replace("https://", "") for u, _ in domains[:4]) or "未知"
+                    yield event.plain_result(
+                        f"✅ pdy0 系站点状态：可访问\n"
+                        f"🌐 当前使用：{client.base_url}\n"
+                        f"📡 发布页可用：{online}\n"
+                        f"📋 HTTP {r.status_code}  响应 {len(r.text)//1024}KB\n"
+                        f"🔐 搜索验证：{'已通过（本机会话）' if client.verified else '未通过（首次搜索会弹图片验证码）'}\n"
+                        f"🟢 默认影视源（发布页 {PDY_RELEASE_URL} 自动选站）；备用站切换请把 movie_source 设为 old。"
+                    )
+                else:
+                    yield event.plain_result(
+                        f"❌ pdy0 系站点状态：异常\n"
+                        f"🌐 尝试站点：{base}\n"
+                        f"📋 HTTP {r.status_code}  响应 {len(r.text)}B\n"
+                        f"💡 会自动刷新发布页并切换可用站点。"
+                    )
+            except Exception as e:
+                yield event.plain_result(f"❌ pdy0 系站点不可达：{str(e)[:120]}")
+            return
+
+        client = self._get_muliy_client()
+        if not client:
+            yield event.plain_result(
+                "⚠️ 当前影视源=片库主站（old），但未配置 muliy_cookie / muliy_username+muliy_password。\n"
+                "请在插件配置的「影视资源」组填写登录凭据。")
+            return
         try:
-            r = await asyncio.to_thread(
-                requests.get, MV_BASE_URL,
-                headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
-            ok = r.status_code == 200 and "A123TV" in r.text
-            if ok:
-                yield event.plain_result(
-                    f"✅ a123tv.com 状态：可访问\n"
-                    f"🌐 {MV_BASE_URL}\n"
-                    f"📋 HTTP {r.status_code}  响应 {len(r.text)//1024}KB\n"
-                    f"🟢 影视搜索可用，无需登录。"
-                )
-            else:
-                yield event.plain_result(
-                    f"❌ a123tv.com 状态：异常\n"
-                    f"📋 HTTP {r.status_code}  响应 {len(r.text)}B\n"
-                    f"💡 站点可能下线或被 Cloudflare 拦截，请稍后重试。"
-                )
+            base = await asyncio.to_thread(client._get_base)
+            ok = await asyncio.to_thread(client.ensure_session)
+            yield event.plain_result(
+                f"✅ 片库主站状态：{'登录正常' if ok else '登录失败'}\n"
+                f"🌐 {base}\n"
+                f"🔑 凭据：{'Cookie' if client._cookie_str else '账号密码'}\n"
+                f"💡 默认源是 pdy0；只有 movie_source=old 时才走这里。"
+            )
         except Exception as e:
-            yield event.plain_result(f"❌ a123tv.com 不可达：{str(e)[:120]}")
+            yield event.plain_result(f"❌ 片库主站检查失败：{str(e)[:120]}")
 
     # ==================== 短剧搜索与日报 (网盘贴吧 wangpant8.com) ====================
 
@@ -3527,8 +3938,8 @@ class MuliyResourcesPlugin(Star):
         # —— 状态 / 检测 ——
         if not cur and not has_account:
             yield event.plain_result(
-                "⚠️ 片库（新站）影视登录未配置。\n"
-                "📋 影视搜索将自动回退 a123tv 旧站（仅在线播放，无网盘资源）。\n"
+                "⚠️ 片库主站（备用源）登录未配置。\n"
+                "📋 默认影视源是 pdy0（免登录）；只有 movie_source=old 时才需要片库主站凭据。\n"
                 "💡 配置方法（二选一）：\n"
                 "  • WebUI 插件设置 → movie 分组 → 填 muliy_username / muliy_password（推荐，免手动搬 Cookie）；\n"
                 "  • 填 muliy_cookie 粘贴浏览器登录 Cookie（需含 app_auth、PHPSESSID，忽略 browser_verified/browser_pow）；\n"
@@ -3550,7 +3961,7 @@ class MuliyResourcesPlugin(Star):
                 f"✅ 片库影视登录有效（{mode}）✓\n"
                 f"🌐 当前使用站点：{base}\n"
                 f"🎬 试搜「流浪地球」返回 {len(ok)} 条结果\n"
-                f"🟢 影视搜索将使用片库新站（在线播放+网盘资源）。")
+                f"🟢 movie_source=old 时将使用片库主站（在线播放+网盘资源）。")
         else:
             yield event.plain_result(
                 f"❌ 片库影视登录不可用（{mode}，当前站点 {base} 搜索无结果）。\n"
@@ -4938,9 +5349,96 @@ class MuliyResourcesPlugin(Star):
         out["cover"] = cover
         return out
 
+    def _vip_interface_cache_path(self) -> str:
+        return os.path.join(self._plugin_data_dir(), "vip_interfaces.json")
+
+    def _load_vip_interface_cache(self):
+        """载入上次从片库 /zjx 抓到的接口列表（15 分钟内直接复用）。"""
+        try:
+            path = self._vip_interface_cache_path()
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            items = data.get("items") or []
+            clean = []
+            for x in items:
+                if (isinstance(x, (list, tuple)) and len(x) == 2
+                        and str(x[1]).startswith("http")):
+                    clean.append((str(x[0]), str(x[1])))
+            if clean:
+                self._vip_interfaces = clean
+                self._vip_if_ts = float(data.get("ts") or 0)
+                logger.info(f"[VIP] 已载入接口缓存 {len(clean)} 个")
+        except Exception as e:
+            logger.debug(f"[VIP] 读取接口缓存失败: {e}")
+
+    def _save_vip_interface_cache(self):
+        try:
+            path = self._vip_interface_cache_path()
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"ts": self._vip_if_ts,
+                           "items": [list(x) for x in self._vip_interfaces]},
+                          f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"[VIP] 保存接口缓存失败: {e}")
+
+    async def _refresh_vip_interfaces(self, cfg: dict = None, force: bool = False) -> list:
+        """从片库主站 /zjx 实时获取接口列表（15 分钟缓存，失败回退内置）。"""
+        ttl = 900
+        if not self._vip_interfaces:
+            self._load_vip_interface_cache()
+        if not force and self._vip_interfaces and time.time() - self._vip_if_ts < ttl:
+            return list(self._vip_interfaces)
+        if self._vip_if_lock is None:
+            self._vip_if_lock = asyncio.Lock()
+        async with self._vip_if_lock:
+            if not force and self._vip_interfaces and time.time() - self._vip_if_ts < ttl:
+                return list(self._vip_interfaces)
+            cfg = cfg or self._get_config() or {}
+            channel = str(cfg.get("browser_channel") or "").strip()
+            exe = str(cfg.get("browser_exe") or "").strip()
+            timeout = int(cfg.get("video_vip_timeout", 20000) or 20000)
+            if timeout < 1000:
+                timeout *= 1000
+            live = await fetch_muliy_interfaces(
+                timeout_ms=max(20000, min(timeout, 45000)),
+                channel=channel, exe=exe)
+            if live:
+                # TXNQ / 冰豆 优先，七哥放后面；M1907/789 永远置顶
+                def _rank(item):
+                    n = item[0]
+                    if "TXNQ" in n.upper():
+                        return 0
+                    if "冰豆" in n:
+                        return 1
+                    if "七哥" in n:
+                        return 9
+                    return 5
+                live_sorted = sorted(live, key=_rank)
+                preferred = [x for x in VIP_INTERFACES if x[0] in ("M1907", "789")]
+                merged, seen, seen_names = [], set(), set()
+                for name, tpl in preferred + live_sorted + list(VIP_INTERFACES):
+                    key = str(tpl).rstrip("/")
+                    base = str(name).replace("解析", "").strip()
+                    if not key or key in seen or base in seen_names:
+                        continue
+                    seen.add(key)
+                    seen_names.add(base)
+                    merged.append((name, tpl))
+                self._vip_interfaces = merged
+                self._vip_if_ts = time.time()
+                self._save_vip_interface_cache()
+                logger.info(f"[VIP] 接口已更新（片库 /zjx）：{[n for n, _ in merged]}")
+            elif not self._vip_interfaces:
+                self._vip_interfaces = list(VIP_INTERFACES)
+                self._vip_if_ts = time.time()
+            return list(self._vip_interfaces)
+
     def _get_interfaces(self, cfg: dict) -> list:
-        """返回 [(名字, 模板), ...]。固定使用内置默认接口列表（video_vip_parser_urls 配置已移除）。"""
-        return list(VIP_INTERFACES)
+        """返回当前解析接口列表（片库 /zjx 实时列表优先，失败回退内置）。"""
+        return list(self._vip_interfaces or VIP_INTERFACES)
 
     async def _handle_vip_link(self, event, link: str, cfg: dict, prefill: dict = None):
         """分析链接 → 规范化 URL → 取标题 → 展示接口菜单。"""
@@ -5004,8 +5502,13 @@ class MuliyResourcesPlugin(Star):
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[VIP] OG 抓取失败: {e}")
 
-        # OG 没取到标题 → 浏览器兜底（优酷等可能需要）
-        if not title:
+        # OG 没取到标题 / 只取到平台名 → 浏览器兜底（腾讯、优酷等常见）
+        _generic_title = (
+            not title
+            or title.strip() in self._PLATFORM_NAMES
+            or any(k in title for k in ("在线视频网站", "海量正版", "高清完整版视频在线观看"))
+        )
+        if _generic_title:
             try:
                 info = await analyze_vip_link(link, proxy=proxy, timeout_ms=timeout,
                                               channel=channel, exe=exe)
@@ -5016,7 +5519,13 @@ class MuliyResourcesPlugin(Star):
             except Exception as e:  # noqa: BLE001
                 logger.error(f"[VIP] 浏览器分析异常: {e}")
 
-        interfaces = self._get_interfaces(cfg)
+        # 标题清理：去掉「_电视剧_高清完整版视频在线观看_腾讯视频」这类后缀
+        if title:
+            title = re.sub(
+                r"[_\-|](高清完整版视频在线观看|在线观看|电视剧|电影|综艺|动漫)[_\-|].*$",
+                "", title).strip() or title
+
+        interfaces = await self._refresh_vip_interfaces(cfg)
         umo = event.unified_msg_origin
         self._vip_pending[umo] = {
             "clean_url": link,
@@ -5026,6 +5535,7 @@ class MuliyResourcesPlugin(Star):
             "poster_url": cover,
             "poster_path": "",
             "resolved": True,
+            "interfaces": interfaces,
             "ts": time.time(),
         }
         # 启动后台超时自动取消（用户不回复时将主动取消并提示，无需反复催促）
@@ -5044,8 +5554,10 @@ class MuliyResourcesPlugin(Star):
             "请回复序号选择解析接口：",
         ]
         for i, (name, _t) in enumerate(interfaces, 1):
-            lines.append(f"  {emoji_index(i, len(interfaces))} {name}")
+            rec = " ⭐" if name in ("M1907", "789") else ""
+            lines.append(f"  {emoji_index(i, len(interfaces))} {name}{rec}")
         lines.append("")
+        lines.append("⭐ M1907 / 789 为实测可用；接口列表实时取自片库 /zjx，失效自动换下一个")
         lines.append("💡 回复数字选择接口，发送「取消」可退出")
         await event.send(MessageChain([Plain("\n".join(lines))]))
 
@@ -5124,7 +5636,7 @@ class MuliyResourcesPlugin(Star):
         if not pending:
             return
         cfg = self._get_config()
-        interfaces = self._get_interfaces(cfg)
+        interfaces = pending.get("interfaces") or self._get_interfaces(cfg)
         if idx < 1 or idx > len(interfaces):
             # 序号无效：保留会话让用户重选
             self._vip_pending[umo] = pending
@@ -5141,6 +5653,42 @@ class MuliyResourcesPlugin(Star):
         channel = (cfg.get("browser_channel") or "").strip()
         exe = ""  # video_vip_browser_path 配置已移除，统一自动探测浏览器
         proxy = ""  # video_vip_proxy 配置已移除，统一走环境代理自动探测
+
+        # ── 校验接口：选中的失效时自动尝试其它接口（M1907 / 789 优先）──
+        candidates = [(name, play_url)]
+        for n, t in interfaces:
+            if n != name:
+                candidates.append((n, build_interface_link(t, clean)))
+        seen_urls = set()
+        chosen = None
+        last_err = ""
+        try:
+            await event.send(MessageChain([Plain("⏳ 正在验证解析接口，请稍候…")]))
+        except Exception:
+            pass
+        verify_timeout = max(6000, min(timeout, 15000))
+        for n, u in candidates[:3]:
+            if not u or u in seen_urls:
+                continue
+            seen_urls.add(u)
+            try:
+                r = await verify_interface_playable(
+                    u, timeout_ms=verify_timeout, channel=channel, exe=exe)
+            except Exception as e:  # noqa: BLE001
+                r = {"ok": False, "error": str(e)}
+            if r.get("ok"):
+                chosen = (n, u)
+                break
+            last_err = r.get("error") or "no-player"
+            logger.info(f"[VIP] 接口 {n} 不可用: {last_err[:80]}")
+        if not chosen:
+            # 保留本次解析，让用户换一个接口重试
+            self._vip_pending[umo] = pending
+            await event.send(MessageChain([Plain(
+                f"❌ 解析接口暂时不可用（{last_err[:60]}）。\n"
+                "已保留本次解析，请换一个序号重试，或发送「取消」。")]))
+            return
+        name, play_url = chosen
 
         # 菜单阶段没抓简介/封面，这里补抓（仅 HTTP OG，不走浏览器，1-2 秒）
         if not pending.get("desc") or not pending.get("poster_url"):
@@ -5813,11 +6361,48 @@ class MuliyResourcesPlugin(Star):
         if not text:
             return
 
+        # ── pdy0 搜索验证码回复（必须在会话清理之前消费） ──
+        try:
+            if await self._handle_pdy_captcha_reply(event, text):
+                return
+        except Exception as e:
+            logger.warning(f"[pdy_site] 处理验证码回复失败: {e}")
+
         # ── 通用关键词 ──
         page_kw = ("下一页", "上一页")
         jump_kw = ("跳转", "跳到")
         cancel_kw = ("0", "取消", "算", "不要", "no")
         num_kw = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+
+        # 去掉 @机器人 / CQ at 前缀，支持「@bot 1」这种回复
+        session_text = re.sub(r"\[CQ:at,[^\]]+\]", "", text)
+        session_text = re.sub(r"^@\S+\s*", "", session_text).strip()
+
+        # ══════════════════════════════════════════════
+        # 影视会话（pdy0 / 片库主站）
+        # 在线程内（已出搜索结果 / 资源菜单 / 选集）直接处理，
+        # 不依赖 @机器人；@ 了也能正常识别。
+        # ══════════════════════════════════════════════
+        ses_mn = self._movie_sessions_new.get(event)
+        if ses_mn:
+            valid = (
+                session_text in cancel_kw
+                or session_text in page_kw
+                or session_text.startswith(("跳", "第", "选", "最后"))
+                or re.fullmatch(r"\d{1,3}", session_text or "")
+                or any(k in session_text for k in (
+                    "在线", "网盘", "线路", "节点", "磁力",
+                    "夸克", "百度", "迅雷", "阿里", "天翼", "uc", "115", "正片"))
+            )
+            if valid:
+                event.stop_event()
+                try:
+                    await self._handle_movie_new_selection(event, session_text)
+                except Exception as e:
+                    logger.error(f"[暮黎资源] 影视会话处理失败: {e}")
+                    await event.send(MessageChain([Plain(
+                        f"【暮黎资源】影视操作失败：{str(e)[:120]}")]))
+                return
 
         # ══════════════════════════════════════════════
         # 残留会话自动清理（issue2 修复）
@@ -5828,6 +6413,7 @@ class MuliyResourcesPlugin(Star):
             text in cancel_kw or text in page_kw
             or text.startswith("下一页") or text.startswith("上一页")
             or text.startswith("跳") or text in num_kw
+            or re.fullmatch(r"\d{1,3}", text or "")
             or text.startswith("第") or text.startswith("选") or text.startswith("最后")
             or any(k in text for k in ("夸克", "百度", "天翼", "迅雷", "阿里", "123", "uc", "磁力", "网盘", "线路"))
             or any(k in text for k in ("下载", "确认", "txt", "epub", "html", "pdf", "格式"))
@@ -6895,9 +7481,9 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[暮黎资源] 影视日报本次成功推送 {sent}/{len(gids)} 个群")
         return sent
 
-    async def _movie_build_and_send(self, items: list, ts: str):
+    async def _movie_build_and_send(self, items: list, ts: str, source_label: str = "pdy0"):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
-        html = build_glass_html(items, date_label, source_label="片库")
+        html = build_glass_html(items, date_label, source_label=source_label)
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         config = self._get_config()
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""
@@ -6936,7 +7522,7 @@ class MuliyResourcesPlugin(Star):
                     "desc": (it.get("synopsis") or "暂无简介")[:160],
                 })
             img_bytes = await self._report_pil_fallback(
-                cards, date_label, "片库", font_path, 720, "影视日报")
+                cards, date_label, source_label, font_path, 720, "影视日报")
         if img_bytes and len(img_bytes) > 2 * 1024 * 1024:
             logger.info(f"[影视日报] 原始图 {len(img_bytes)//1024}KB 超过 2MB，开始压缩...")
             img_bytes = self._compress_game_image(img_bytes)
@@ -6970,21 +7556,13 @@ class MuliyResourcesPlugin(Star):
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         username = (config.get("muliy_username", "") or "") if isinstance(config, dict) else ""
         password = (config.get("muliy_password", "") or "") if isinstance(config, dict) else ""
-        # movie_source 支持关键字：a123tv 强制旧站；片库 强制新站；否则按 cookie/账号自动切换
-        ms = (config.get("movie_source") or "").strip()
-        forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
-        forced_new = ms == MV_SOURCE_KEYWORD_NEW
         mx = int(config.get("movie_report_max", 24) or 24)
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
-        # 自动选择影视源：配了片库 Cookie 或账号密码走新站，否则回退 a123tv 旧站（免登录）
-        use_cookie = "" if forced_a123 else cookie
-        use_user = "" if forced_a123 else username
-        use_pass = "" if forced_a123 else password
-        _has_login = bool(cookie or (username and password))
-        logger.info(f"[影视日报] 开始抓取（源={'a123tv(强制)' if forced_a123 else ('片库' if _has_login else 'a123tv(免登录)')}）")
-        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True,
-                                         use_user, use_pass)
+        # 日报源：pdy0 优先（免登录），失败且有片库凭据时自动回退片库主站
+        logger.info("[影视日报] 开始抓取（源=pdy0 优先，片库主站备用）")
+        result = await asyncio.to_thread(fetch_movie_daily_auto, cookie, "", mx, sections_filter, True,
+                                         username, password)
         if not result["success"]:
             logger.warning(f"[影视日报] 抓取失败: {result.get('error','')}（不标记今日完成，兜底守护将重试）")
             return
@@ -6992,10 +7570,10 @@ class MuliyResourcesPlugin(Star):
         if not items:
             logger.info("[影视日报] 今日暂无更新，标记今日已完成")
             self._mark_report_ran("movie", ts); return
+        src_label = result.get("source", "pdy0")
         # 缓存 zip 供面板回看
         try:
             date_label = datetime.date.today().strftime("%Y年%m月%d日")
-            src_label = result.get("source", "片库")
             html = build_glass_html(items, date_label, source_label=src_label)
             zp = await asyncio.to_thread(gen_movie_report_zip, items, html, ts)
             if zp:
@@ -7003,7 +7581,7 @@ class MuliyResourcesPlugin(Star):
                 shutil.copy2(zp, self._movie_cached_path(ts))
                 self._sw_cleanup_reports()
         except Exception as e: logger.warning(f"[影视日报] 缓存 zip 失败: {e}")
-        sent = await self._movie_build_and_send(items, ts)
+        sent = await self._movie_build_and_send(items, ts, src_label)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
             self._mark_report_ran("movie", ts)
@@ -7018,27 +7596,19 @@ class MuliyResourcesPlugin(Star):
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         username = (config.get("muliy_username", "") or "") if isinstance(config, dict) else ""
         password = (config.get("muliy_password", "") or "") if isinstance(config, dict) else ""
-        ms = (config.get("movie_source") or "").strip()
-        forced_a123 = ms.lower() == MV_SOURCE_KEYWORD_OLD
-        forced_new = ms == MV_SOURCE_KEYWORD_NEW
         mx = int(config.get("movie_report_max", 24) or 24)
         sections = self._parse_multi(config.get("movie_sections", ["mv", "tv", "ac"]) or ["mv", "tv", "ac"])
         sections_filter = [s for s in sections if s in ("mv", "tv", "ac")] or None
-        use_cookie = "" if forced_a123 else cookie
-        use_user = "" if forced_a123 else username
-        use_pass = "" if forced_a123 else password
-        _has_login = bool(cookie or (username and password))
-        src_hint = "a123tv 旧站（免登录）" if (forced_a123 or not _has_login) else "片库新站"
-        yield event.plain_result(f"⏳ 正在抓取{src_hint}最近更新影视...")
-        result = await asyncio.to_thread(fetch_movie_daily_auto, use_cookie, "", mx, sections_filter, True,
-                                         use_user, use_pass)
+        yield event.plain_result("⏳ 正在抓取 pdy0（片库主站备用）最近更新影视...")
+        result = await asyncio.to_thread(fetch_movie_daily_auto, cookie, "", mx, sections_filter, True,
+                                         username, password)
         if not result["success"]:
             yield event.plain_result(f"⚠️ {result.get('error','未知')}"); return
         items = result.get("items", [])
         if not items:
             yield event.plain_result("📭 今日暂无影视更新。"); return
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
-        src_label = result.get("source", "片库")
+        src_label = result.get("source", "pdy0")
         html = build_glass_html(items, date_label, source_label=src_label)
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
         channel = (config.get("browser_channel", "") or "") if isinstance(config, dict) else ""

@@ -381,17 +381,94 @@ def fetch_movie_daily_a123tv(max_per_section: int = 24, sections_filter: list = 
     return res
 
 
+def fetch_movie_daily_pdy(max_per_section: int = 24, sections_filter: list = None,
+                          fetch_synopsis: bool = True) -> dict:
+    """抓取 pdy0（片库注册站）最近更新的影视日报。
+
+    用 maccms 的 /index.php/ajax/data 列表接口（免登录、免验证码），
+    按 tid 取 电影(1) / 剧集(2) / 动漫(4) 的最新条目；简介直接用 vod_blurb，
+    不需要再进详情页，抓取速度快很多。
+
+    返回结构与 fetch_movie_daily 一致：{"success","items","error","source":"pdy0"}。
+    """
+    res = {"success": False, "items": [], "error": "", "source": "pdy0"}
+    try:
+        from .pdy_site import PdySiteClient, PDY_TID
+
+        client = PdySiteClient()
+        cap = max_per_section if (max_per_section and max_per_section > 0) else 30
+        cap = max(1, min(int(cap), 30))  # maccms 列表接口 limit 只支持 10/20/30
+        req_limit = 30 if cap > 20 else (20 if cap > 10 else 10)
+        items = []
+        for ty in ("mv", "tv", "ac"):
+            if sections_filter and ty not in sections_filter:
+                continue
+            rows = client.latest(PDY_TID[ty], req_limit)
+            for r in rows[:cap]:
+                title = (r.get("vod_name") or "").strip()
+                if not title:
+                    continue
+                remarks = (r.get("vod_remarks") or "").strip()
+                year = str(r.get("vod_year") or "").strip()
+                quality = [q.upper() for q in re.findall(
+                    r"4K|2160P|1080P|720P|蓝光|HD", remarks, re.I)]
+                score = str(r.get("vod_douban_score") or r.get("vod_score") or "").strip()
+                if score in ("0", "0.0", "0.00"):
+                    score = ""
+                blurb = (r.get("vod_blurb") or r.get("vod_content") or "").strip()
+                blurb = re.sub(r"<[^>]+>", "", blurb)
+                cover = (r.get("vod_pic") or "").strip()
+                if cover.startswith("//"):
+                    cover = "https:" + cover
+                elif cover.startswith("/"):
+                    cover = client.base_url + cover
+                items.append({
+                    "title": title,
+                    "dir": ty,
+                    "type_name": SECTION_TY.get(ty, ty),
+                    "id": str(r.get("vod_id") or ""),
+                    "status": " · ".join(x for x in (remarks, year) if x),
+                    "douban": score,
+                    "imdb": "",
+                    "quality": quality[:2],
+                    "section_title": f"最近更新的{SECTION_TY.get(ty, ty)}",
+                    "cover": cover,
+                    "cover_b64": "",
+                    "synopsis": blurb[:300] if fetch_synopsis else "",
+                    "detail_url": client.base_url + f"/{ty}/{r.get('vod_id')}.html",
+                })
+        if not items:
+            res["success"] = True
+            res["error"] = "暂无更新数据"
+            return res
+        for it in items:
+            it["cover_b64"] = _dl_and_b64(it.get("cover", ""), client.base_url) if it.get("cover") else ""
+        res["success"] = True
+        res["items"] = items
+    except Exception as e:
+        logger.error(f"[影视日报-pdy] 抓取失败: {e}")
+        res["error"] = str(e)[:200]
+    return res
+
+
 def fetch_movie_daily_auto(cookie: str = "", base_url: str = "", max_per_section: int = 24,
                            sections_filter: list = None, fetch_synopsis: bool = True,
                            username: str = "", password: str = "") -> dict:
     """自动选择影视源获取日报：
 
-    - 配置了片库 Cookie 或账号密码 → 优先片库新站（登录态，含网盘/在线播放信息）；
-      片库抓取失败/空数据 → 自动回退 a123tv 旧站。
-    - 未配置任何登录凭证或片库源不可用 → 直接用 a123tv（免登录）。
+    - 默认优先 pdy0（片库注册站，免登录免验证码，抓取最新列表）；
+    - pdy0 抓取失败/空数据 → 配了片库 Cookie 或账号密码时回退片库主站。
 
-    返回 dict 额外带 "source" 字段（"片库" / "a123tv"），供前端标注数据来源。
+    返回 dict 额外带 "source" 字段（"pdy0" / "片库"），供前端标注数据来源。
     """
+    try:
+        r = fetch_movie_daily_pdy(max_per_section, sections_filter, fetch_synopsis)
+        if r.get("success"):
+            # 空列表也是有效结果（今日暂无更新），不再回退片库
+            return r
+        logger.warning(f"[影视日报] pdy0 源不可用，尝试片库主站：{r.get('error','')}")
+    except Exception as e:
+        logger.warning(f"[影视日报] pdy0 源异常，尝试片库主站：{e}")
     has_login = bool((cookie and cookie.strip()) or (username and password))
     if has_login:
         try:
@@ -400,12 +477,11 @@ def fetch_movie_daily_auto(cookie: str = "", base_url: str = "", max_per_section
             if r.get("success") and r.get("items"):
                 r["source"] = "片库"
                 return r
-            logger.warning(f"[影视日报] 片库源不可用，回退 a123tv：{r.get('error','')}")
+            logger.warning(f"[影视日报] 片库源不可用：{r.get('error','')}")
         except Exception as e:
-            logger.warning(f"[影视日报] 片库源异常，回退 a123tv：{e}")
-    r = fetch_movie_daily_a123tv(max_per_section, sections_filter, fetch_synopsis)
-    r.setdefault("source", "a123tv")
-    return r
+            logger.warning(f"[影视日报] 片库源异常：{e}")
+    return {"success": False, "items": [],
+            "error": "pdy0 与片库主站均不可用（片库需配置登录凭据）", "source": "pdy0"}
 
 
 # ==================== 毛玻璃简约风格 HTML ====================

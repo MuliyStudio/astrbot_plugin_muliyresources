@@ -40,17 +40,19 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # 解析接口表（与影视解析页 /zjx 下拉框的接口一致，顺序即展示顺序）
 # 模板已自带参数（?url= 或 ?jx=），拼接时直接把编码后的视频地址接在末尾。
 # ───────────────────────────────────────────────────────────────────────────
+MULIY_ZJX_PAGE = "https://www.xn--wcv59z.com/zjx"
+
 VIP_INTERFACES: list[tuple[str, str]] = [
-    ("虾米", "https://jx.xmflv.com/?url="),
+    # 实测可用（2026-10）：M1907、789 能正常渲染播放器；菜单里优先展示
     ("M1907", "https://im1907.top/?jx="),
-    ("七哥", "https://jx.nnxv.cn/tv.php?url="),
-    ("咸鱼", "https://jx.xymp4.cc/?url="),
-    ("极速", "https://jx.2s0.cn/player/?url="),
-    ("PlayerJY", "https://jx.playerjy.com/?url="),
     ("789", "https://jx.789jiexi.com/?url="),
+    # 片库主站 /zjx 的默认接口（冰豆，免登录，稳定性一般，作为备选）
+    ("冰豆", "https://bd.jx.cn/?url="),
+    # 备选：不同网络环境下可能可用；插件会在发送前验证，失效会自动换下一个
+    ("七哥", "https://jx.nnxv.cn/tv.php?url="),
+    ("虾米", "https://jx.xmflv.com/?url="),
+    ("咸鱼", "https://jx.xymp4.cc/?url="),
     ("fongmi", "https://json.fongmi.cc/web?url="),
-    ("花旗", "https://www.huaqi.live/?url="),
-    ("937", "https://bfq.937auth.vip?url="),
 ]
 
 
@@ -617,6 +619,59 @@ def build_interface_link(template: str, video_url: str) -> str:
     if "{url}" in tpl:
         return tpl.replace("{url}", enc)
     return tpl + enc
+
+
+async def fetch_muliy_interfaces(timeout_ms: int = 30000, channel: str = "",
+                                 exe: str = "", proxy: str = "") -> list[tuple[str, str]]:
+    """从片库主站 /zjx 实时读取解析接口列表。
+
+    该页有 PoW 安全验证 + JS 渲染，必须用浏览器等验证完成后读
+    ``select.jdgds`` 的 option（value 即接口模板）。失败返回 []，
+    调用方回退内置 VIP_INTERFACES。
+    """
+    opts = []
+    try:
+        async with _browser(proxy, channel, exe) as browser:
+            ctx = await browser.new_context(
+                user_agent=_UA, java_script_enabled=True, ignore_https_errors=True)
+            page = await ctx.new_page()
+            try:
+                await page.goto(MULIY_ZJX_PAGE, wait_until="domcontentloaded",
+                                timeout=timeout_ms)
+            except Exception as e:  # 超时不致命，继续等 PoW 自动跳转
+                logger.warning(f"[vip_capture] 片库 /zjx 打开异常: {e}")
+            waited = 0
+            while waited < timeout_ms:
+                await page.wait_for_timeout(1000)
+                waited += 1000
+                try:
+                    opts = await page.evaluate(
+                        """() => Array.from(document.querySelectorAll('select.jdgds option'))
+                                 .map(o => [(o.textContent || '').trim(), o.value || ''])""")
+                except Exception:
+                    opts = []
+                if opts:
+                    break
+            await ctx.close()
+    except Exception as e:
+        logger.warning(f"[vip_capture] 片库 /zjx 接口获取失败: {e}")
+        return []
+
+    out, seen = [], set()
+    for item in opts or []:
+        try:
+            name, val = (item[0] or "").strip(), (item[1] or "").strip()
+        except Exception:
+            continue
+        if not name or not val.startswith("http") or val in seen:
+            continue
+        seen.add(val)
+        out.append((name, val))
+    if out:
+        logger.info(f"[vip_capture] 片库 /zjx 实时接口 {len(out)} 个: {[n for n, _ in out]}")
+    else:
+        logger.warning("[vip_capture] 片库 /zjx 未读到接口列表（可能被拦截或页面改版）")
+    return out
 
 
 async def verify_interface_playable(

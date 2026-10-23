@@ -33,7 +33,7 @@
 
 | | 功能 | 说明 |
 |---|------|------|
-| 🎬 | **影视搜索（双源自动切换）** | 配置片库**账号密码**（`muliy_username`/`muliy_password`，插件自动登录）或 `muliy_cookie` 走**片库新站**（在线播放 + 网盘下载，自动选最低延迟节点）；未配置自动回退 **a123tv 旧站**（免登录）。剧集自动选集数、电影直接选线路 |
+| 🎬 | **影视搜索（pdy0 默认 / 片库备用）** | 默认走 **pdy0 系站点**（片库注册站，地址发布页 `988lm.com` 自动选可用站点，免登录，在线播放 + 磁力 + 网盘下载）；搜索可能弹 4 位图片验证码，装 `ddddocr` 自动识别，否则把验证码图发给用户手动输入。`movie_source=old` 时切到**片库主站**（需 `muliy_username`/`muliy_password` 或 `muliy_cookie`）。剧集自动选集数、电影直接选线路 |
 | 🎮 | **游戏搜索** | 搜索 xdgame.com，返回多网盘下载链接（百度/夸克/阿里/123/天翼…） |
 | 💿 | **软件搜索** | 搜索 x6d.com 软件/应用/工具资源 |
 | 📺 | **短剧搜索** | 搜索网盘贴吧短剧（wangpant8.com），选中后直接返回**夸克网盘资源链接** |
@@ -41,7 +41,7 @@
 | 🖼️ | **长列表出图** | 小说 / 网盘 / 游戏 / 软件 / 影视 / 短剧搜索结果，以及积分卡、积分排行，条目多时自动排版成图片（思源黑体正文 + 思源宋体标题 + MDI 图标，带 logo、序号、页码与操作提示），回复数字选择与翻页指令不变 |
 | 📰 | **日报推送** | 软件 / 游戏 / 影视 / 短剧四套**定时日报**，自动渲染成图片以文件形式推送到群 |
 | 🎵 | **网易云语音名片** | 发网易云链接/小程序卡片，自动解析成**语音**发出来（内置直连，零部署） |
-| 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链 |
+| 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链（发送前验证接口，失效自动换下一个） |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
 | 💰 | **签到与积分** | `/签到` 领取每日积分，并生成一张带 **Bing 每日壁纸 / Epic 喜加一 / 每日一言 / 资源推荐** 的签到卡片；搜索资源按类型扣除积分，积分跨群聊全局共享 |
 | 🤚 | **表情包娱乐** | `摸摸 @某人` / `给你一脚 @某人` / `给我按摩 @某人` 生成 GIF |
@@ -106,7 +106,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 | 功能 | 装好即用？ | 备注 |
 |------|:---:|------|
-| 🎬 影视搜索（a123tv 旧站） | ✅ | 想升级到片库新站 → 配 `muliy_username` + `muliy_password`（或 `muliy_cookie`） |
+| 🎬 影视搜索（pdy0 默认） | ✅ | 免登录即用；想用片库主站作备用 → 配 `muliy_username` + `muliy_password`（或 `muliy_cookie`），并把 `movie_source` 设为 `old` |
 | 🎮 游戏搜索 | ✅ | 默认走 xdgame，配账密后可用 `/game_cookie_refresh` 自动登录 |
 | 💿 软件搜索 | ✅ | |
 | 📺 短剧搜索 | ✅ | 搜「搜短剧XX / 看短剧XX」即可，返回夸克网盘资源链接 |
@@ -157,7 +157,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 | 想用 | 需要配置 |
 |------|---------|
-| 片库新站影视（网盘资源） | `movie` → `muliy_username` + `muliy_password`（账号密码，插件自动登录）或 `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
+| 片库主站影视（备用源） | `movie` → `movie_source=old` + `muliy_username`/`muliy_password`（账号密码，插件自动登录）或 `muliy_cookie`（浏览器登录 Cookie，含 `app_auth`、`PHPSESSID`） |
 | 游戏自动登录刷新 Cookie | `game` → `xdgame_username` + `xdgame_password` |
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
@@ -183,12 +183,14 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `/签到` `/每日签到` | 所有人 | 每日签到领取积分（连续签到加成 + Bing 壁纸/天气/一言/推荐卡片） |
 | `/积分` `/我的积分` | 所有人 | 查看自己的积分、连续签到与搜索消耗 |
 | `/积分排行` | 所有人 | 查看积分排行榜（前 10 名） |
-| `/积分管理 <用户ID> <数量>` | 管理员 | 增减用户积分；`/积分管理 设置 <ID> <数量>` 直接设置，`/积分管理 查询 <ID>` 查询 |
+| `/积分管理 <用户ID> <数量>` | 管理员 | 增减用户积分（正加负扣）；`设置 <ID> <数量>` 直接设置，`查询 [ID]` 查询（省略 ID 查自己）；目标支持 `@某人`、`回复`（引用对象）或 `平台:用户ID` |
 | `/movie_status` | 所有人 | 检查影视站可达性 |
 | `/入群验证 状态` | 管理员 | 查看入群审核配置与在验证人数 |
 | `/入群验证 测试` | 管理员 | 发送一张示例验证码图片（不修改群成员） |
 
 > 开启 LLM 后，以上功能均可自然语言触发，无需记命令。
+>
+> ⚠️ `/积分管理` 的「管理员」指 **AstrBot 管理员**（WebUI 配置里的管理员ID列表），群主/群管理员默认没有权限。
 
 ### 😜 表情包触发（无需 @，直接发）
 
@@ -224,12 +226,13 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 | 配置项 | 默认 | 说明 |
 |--------|------|------|
-| `muliy_username` / `muliy_password` | `""` | **片库新站账号密码**（推荐）：填了插件自动登录获取登录态，无需手动搬运 Cookie |
-| `muliy_cookie` | `""` | **片库新站 Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。与账号密码二选一，两者都填时 Cookie 优先。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW）。留空回退 a123tv |
-| `movie_source` | `""` | 留空自动；填 `片库` 强制新站；填 `a123tv` 强制旧站 |
+| `movie_source` | `""` | `new` / 留空 = **pdy0（默认）**；`old` = 片库主站（备用，需登录）。兼容旧写法 `片库`/`a123tv`（都视为 old） |
+| `pdy_auto_captcha` | `true` | pdy0 搜索验证码自动识别；需 `pip install ddddocr`，未安装时把验证码图发给用户手动输入 |
+| `muliy_username` / `muliy_password` | `""` | **片库主站（备用源）账号密码**：仅 `movie_source=old` 时需要，插件自动登录 |
+| `muliy_cookie` | `""` | **片库主站（备用源）Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。与账号密码二选一，两者都填时 Cookie 优先。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW） |
 | `muliy_release_url` | `""` | 片库系发布页（默认挂了.com，留空即可） |
-| `muliy_cache_ttl` | `3600` | 新站登录态缓存秒数 |
-| `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（mv电影·tv剧集·ac动漫） |
+| `muliy_cache_ttl` | `3600` | 片库主站登录态缓存秒数 |
+| `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（mv电影·tv剧集·ac动漫；日报 pdy0 优先、片库备用） |
 
 ### 🎵 网易云（music）
 
@@ -293,7 +296,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `checkin_card_enabled` | `true` | 签到成功卡片（HTML 出图；失败自动回退文字） |
 | `checkin_info_module` | `epic` | 卡片左下内容：`epic` 喜加一 / `history` 历史上的今天 / `poem` 今日诗词 / `weather` 天气 / `off` 关闭 |
 | `checkin_weather_city` | 空 | 仅 `weather` 模式生效；留空按服务器出口 IP 自动定位 |
-| `checkin_recommend_dynamic` | `true` | 推荐优先从当前搜索源动态取：影视按 a123tv / 片库当前源随机、游戏按当前源随机、软件从 x6d 随机；失败回退静态清单 |
+| `checkin_recommend_dynamic` | `true` | 推荐优先从当前搜索源动态取：影视按 pdy0 / 片库主站当前源随机、游戏按当前源随机、软件从 x6d 随机；失败回退静态清单 |
 | `checkin_recommend_games` | 见后台 | 推荐游戏清单，每行 `名称|一句话推荐`，每天轮换一款 |
 | `checkin_recommend_software` | 见后台 | 推荐软件清单，格式同上 |
 | `checkin_recommend_movies` | 见后台 | 推荐影视清单，格式同上 |
@@ -326,6 +329,8 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 - `video_vip_parse`（默认 `true`）：VIP 视频自动解析开关
 - `video_vip_timeout`：单个解析接口超时（毫秒）
 - `browser_channel` / `browser_exe`：日报 / VIP 解析共用浏览器（留空自动；日报无浏览器时自动用 Pillow 兜底出图）
+- 解析接口：菜单里 **M1907 / 789** 为实测可用（⭐）；其余接口**实时从片库主站 `/zjx` 读取**（15 分钟缓存，失败回退内置列表）。选择接口后插件会先验证播放器，失效自动尝试下一个可用接口，并保留本次解析让你换序号重试。
+- 片库主站 `https://www.xn--wcv59z.com/zjx` **免登录可用**（默认「冰豆解析」`bd.jx.cn`）；该页是 JS + PoW 前端，插件用浏览器完成验证后读取接口下拉框，不直接拼 `/zjx?url=`。
 
 ### ⚠️ 配置注意事项（从配置项提示里精简后移到这里）
 
@@ -339,13 +344,17 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 ## 📖 功能详解
 
-### 🎬 影视：双源自动切换
+### 🎬 影视：pdy0 默认，片库主站备用
 
-- **配置了片库登录**（`muliy_username`+`muliy_password` 账号密码，**推荐**；或 `muliy_cookie`）→ 走**片库新站**（最全最新的影视资源网站）：自动从发布页探测最低延迟节点、自动求解「浏览器安全验证」PoW；账号密码模式下插件自动 POST 登录换登录态，无需手动复制 Cookie。资源含**在线播放（多节点）+ 网盘下载（多网盘）**。
-- **未配置**（或 `movie_source=a123tv`）→ **a123tv 旧站**：免登录，仅在线播放切换线路。
-- `movie_source` 可填关键字强制指定源：`片库` 强制新站、`a123tv` 强制旧站。
+- **默认走 pdy0 系站点**（片库的注册站，注册开放；原片库主站已关闭注册）：免登录即可搜索/播放/取网盘，资源含**在线播放（多线路）+ 磁力 + 网盘下载**。插件会从地址发布页 `https://www.988lm.com/` 自动读取当前可用站点（pdy0~6 / pys1~3），并发探测延迟后自动选站，站点失效会自动切换。
+- **搜索验证码**：pdy0 的搜索页会弹 4 位图片验证码（字母数字混合）。安装 `ddddocr`（`pip install ddddocr`）后插件自动识别（最多换 3 张重试）；未安装或识别失败时，插件把验证码图片直接发到当前会话，用户回复图中验证码即可继续搜索，验证通过后同会话内复用登录态。
+- **搜索限流**：pdy0 要求两次搜索间隔 3 秒，插件会自动等待并重试；相同关键词 5 分钟内走缓存，避免频繁请求。
+- **片库主站（备用）**：把 `movie_source` 设为 `old`，并配置 `muliy_username`+`muliy_password`（或 `muliy_cookie`）。片库主站会自动探测最低延迟节点、自动求解「浏览器安全验证」PoW，资源含**在线播放 + 网盘**。
+- 关键字：`new`（或留空）= pdy0；`old` = 片库主站。旧的 `片库` / `a123tv` 写法仍兼容（都归到 old）。
 - 指令 `/找影视` 与 LLM「想看XX」统一走同一套源路由，无需手动切换。
-- `/movie_cookie` 命令可随时查看 / 检测登录态（Cookie 或账号密码）。
+- **会话内回复免 @**：出搜索结果后，回复数字选片、翻页、选集、选线路/网盘、回复 pdy0 验证码都不需要 @ 机器人；@ 了也能识别。只有首次发起搜索需要 @ 或唤醒词。
+- `/movie_cookie` 命令可随时查看 / 检测片库主站登录态（Cookie 或账号密码）；`/movie_status` 查看当前源状态。
+- 影视日报：**pdy0 优先**（免登录抓最新列表），pdy0 不可用且配了片库凭据时自动回退片库主站。
 
 ### 🔐 游戏 Cookie 刷新
 

@@ -185,7 +185,7 @@
   },
   "movie": {
     "description": "影视资源",
-    "hint": "影视搜索源、片库登录凭据与影视日报；高级项在「更多配置」里。",
+    "hint": "影视搜索源（pdy0 默认 / 片库主站备用）、验证码识别与影视日报；高级项在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -193,7 +193,13 @@
         "type": "string",
         "description": "影视搜索源",
         "default": "",
-        "hint": "留空自动：有片库登录走片库新站，否则回退 a123tv；也可填「片库」/「a123tv」强制。"
+        "hint": "new=pdy0（默认，片库注册站，免登录）；old=片库主站（备用，需登录）。留空等同 new。"
+      },
+      "pdy_auto_captcha": {
+        "type": "bool",
+        "description": "pdy0 搜索验证码自动识别",
+        "default": true,
+        "hint": "需额外安装 ddddocr（pip install ddddocr）；未安装或关闭时，验证码图片会发给用户手动输入。"
       },
       "muliy_release_url": {
         "type": "string",
@@ -213,30 +219,30 @@
       },
       "muliy_username": {
         "type": "string",
-        "description": "片库（新站）账号（选填）",
+        "description": "片库主站（备用源）账号（选填）",
         "default": "",
-        "hint": "选填。与密码搭配，插件自动登录片库新站，无需搬 Cookie。",
+        "hint": "仅 movie_source=old 时需要。与密码搭配自动登录片库主站，无需搬 Cookie。",
         "collapsed": true
       },
       "muliy_password": {
         "type": "string",
-        "description": "片库（新站）密码（选填）",
+        "description": "片库主站（备用源）密码（选填）",
         "default": "",
-        "hint": "选填。与账号搭配自动登录。",
+        "hint": "仅 movie_source=old 时需要。与账号搭配自动登录。",
         "collapsed": true
       },
       "muliy_cookie": {
         "type": "text",
-        "description": "片库（新站）Cookie（选填，可用账号密码替代）",
+        "description": "片库主站（备用源）Cookie（选填，可用账号密码替代）",
         "default": "",
-        "hint": "选填。含 app_auth、PHPSESSID 即可；勿填 browser_verified / browser_pow（插件会自动求解）。",
+        "hint": "仅 movie_source=old 时需要。含 app_auth、PHPSESSID 即可；勿填 browser_verified / browser_pow（插件会自动求解）。",
         "collapsed": true
       },
       "movie_report_enabled": {
         "type": "bool",
         "description": "影视日报总开关",
         "default": true,
-        "hint": "开启后按本组时间每天推送影视日报（未配片库时自动用 a123tv 免登录出报）。"
+        "hint": "开启后按本组时间每天推送影视日报（pdy0 优先，片库主站备用）。"
       },
       "movie_report_max": {
         "type": "int",
