@@ -13,8 +13,10 @@
   fetch_captcha()        -> 验证码图片 bytes
   verify(code)           -> 提交验证码；成功后会记住登录态（session cookie）
   get_detail(dir, id)    -> 与片库新站同结构（name/desc/cover/year/...）
-  get_resources(dir, id) -> {"playlist":[{"i","t","ep_start","ep_end"}],
+  get_resources(dir, id) -> {"playlist":[{"i","t","ep_start","ep_end","eps"}],
                              "panlist":[{"name","url","type","user","time"}]}
+                             eps 为 [{"n","name","url"}]，n 是播放页集序号，
+                             name 是站点上的集名（综艺可能是日期 / 上中下篇）。
   get_play_m3u8(node_i, ep) -> m3u8 直链（node_i 形如 "386760-1"）
 
 所有解析都基于 maccms 默认模板 + 本站 mds 模板，页面改版时只需调整本文件。
@@ -564,7 +566,24 @@ class PdySiteClient:
             ul = soup.find("ul", id=f"ewave-playlist-{sid}")
             if not ul:
                 continue
-            eps = ul.select("li a[href]")
+            eps = []
+            for idx, a in enumerate(ul.select("li a[href]"), 1):
+                href = (a.get("href") or "").strip()
+                if not href:
+                    continue
+                ep_name = _clean_text(a.get_text(strip=True))
+                title_attr = _clean_text(a.get("title") or "")
+                # 部分模板正文只有数字，真正的集名在 title 上（如「20260730上」）
+                if title_attr and (not ep_name or (ep_name.isdigit() and not title_attr.isdigit())):
+                    ep_name = title_attr
+                # 播放页地址形如 /py/{id}-{sid}-{n}.html，n 才是播放接口要的集序号
+                m_ep = re.search(r"-(\d+)\.html", href)
+                play_n = int(m_ep.group(1)) if m_ep else idx
+                eps.append({
+                    "n": play_n,
+                    "name": ep_name or f"第{idx}集",
+                    "url": _fix_url(href, self.base_url),
+                })
             label = _clean_text(tab.get_text(strip=True))
             label = re.sub(r"\d+$", "", label).strip() or f"线路{sid}"
             if not eps:
@@ -574,6 +593,7 @@ class PdySiteClient:
                 "t": label,
                 "ep_start": 1,
                 "ep_end": len(eps),
+                "eps": eps,
             })
 
         # 网盘 / 磁力：每个 tab 对应 ul#ewave-downlist-{sid}
@@ -650,10 +670,10 @@ class PdySiteClient:
         return url
 
     # ---------- 推荐 / 日报 ----------
-    def latest(self, tid: int, limit: int = 30) -> list:
+    def latest(self, tid: int, limit: int = 30, page: int = 1) -> list:
         """按分类取最新列表（ajax/data，无需验证码）。"""
         txt = self._request(
-            f"/index.php/ajax/data?mid=1&tid={int(tid)}&limit={int(limit)}&page=1",
+            f"/index.php/ajax/data?mid=1&tid={int(tid)}&limit={int(limit)}&page={max(1, int(page))}",
             headers={"X-Requested-With": "XMLHttpRequest"})
         try:
             data = json.loads(txt)

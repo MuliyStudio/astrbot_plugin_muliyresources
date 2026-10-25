@@ -109,9 +109,20 @@ def search_games(keyword: str, max_results: int = 32) -> list:
         if tt: date_text = tt.get_text(strip=True)
         name = re.sub(r"^\d{1,2}\s*", "", name)
         fu = href if href.startswith("http") else GAME_BASE_URL + href
+        # 列表缩略图：<a class="search-thumb"><img data-original="/uploads/...">
+        cover = ""
+        thumb_box = li.find("a", class_="search-thumb") or li
+        thumb = thumb_box.find("img")
+        if thumb:
+            src = (thumb.get("data-original") or thumb.get("data-src")
+                   or thumb.get("src") or "").strip()
+            low = src.lower()
+            if src and "defaultpic" not in low and not low.startswith("data:"):
+                cover = src if src.startswith("http") else GAME_BASE_URL + src
         if gid not in [r["id"] for r in results]:
             logger.debug(f"游戏命中: [{type_text}] {name} ({date_text})")
-            results.append({"id": gid, "title": name, "url": fu, "type": type_text, "date": date_text})
+            results.append({"id": gid, "title": name, "url": fu, "type": type_text,
+                            "date": date_text, "cover": cover})
         if len(results) >= max_results: break
     logger.info(f"游戏搜索完成: 结果={len(results)}, 跳过={skipped}")
     return results

@@ -24,6 +24,96 @@
       }
     }
   },
+  "minigame": {
+    "description": "群聊小游戏",
+    "hint": "猜数字（最多 6 人，范围随人数扩大）+ 封面猜猜（单人）；只在群聊里通过 /小游戏 启动，不主动推送。",
+    "type": "object",
+    "default": {},
+    "items": {
+      "minigame_enabled": {
+        "type": "bool",
+        "description": "启用群聊小游戏",
+        "default": true,
+        "hint": "关闭后 /小游戏 与 /结束游戏 均不可用。"
+      },
+      "minigame_group_ids": {
+        "type": "list",
+        "description": "允许玩小游戏的群号",
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "hint": "留空=所有群可用；填写后只有这些群能启动游戏。"
+      },
+      "minigame_points_reward": {
+        "type": "int",
+        "description": "获胜奖励积分",
+        "default": 5,
+        "min": 0,
+        "max": 1000,
+        "hint": "猜数字给猜中的人；封面猜猜给每个答对的人。0=不发积分。需同时开启「签到积分总开关」。"
+      },
+      "minigame_daily_cap": {
+        "type": "int",
+        "description": "每人每日游戏奖励上限",
+        "default": 30,
+        "min": 0,
+        "max": 10000,
+        "hint": "0=不限制。防止小游戏刷积分。"
+      },
+      "minigame_bomb_timeout": {
+        "type": "int",
+        "description": "猜数字组队等待（秒）",
+        "default": 30,
+        "min": 10,
+        "max": 300,
+        "hint": "发起后等待群友回复 1 加入；房主可回复 2 立即开始，超时自动开始。"
+      },
+      "minigame_bomb_turn_timeout": {
+        "type": "int",
+        "description": "猜数字每回合限时（秒）",
+        "default": 30,
+        "min": 10,
+        "max": 300,
+        "hint": "轮到某位群友后，超过该时间未猜则自动跳到下一位。",
+        "collapsed": true
+      },
+      "minigame_cover_rounds": {
+        "type": "int",
+        "description": "封面猜猜题数",
+        "default": 3,
+        "min": 1,
+        "max": 10,
+        "hint": "每局默认 3 题。"
+      },
+      "minigame_cover_timeout": {
+        "type": "int",
+        "description": "封面每题限时（秒）",
+        "default": 25,
+        "min": 10,
+        "max": 120,
+        "hint": "超时自动公布答案并进入下一题。"
+      },
+      "minigame_cover_pool_ttl": {
+        "type": "int",
+        "description": "封面题库缓存时长（小时）",
+        "default": 12,
+        "min": 1,
+        "max": 168,
+        "hint": "首次启动会从片库抓取题库并缓存；缓存过期后自动刷新。",
+        "collapsed": true
+      },
+      "minigame_cover_pixel": {
+        "type": "int",
+        "description": "封面马赛克块大小",
+        "default": 12,
+        "min": 4,
+        "max": 40,
+        "hint": "越大越糊；默认 12。",
+        "collapsed": true
+      }
+    }
+  },
   "browser": {
     "description": "浏览器",
     "hint": "本地 Chromium 渲染（可选）；留空使用插件自带浏览器或 AstrBot 内置渲染。",
@@ -68,14 +158,14 @@
         "type": "string",
         "description": "xdgame.com 账号",
         "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。",
+        "hint": "用于 /game_cookie_refresh，以及在 Cookie 失效时自动登录刷新（需同时填写密码）。",
         "collapsed": true
       },
       "xdgame_password": {
         "type": "string",
         "description": "xdgame.com 密码",
         "default": "",
-        "hint": "用于 /game_cookie_refresh 自动登录刷新 Cookie。",
+        "hint": "用于 /game_cookie_refresh，以及在 Cookie 失效时自动登录刷新（需同时填写账号）。",
         "collapsed": true
       },
       "cookie": {
@@ -627,7 +717,7 @@
   },
   "points": {
     "description": "签到与积分",
-    "hint": "签到与积分系统；初始积分、连续加成、推荐清单、搜索消耗在「更多配置」里。",
+    "hint": "签到与积分系统；初始积分、连续加成、推荐清单、资源消耗在「更多配置」里。",
     "type": "object",
     "default": {},
     "items": {
@@ -635,7 +725,7 @@
         "type": "bool",
         "description": "签到积分总开关",
         "default": false,
-        "hint": "默认关闭。开启后 /签到 可领积分，搜索资源会检查并扣除积分；关闭时搜索不扣积分。"
+        "hint": "默认关闭。开启后 /签到 可领积分，搜索免费，只有获取到最终资源链接/文件时才扣积分；关闭时不扣积分。"
       },
       "points_initial": {
         "type": "int",
@@ -782,11 +872,11 @@
       },
       "points_cost_game": {
         "type": "int",
-        "description": "搜索游戏消耗积分",
+        "description": "获取游戏资源消耗积分",
         "default": 5,
         "min": 0,
         "max": 10000,
-        "hint": "每次成功搜到游戏结果扣一次；0 表示免费。下同。",
+        "hint": "搜索免费；只有用户拿到最终下载/播放链接时扣一次；0 表示免费。下同。",
         "condition": {
           "points_enabled": true
         },
@@ -794,11 +884,11 @@
       },
       "points_cost_software": {
         "type": "int",
-        "description": "搜索软件消耗积分",
+        "description": "获取软件资源消耗积分",
         "default": 5,
         "min": 0,
         "max": 10000,
-        "hint": "每次成功搜到软件结果扣一次；0 表示免费。",
+        "hint": "搜索免费；只有用户拿到最终下载链接时扣一次；0 表示免费。",
         "condition": {
           "points_enabled": true
         },
@@ -806,11 +896,11 @@
       },
       "points_cost_movie": {
         "type": "int",
-        "description": "搜索影视消耗积分",
+        "description": "获取影视资源消耗积分",
         "default": 5,
         "min": 0,
         "max": 10000,
-        "hint": "每次成功搜到影视结果扣一次；0 表示免费。",
+        "hint": "搜索免费；只有用户拿到最终播放/网盘链接时扣一次；0 表示免费。",
         "condition": {
           "points_enabled": true
         },
@@ -818,11 +908,11 @@
       },
       "points_cost_drama": {
         "type": "int",
-        "description": "搜索短剧消耗积分",
+        "description": "获取短剧资源消耗积分",
         "default": 5,
         "min": 0,
         "max": 10000,
-        "hint": "每次成功搜到短剧结果扣一次；0 表示免费。",
+        "hint": "搜索免费；只有用户拿到最终网盘链接时扣一次；0 表示免费。",
         "condition": {
           "points_enabled": true
         },
@@ -830,11 +920,11 @@
       },
       "points_cost_novel": {
         "type": "int",
-        "description": "搜索小说消耗积分",
+        "description": "获取小说资源消耗积分",
         "default": 5,
         "min": 0,
         "max": 10000,
-        "hint": "每次成功搜到小说结果扣一次；0 表示免费。",
+        "hint": "搜索免费；只有小说文件成功发送后扣一次；0 表示免费。",
         "condition": {
           "points_enabled": true
         },

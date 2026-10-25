@@ -619,13 +619,17 @@ class MuliySiteClient:
         self._session_searched = True  # 标记已搜过（后续搜索可能被限）
         results = []
         for item in data[:max_results]:
+            dir_ = item.get("dir", "mv")
+            vid = str(item.get("id", "") or "")
             results.append({
-                "id": item.get("id", ""),
+                "id": vid,
                 "title": item.get("title", ""),
                 "year": str(item.get("year", "")),
                 "type": item.get("type", ""),
-                "dir": item.get("dir", "mv"),
+                "dir": dir_,
                 "score": str(item.get("score", "")),
+                # 列表封面（老站图片 CDN，按 dir/id 拼接，不需要额外请求）
+                "cover": cover_url(dir_, vid) if vid else "",
             })
         return results
 

@@ -255,7 +255,23 @@ def search_games_618(keyword: str, max_results: int = 32, max_try: int = 8) -> l
                 gid = m.group(1) if m else str(len(results) + 1)
                 # 清洗标题：去掉数字ID、版本号、平台/语言/类型元信息、英文副标题
                 title = clean_game_title(text)
-                results.append({"id": gid, "title": title, "url": href, "type": "", "date": ""})
+                # 列表封面：标题链接本身可能不含 img，向上找一层的 article/li
+                cover = ""
+                scope = a.find_parent(["article", "li"]) or a.parent or a
+                img = a.find("img") or scope.find("img")
+                if img:
+                    src = (img.get("data-src") or img.get("data-original")
+                           or img.get("src") or "").strip()
+                    low = src.lower()
+                    if src and not src.startswith("data:") and not any(
+                            k in low for k in ("logo", "avatar", "icon", "placeholder",
+                                               "loading", "blank", "default")):
+                        cover = (src if src.startswith("http") else
+                                 "https:" + src if src.startswith("//") else
+                                 S618_BASE.rstrip("/") + src if src.startswith("/") else
+                                 S618_BASE + src)
+                results.append({"id": gid, "title": title, "url": href, "type": "",
+                                "date": "", "cover": cover})
             if len(results) >= max_results:
                 break
     logger.info(f"[switch618] 搜索 '{keyword}' 完成: {len(results)} 条")

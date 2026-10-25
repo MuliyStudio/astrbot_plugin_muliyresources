@@ -11,7 +11,8 @@ core/software.py   — 软件日报&搜索相关函数
 core/movie.py      — 旧 a123tv 影视搜索函数（已停用，仅保留兼容）
 """
 
-import asyncio, base64, concurrent.futures, datetime, io, json, os, re, sys, tempfile, time, traceback, zipfile, zoneinfo
+import asyncio, base64, concurrent.futures, datetime, io, json, os, random, re, sys, tempfile, time, traceback, zipfile, zoneinfo
+from html import escape
 from typing import Optional
 
 try:
@@ -83,14 +84,31 @@ try:
     from .core.list_card import (
         novel_card_html, pan_card_html, points_card_html, points_rank_html,
         game_card_html, software_card_html, movie_card_html,
-        movie_new_card_html, drama_card_html,
+        movie_new_card_html, drama_card_html, episode_card_html,
+        minigame_result_card_html, minigame_lobby_html,
+        minigame_bomb_wait_html, minigame_cover_pick_html,
+        minigame_cover_question_html, movie_detail_card_html,
+        game_detail_card_html, software_detail_card_html,
         render_list_card, prewarm as prewarm_list_card,
     )
 except ImportError:  # 缺 playwright 时也要能正常加载插件（列表自动回退文本）
     novel_card_html = pan_card_html = points_card_html = points_rank_html = None
     game_card_html = software_card_html = movie_card_html = None
-    movie_new_card_html = drama_card_html = None
+    movie_new_card_html = drama_card_html = episode_card_html = None
+    minigame_result_card_html = minigame_lobby_html = None
+    minigame_bomb_wait_html = minigame_cover_pick_html = None
+    minigame_cover_question_html = movie_detail_card_html = None
+    game_detail_card_html = software_detail_card_html = None
     render_list_card = prewarm_list_card = None
+from .core.episode_utils import (
+    episode_display_name, episode_page_size, episode_pages,
+    format_episode_list, node_episodes, normalize_ep_page,
+)
+from .core.minigame import (
+    BombGame, COVER_KINDS, MiniGameStore, cleanup_cover_cache,
+    fetch_cover_bytes, fetch_pool, normalize_choice, pick_question,
+    pillow_available, read_pool_cache, save_pool_cache,
+)
 from .core.movie import (
     search_movies, get_movie_detail, get_random_movie,
     format_movie_list, format_episodes, format_sources,
@@ -247,6 +265,13 @@ _CONF_GROUPS = {
         "sonovel_format", "sonovel_timeout", "sonovel_download_timeout",
     ],
     "list_card": ["list_card_enabled", "list_card_threshold"],
+    "minigame": [
+        "minigame_enabled", "minigame_group_ids", "minigame_points_reward",
+        "minigame_daily_cap", "minigame_bomb_timeout",
+        "minigame_bomb_turn_timeout",
+        "minigame_cover_rounds", "minigame_cover_timeout",
+        "minigame_cover_pool_ttl", "minigame_cover_pixel",
+    ],
     "points": [
         "points_enabled", "points_initial", "checkin_points",
         "checkin_streak_bonus", "checkin_streak_max",
@@ -273,7 +298,7 @@ _POINTS_LABELS = {
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(pdy0/片库) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到&管理 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.16.3")
+          "暮黎资源聚合 - 影视搜索(pdy0/片库) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到&管理 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.17.0")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
@@ -336,6 +361,14 @@ class MuliyResourcesPlugin(Star):
         self._reports_retention_days: int = 5
         # 全局积分 / 每日签到（懒加载，数据文件位于 AstrBot data 目录）
         self._points_store: Optional[PointsStore] = None
+        # 群聊小游戏：会话按「平台:群号」保存，题库/战绩懒加载
+        self._minigame_sessions: dict = {}
+        self._minigame_store: Optional[MiniGameStore] = None
+        self._minigame_pools: dict = {}      # {kind: (pool, ts)}
+        self._minigame_pool_lock = None
+        # 游戏 Cookie 自动登录：避免每次重装都手动 /game_cookie_refresh
+        self._g_auto_login_next: float = 0.0
+        self._g_auto_login_busy: bool = False
         # 签到推荐动态抓取缓存 {(类型:来源:日期): (过期时间, 推荐或 None)}
         self._rec_cache: dict = {}
 
@@ -413,6 +446,23 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.warning(f"[暮黎资源] 客户端初始化失败: {e}")
             self._muliy_client = None
+        # 游戏 Cookie：启动时检测一次；xdgame 源若配置了账密且 Cookie 失效，自动登录
+        if self._game_source() == "xdgame":
+            try:
+                self._bg_tasks.append(asyncio.create_task(self._startup_game_cookie_check()))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[暮黎资源] 游戏 Cookie 启动检测跳过: {e}")
+
+    async def _startup_game_cookie_check(self):
+        try:
+            bad = await self._g_check_cookie()
+            if bad is None:
+                logger.info("[暮黎资源] xdgame Cookie 有效，无需重新登录")
+            else:
+                logger.warning(f"[暮黎资源] xdgame Cookie 状态={bad}；"
+                               f"如已配置账号密码会尝试自动登录，否则请发送 /game_cookie_refresh")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] xdgame Cookie 启动检测异常: {e}")
 
     def _get_muliy_client(self) -> MuliySiteClient | None:
         """获取新站客户端；Cookie / 账号密码配置变更则重建。"""
@@ -764,7 +814,7 @@ class MuliyResourcesPlugin(Star):
                                                "select_pan_type", "select_play_node", "select_episode_new", "select_pan"):
             is_cmd = (raw_text in ("0", "取消")
                       or re.match(r'^[1-9]\d*$', raw_text)
-                      or raw_text in ("下一页", "上一页")
+                      or raw_text in ("下一页", "上一页", "末页", "首页", "最新")
                       or raw_text.startswith("跳"))
             if is_cmd:
                 try:
@@ -1275,47 +1325,76 @@ class MuliyResourcesPlugin(Star):
         return PointsStore.make_key(platform, uid), uid, name
 
     def _points_guard(self, event: AstrMessageEvent, kind: str) -> Optional[str]:
-        """搜索前的余额检查：None=放行；返回文本=积分不足，调用方直接发给用户。"""
+        """搜索前不再拦截/扣费；余额只在最终获取资源时检查。"""
+        return None
+
+    def _points_charge(self, event: AstrMessageEvent, kind: str,
+                       keyword: str = "") -> str:
+        """兼容旧调用：搜索阶段不再扣费，统一在最终链接/文件发送时扣。
+
+        保留此方法是为了不改动大量历史调用点；实际扣费见 `_points_final_charge`。
+        """
+        return ""
+
+    def _points_final_charge(self, event: AstrMessageEvent, kind: str,
+                             title: str = "") -> tuple[bool, str]:
+        """获取到最终资源（网盘链接 / 播放直链 / 文件）时扣费。
+
+        返回 (是否成功, 追加到消息末尾的提示)。搜索阶段不扣费。
+        """
         s = self._points_settings()
         if not s["enabled"]:
-            return None
+            return True, ""
         cost = int(s["costs"].get(kind, 0) or 0)
         if cost <= 0:
-            return None
+            return True, ""
+        key, _uid, name = self._points_user(event)
+        try:
+            ok, balance = self._points_db().spend(key, cost, name, s["initial"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源·积分] 最终扣费失败（已放行）: {e}")
+            return True, ""
+        logger.info(f"[暮黎资源·积分] 最终扣费 {kind} cost={cost} title={title[:20]!r} "
+                    f"ok={ok} balance={balance}")
+        if not ok:
+            label = _POINTS_LABELS.get(kind, kind)
+            return False, (f"【暮黎资源·积分】\n"
+                           f"💰 获取{label}资源需要 {cost} 积分，你当前只有 {balance} 积分。\n"
+                           f"📅 发送 /签到 领取每日积分后再试。")
+        return True, (f"\n\n💰 本次获取资源消耗 {cost} 积分，剩余 {balance} 积分"
+                      f"（发送 /签到 领取每日积分）")
+
+    def _points_can_afford(self, event: AstrMessageEvent, kind: str) -> tuple[bool, int, int]:
+        """只检查余额，不扣费。返回 (是否足够, 余额, 价格)。"""
+        s = self._points_settings()
+        if not s["enabled"]:
+            return True, 0, 0
+        cost = int(s["costs"].get(kind, 0) or 0)
+        if cost <= 0:
+            return True, 0, 0
         key, _uid, name = self._points_user(event)
         try:
             user = self._points_db().get(key, name, s["initial"])
             balance = int(user.get("points", 0) or 0)
-        except Exception as e:
-            logger.warning(f"[暮黎资源·积分] 读取余额失败（已放行搜索）: {e}")
-            return None
-        if balance >= cost:
-            return None
-        label = _POINTS_LABELS.get(kind, kind)
-        return (f"【暮黎资源·积分】\n"
-                f"💰 搜索{label}需要 {cost} 积分，你当前只有 {balance} 积分。\n"
-                f"📅 发送 /签到 领取每日积分后再试。")
+        except Exception:
+            return True, 0, cost
+        return balance >= cost, balance, cost
 
-    def _points_charge(self, event: AstrMessageEvent, kind: str,
-                       keyword: str = "") -> str:
-        """搜到结果后扣费并返回附加提示（功能关闭 / 消耗为 0 时返回空串）。"""
+    def _points_spend_now(self, event: AstrMessageEvent, kind: str) -> tuple[bool, int, int]:
+        """立即扣费（用于文件已成功发送后的补扣）。返回 (成功, 余额, 价格)。"""
         s = self._points_settings()
         if not s["enabled"]:
-            return ""
+            return True, 0, 0
         cost = int(s["costs"].get(kind, 0) or 0)
         if cost <= 0:
-            return ""
+            return True, 0, 0
         key, _uid, name = self._points_user(event)
         try:
             ok, balance = self._points_db().spend(key, cost, name, s["initial"])
-        except Exception as e:
-            logger.warning(f"[暮黎资源·积分] 扣费失败（已放行搜索）: {e}")
-            return ""
-        logger.info(f"[暮黎资源·积分] 扣费 {kind} cost={cost} keyword={keyword[:20]!r} "
-                    f"ok={ok} balance={balance}")
-        if not ok:
-            return f"\n\n⚠️ 积分不足，本次未扣除 {cost} 积分。"
-        return f"\n\n💰 本次搜索消耗 {cost} 积分，剩余 {balance} 积分（发送 /签到 领取每日积分）"
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源·积分] 补扣失败（已放行）: {e}")
+            return True, 0, cost
+        return ok, balance, cost
 
     def _points_card_data(self, event: AstrMessageEvent) -> Optional[dict]:
         """读取积分卡所需的全部数据（文本与图片共用，避免读两次库）。"""
@@ -1745,6 +1824,1103 @@ class MuliyResourcesPlugin(Star):
             return
         await event.send(MessageChain([Plain(self._points_rank_text(limit))]))
 
+    # ==================== 群聊小游戏（猜数字 / 封面猜猜）====================
+    # 设计：
+    # - 会话按「平台:群号」保存，一个群同时只能开一局；
+    # - 只有明确的输入（1/2、数字、A-D、0/结束）才拦截，普通聊天继续走 LLM；
+    # - 超时/结算用 asyncio.Task，结算后立即清理，避免后台任务堆积；
+    # - 积分奖励走 MiniGameStore 的每日额度，再写入 PointsStore。
+
+    def _minigame_cfg(self) -> dict:
+        c = self._get_config() or {}
+        if not isinstance(c, dict):
+            c = {}
+
+        def _b(key: str, default: bool) -> bool:
+            v = c.get(key, default)
+            if isinstance(v, str):
+                return v.strip().lower() not in ("", "0", "false", "no", "off")
+            return bool(v)
+
+        def _i(key: str, default: int, lo: int, hi: int) -> int:
+            try:
+                v = int(c.get(key, default))
+            except (TypeError, ValueError):
+                v = int(default)
+            return max(lo, min(hi, v))
+
+        return {
+            "enabled": _b("minigame_enabled", True),
+            "groups": self._parse_multi(c.get("minigame_group_ids") or []),
+            "reward": _i("minigame_points_reward", 5, 0, 1000),
+            "daily_cap": _i("minigame_daily_cap", 30, 0, 10000),
+            "bomb_wait": _i("minigame_bomb_timeout", 30, 10, 300),
+            "bomb_turn": _i("minigame_bomb_turn_timeout", 30, 10, 300),
+            "cover_rounds": _i("minigame_cover_rounds", 3, 1, 10),
+            "cover_timeout": _i("minigame_cover_timeout", 25, 10, 120),
+            "cover_pool_ttl": _i("minigame_cover_pool_ttl", 12, 1, 168),
+            "cover_pixel": _i("minigame_cover_pixel", 12, 4, 40),
+        }
+
+    @staticmethod
+    def _minigame_group_key(event: AstrMessageEvent) -> str:
+        try:
+            gid = str(event.get_group_id() or "").strip()
+            pid = str(event.get_platform_id() or "").strip()
+        except Exception:
+            return ""
+        return f"{pid}:{gid}" if gid else ""
+
+    def _minigame_has_user_session(self, event: AstrMessageEvent) -> bool:
+        """用户正在搜索/选集时，不抢他的数字输入。"""
+        for mgr in (self._sessions, self._search_sessions, self._movie_sessions,
+                    self._movie_sessions_new, self._novel_sessions,
+                    self._drama_sessions):
+            try:
+                if mgr.get(event):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _minigame_db(self) -> MiniGameStore:
+        if self._minigame_store is None:
+            self._minigame_store = MiniGameStore(
+                os.path.join(self._plugin_data_dir(), "minigame_stats.json"),
+                tz_getter=lambda: self._timezone,
+            )
+        return self._minigame_store
+
+    def _minigame_cache_dir(self) -> str:
+        d = os.path.join(self._plugin_data_dir(), "minigame")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _minigame_cover_dir(self) -> str:
+        d = os.path.join(self._minigame_cache_dir(), "covers")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    async def _minigame_cover_pool(self, kind: str = "movie") -> list:
+        """按领域取题库：优先用未过期缓存，过期后抓对应 pdy 分类并落盘。"""
+        kind = kind if kind in COVER_KINDS else "movie"
+        info = COVER_KINDS[kind]
+        cfg = self._minigame_cfg()
+        try:
+            cache = os.path.join(self._minigame_cache_dir(),
+                                 f"cover_pool_{kind}.json")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[小游戏] 题库目录不可用: {e}")
+            return []
+        ttl = cfg["cover_pool_ttl"] * 3600
+        pool, ts = read_pool_cache(cache)
+        if pool and time.time() - ts < ttl:
+            self._minigame_pools[kind] = (pool, ts)
+            return pool
+        cached = self._minigame_pools.get(kind)
+        if cached and time.time() - cached[1] < ttl:
+            return cached[0]
+        if self._minigame_pool_lock is None:
+            self._minigame_pool_lock = asyncio.Lock()
+        async with self._minigame_pool_lock:
+            pool, ts = read_pool_cache(cache)
+            if pool and time.time() - ts < ttl:
+                self._minigame_pools[kind] = (pool, ts)
+                return pool
+            new_pool = []
+            try:
+                client = self._get_pdy_client()
+                new_pool = await asyncio.to_thread(
+                    fetch_pool,
+                    lambda tid, page: client.latest(tid, 10, page),
+                    (info["tid"],), 3, kind)
+                if len(new_pool) < 10:
+                    more = await asyncio.to_thread(
+                        fetch_pool,
+                        lambda tid, page: client.latest(tid, 10, page),
+                        (info["tid"],), 4, kind)
+                    if len(more) > len(new_pool):
+                        new_pool = more
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] {info['label']}题库抓取失败: {e}")
+            if new_pool:
+                save_pool_cache(cache, new_pool)
+                self._minigame_pools[kind] = (new_pool, time.time())
+                try:
+                    cleanup_cover_cache(self._minigame_cover_dir())
+                except Exception:
+                    pass
+                logger.info(f"[小游戏] {info['label']}题库已更新：{len(new_pool)} 条")
+                return new_pool
+            return pool or (cached[0] if cached else [])
+
+    def _minigame_award(self, key: str, name: str, points: int) -> tuple[int, str]:
+        """发游戏积分；返回 (实际发放, 额外提示)。"""
+        s = self._points_settings()
+        if not s.get("enabled") or int(points or 0) <= 0:
+            return 0, ""
+        cfg = self._minigame_cfg()
+        try:
+            awarded, _today = self._minigame_db().award(
+                key, name, int(points), cfg["daily_cap"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[小游戏] 奖励额度写入失败: {e}")
+            return 0, ""
+        if awarded > 0:
+            try:
+                self._points_db().add(key, awarded, name, s["initial"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 积分发放失败: {e}")
+                return 0, ""
+        note = ""
+        if cfg["daily_cap"] > 0 and awarded < int(points):
+            note = f"（今日游戏奖励已达上限 {cfg['daily_cap']}）"
+        return awarded, note
+
+    async def _minigame_send_image_text(self, event: AstrMessageEvent,
+                                        img_bytes: bytes, text: str) -> None:
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=".jpg", prefix="mg_")
+            os.close(fd)
+            with open(tmp, "wb") as f:
+                f.write(img_bytes)
+            await event.send(MessageChain([ImageComponent(file=tmp), Plain(text)]))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[小游戏] 封面发送失败，回退文本: {e}")
+            await event.send(MessageChain([Plain(text)]))
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+
+    async def _minigame_send_result(self, event: AstrMessageEvent, *, title: str,
+                                    subtitle: str, rows: list, foot_lines: list,
+                                    text: str, page_ind: str = "本局结算") -> None:
+        html = ""
+        if minigame_result_card_html:
+            try:
+                html = minigame_result_card_html(
+                    title=title, subtitle=subtitle, rows=rows,
+                    foot_lines=foot_lines, page_ind=page_ind)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 结算卡片构建失败，回退文本: {e}")
+        await self._send_list_card(event, html=html, text=text,
+                                   total=len(rows), label="游戏结算",
+                                   force=True)
+
+    def _minigame_cancel_task(self, game: dict) -> None:
+        if not isinstance(game, dict):
+            return
+        task = game.get("task")
+        if task is not None:
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:
+                current = None
+            if task is not current and not task.done():
+                task.cancel()
+        game["task"] = None
+
+    def _minigame_schedule(self, gkey: str, game: dict,
+                           seconds: int, kind: str, token=None) -> None:
+        self._minigame_cancel_task(game)
+        task = asyncio.create_task(self._minigame_timeout_job(
+            gkey, game.get("id"), kind, max(1, int(seconds)), token))
+        game["task"] = task
+        try:
+            self._bg_tasks.append(task)
+            self._bg_tasks = [t for t in self._bg_tasks if not t.done()][-30:]
+        except Exception:
+            pass
+
+    async def _minigame_timeout_job(self, gkey: str, gid, kind: str,
+                                    seconds: int, token=None) -> None:
+        try:
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return
+        game = self._minigame_sessions.get(gkey)
+        if not game or game.get("id") != gid:
+            return
+        try:
+            if kind == "lobby":
+                self._minigame_sessions.pop(gkey, None)
+                ev = game.get("event")
+                if ev:
+                    await ev.send(MessageChain([Plain(
+                        "⌛ 游戏大厅超时，已关闭。发送 /小游戏 重新打开。")]))
+            elif kind == "bomb_wait":
+                ev = game.get("event")
+                if not ev:
+                    self._minigame_sessions.pop(gkey, None)
+                else:
+                    await self._minigame_bomb_begin(ev, gkey, game, auto=True)
+            elif kind == "bomb_turn":
+                await self._minigame_bomb_turn_timeout(gkey, game, token)
+            elif kind == "cover_pick":
+                self._minigame_sessions.pop(gkey, None)
+                ev = game.get("event")
+                if ev:
+                    await ev.send(MessageChain([Plain(
+                        "⌛ 选择题库超时，已关闭。发送 /小游戏 重新打开。")]))
+            elif kind == "cover":
+                await self._minigame_cover_timeout(gkey, game)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[小游戏] 超时结算失败 kind={kind}: {e}")
+
+    async def _minigame_open_lobby(self, event: AstrMessageEvent,
+                                   start: str = "") -> None:
+        cfg = self._minigame_cfg()
+        if not cfg["enabled"]:
+            await event.send(MessageChain([Plain("【暮黎资源】小游戏未启用，请联系管理员开启。")]))
+            return
+        gkey = self._minigame_group_key(event)
+        if not gkey:
+            await event.send(MessageChain([Plain("【暮黎资源】小游戏只能在群聊里玩。")]))
+            return
+        gid = str(event.get_group_id() or "")
+        if cfg["groups"] and gid not in cfg["groups"]:
+            await event.send(MessageChain([Plain("【暮黎资源】本群暂未开放小游戏。")]))
+            return
+        if self._minigame_has_user_session(event):
+            await event.send(MessageChain([Plain(
+                "【暮黎资源】你还有未完成的搜索/选集，先回复 0 取消后再开游戏。")]))
+            return
+        old = self._minigame_sessions.get(gkey)
+        if old:
+            if start == "guess" and old.get("stage") == "bomb_wait":
+                await self._minigame_bomb_join(event, gkey, old)
+                return
+            if start == "guess" and old.get("stage") == "bomb":
+                await event.send(MessageChain([Plain(
+                    "【暮黎资源】本局猜数字已经开始了，等下一局吧。")]))
+                return
+            await event.send(MessageChain([Plain(
+                "【暮黎资源】本群已有进行中的小游戏。\n"
+                "发送 /结束游戏 可以提前结束。")]))
+            return
+        key, uid, name = self._points_user(event)
+        game = {
+            "id": time.time_ns(),
+            "stage": "lobby",
+            "host_key": key,
+            "host_name": name or uid,
+            "event": event,
+            "players": {},
+            "task": None,
+            "updated": time.time(),
+        }
+        self._minigame_sessions[gkey] = game
+        if start == "guess":
+            await self._minigame_start_bomb(event, gkey, game)
+            return
+        if start == "cover":
+            game.update({
+                "stage": "cover_pick",
+                "cover_owner_key": key,
+                "cover_owner_name": name or uid or "玩家",
+            })
+            await self._minigame_send_cover_pick(event, game)
+            self._minigame_schedule(gkey, game, 90, "cover_pick")
+            return
+        s = self._points_settings()
+        if s.get("enabled") and cfg["reward"] > 0:
+            cap = (f"每人每日上限 {cfg['daily_cap']} 积分"
+                   if cfg["daily_cap"] > 0 else "不限每日额度")
+            reward_txt = f"答对 / 获胜 +{cfg['reward']} 积分（{cap}）"
+        elif s.get("enabled"):
+            reward_txt = "本局不计积分"
+        else:
+            reward_txt = "积分未开启，本局只计胜负"
+        text = (
+            "🎮 暮黎游戏厅\n"
+            "============================\n\n"
+            "1. 猜数字\n"
+            "   1-100 猜一个数字，每次提示大了/小了，猜中直接获胜\n"
+            "2. 封面猜猜\n"
+            "   选电影 / 电视剧 / 动漫，看马赛克封面四选一\n\n"
+            f"💰 {reward_txt}\n"
+            "💬 回复 1 / 2 开始，回复 0 关闭。\n"
+            "⏱️ 90 秒内未选择自动关闭。"
+        )
+        html = ""
+        if minigame_lobby_html:
+            try:
+                html = minigame_lobby_html(reward_text=reward_txt, timeout=90)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 大厅卡片构建失败，回退文本: {e}")
+        await self._send_list_card(event, html=html, text=text, total=1,
+                                   label="游戏大厅", force=True)
+        self._minigame_schedule(gkey, game, 90, "lobby")
+
+    async def _minigame_end(self, event: AstrMessageEvent, gkey: str, game: dict,
+                            reason: str = "") -> None:
+        stage = game.get("stage")
+        if stage == "lobby":
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain("🎮 游戏大厅已关闭。")]))
+            return
+        if stage == "bomb_wait":
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain("💣 组队已取消。")]))
+            return
+        if stage == "cover_pick":
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain("🎬 已关闭封面猜猜。")]))
+            return
+        if stage == "bomb":
+            await self._minigame_bomb_finish(event, gkey, game, reason=reason or "手动结束")
+            return
+        if stage == "cover":
+            q = game.get("question") or {}
+            if q and not game.get("answered"):
+                game["answered"] = True
+                title = (q.get("correct") or {}).get("title") or "?"
+                await event.send(MessageChain([Plain(
+                    f"🛑 封面猜猜已结束，本题答案：《{title}》。")]))
+            await self._minigame_cover_finish(event, gkey, game, early=True)
+            return
+        self._minigame_cancel_task(game)
+        self._minigame_sessions.pop(gkey, None)
+
+    BOMB_MAX_TURNS = 30
+    BOMB_MAX_PLAYERS = 6
+
+    def _minigame_at(self, uid: str, name: str = ""):
+        """构造 @ 组件；旧版 AstrBot / 构造参数不兼容时退回纯文本 @。"""
+        if At is not None:
+            try:
+                return At(qq=str(uid))
+            except Exception:
+                pass
+        return Plain(f"@{name or uid}")
+
+    async def _minigame_send_at(self, event: AstrMessageEvent, chain: list,
+                                fallback: str) -> None:
+        """发带 @ 的消息；平台不支持 At 组件时回退纯文本。"""
+        try:
+            await event.send(MessageChain(chain))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[小游戏] @消息发送失败，回退纯文本: {e}")
+            await event.send(MessageChain([Plain(fallback)]))
+
+    def _minigame_next_bomb_turn(self, game: dict) -> str:
+        order = game.get("order") or []
+        if not order:
+            return ""
+        idx = (int(game.get("turn_index", 0)) + 1) % len(order)
+        game["turn_index"] = idx
+        game["turn_key"] = order[idx]
+        return order[idx]
+
+    async def _minigame_send_bomb_wait(self, event: AstrMessageEvent, game: dict,
+                                       seconds: int = 30) -> None:
+        players = game.get("players") or {}
+        order = game.get("order") or []
+        rows = [{"name": (players.get(k) or {}).get("name") or "玩家",
+                 "host": bool((players.get(k) or {}).get("host"))} for k in order]
+        html = ""
+        if minigame_bomb_wait_html:
+            try:
+                html = minigame_bomb_wait_html(
+                    host_name=game.get("host_name") or "房主",
+                    players=rows, seconds=seconds, max_players=6,
+                    timeout=seconds)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 组队卡片构建失败，回退文本: {e}")
+        names = "、".join(p.get("name") or "玩家" for p in rows)
+        text = (f"🔢 猜数字 · 组队中\n"
+                f"============================\n\n"
+                f"房主：{game.get('host_name') or '房主'}\n"
+                f"已加入：{names or '暂无'}\n\n"
+                f"群友回复 1 加入；房主回复 2 立即开始。\n"
+                f"无人加入将进入单人猜数字（猜中即获胜）。\n"
+                f"回复 0 取消。\n"
+                f"⏱️ {seconds} 秒后自动开始（最多 6 人）。")
+        await self._send_list_card(event, html=html, text=text, total=1,
+                                   label="猜数字组队", force=True)
+
+    async def _minigame_start_bomb(self, event: AstrMessageEvent, gkey: str,
+                                   game: dict) -> None:
+        """进入组队等待：30 秒内回复 1 加入，房主回复 2 立即开始。"""
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        cfg = self._minigame_cfg()
+        self._minigame_cancel_task(game)
+        key, uid, name = self._points_user(event)
+        name = name or uid or "房主"
+        host = {"name": name, "uid": str(uid or ""), "host": True}
+        wait = max(10, int(cfg["bomb_wait"]))
+        game.update({
+            "stage": "bomb_wait",
+            "host_key": key,
+            "host_name": name,
+            "players": {key: host},
+            "order": [key],
+            "wait_deadline": time.time() + wait,
+            "event": event,
+            "updated": time.time(),
+        })
+        await self._minigame_send_bomb_wait(event, game, wait)
+        self._minigame_schedule(gkey, game, wait, "bomb_wait")
+
+    async def _minigame_bomb_join(self, event: AstrMessageEvent, gkey: str,
+                                  game: dict) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        key, uid, name = self._points_user(event)
+        name = name or uid or "玩家"
+        players = game.setdefault("players", {})
+        if key in players:
+            await event.send(MessageChain([Plain("🙋 你已经在队伍里了，等房主开始吧。")]))
+            return
+        if len(players) >= self.BOMB_MAX_PLAYERS:
+            await event.send(MessageChain([Plain(
+                f"😅 人数已满（{self.BOMB_MAX_PLAYERS} 人），本局不能再加入了。")]))
+            return
+        players[key] = {"name": name, "uid": str(uid or ""), "host": False}
+        game.setdefault("order", []).append(key)
+        game["updated"] = time.time()
+        remaining = max(1, int(float(game.get("wait_deadline") or 0) - time.time()))
+        await self._minigame_send_bomb_wait(event, game, remaining)
+
+    async def _minigame_bomb_begin(self, event: AstrMessageEvent, gkey: str,
+                                   game: dict, auto: bool = False) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "bomb_wait":
+            return
+        cfg = self._minigame_cfg()
+        self._minigame_cancel_task(game)
+        players = game.get("players") or {}
+        order = [k for k in (game.get("order") or []) if k in players]
+        if not order:
+            key, uid, name = self._points_user(event)
+            players[key] = {"name": name or uid or "玩家", "uid": str(uid or ""),
+                            "host": True}
+            game["players"] = players
+            order = [key]
+            game["order"] = order
+        turn_timeout = max(10, int(cfg["bomb_turn"]))
+        solo = len(order) == 1
+        range_high = 100 * max(1, len(order))
+        token = time.time_ns()
+        game.update({
+            "stage": "bomb",
+            "bomb": BombGame(1, range_high),
+            "range_high": range_high,
+            "solo": solo,
+            "turn_index": 0,
+            "turn_key": order[0],
+            "turn_token": token,
+            "turn_count": 0,
+            "event": event,
+            "updated": time.time(),
+        })
+        cur = players.get(order[0]) or {}
+        cur_name = cur.get("name") or "玩家"
+        if solo:
+            head = ("⏰ 组队时间到，无人加入，进入单人猜数字！\n" if auto
+                    else "🧍 单人猜数字\n")
+            chain = [Plain(
+                head
+                + f"目标：猜中 1-{range_high} 的隐藏数字，猜中即获胜。\n"
+                + f"范围：1-{range_high}\n👉 轮到 ")]
+            chain.append(self._minigame_at(cur.get("uid") or "", cur_name))
+            chain.append(Plain(f" 了，请猜一个数字（{turn_timeout} 秒内）。"))
+            fallback = (f"{head}"
+                        f"目标：猜中 1-{range_high} 的隐藏数字，猜中即获胜。\n"
+                        f"范围：1-{range_high}\n👉 轮到 {cur_name} 了，请猜一个数字（{turn_timeout} 秒内）。")
+        else:
+            prefix = "⏰ 组队时间到，自动开始！" if auto else "🔢 猜数字开始！"
+            chain = [Plain(prefix + "\n顺序：")]
+            for i, k in enumerate(order, 1):
+                p = players.get(k) or {}
+                chain.append(Plain(f"\u200b\n{i}. "))
+                chain.append(self._minigame_at(p.get("uid") or "",
+                                               p.get("name") or ""))
+            chain.append(Plain(
+                f"\u200b\n\n本局范围 1-{range_high}（{len(order)} 人自适应），"
+                "每次提示大了/小了，猜中直接获胜。\n"
+                f"范围：1-{range_high}\n👉 轮到 "))
+            chain.append(self._minigame_at(cur.get("uid") or "", cur_name))
+            chain.append(Plain(f" 了，请猜一个数字（{turn_timeout} 秒内）。"))
+            order_txt = "\n".join(
+                f"{i}. {((players.get(k) or {}).get('name') or '玩家')}"
+                for i, k in enumerate(order, 1))
+            fallback = (f"{prefix}\n顺序：\n{order_txt}\n"
+                        f"本局范围 1-{range_high}（{len(order)} 人自适应），"
+                        "每次提示大了/小了，猜中直接获胜。\n"
+                        f"范围：1-{range_high}\n👉 轮到 {cur_name} 了，"
+                        f"请猜一个数字（{turn_timeout} 秒内）。")
+        await self._minigame_send_at(event, chain, fallback)
+        self._minigame_schedule(gkey, game, turn_timeout, "bomb_turn", token)
+
+    async def _minigame_bomb_guess(self, event: AstrMessageEvent, gkey: str,
+                                   game: dict, text: str) -> None:
+        key, uid, name = self._points_user(event)
+        name = name or uid or "玩家"
+        game["event"] = event
+        game["updated"] = time.time()
+        try:
+            number = int(text)
+        except (TypeError, ValueError):
+            return
+        players = game.setdefault("players", {})
+        if key != game.get("turn_key"):
+            cur = players.get(game.get("turn_key") or "") or {}
+            chain = [Plain("🙋 还没轮到你，当前轮到 "),
+                     self._minigame_at(cur.get("uid") or "", cur.get("name") or ""),
+                     Plain("。")]
+            await self._minigame_send_at(
+                event, chain,
+                f"🙋 还没轮到你，当前轮到 {cur.get('name') or '玩家'}。")
+            return
+        num_game: BombGame = game["bomb"]
+        result = num_game.guess(number)
+        if result["type"] == "out":
+            await event.send(MessageChain([Plain(
+                f"范围是 {num_game.low}-{num_game.high}，请猜这个区间里的数字。")]))
+            return
+        player = players.setdefault(key, {"name": name, "uid": str(uid or ""),
+                                          "guesses": 0})
+        player["name"] = name
+        player["uid"] = str(uid or player.get("uid") or "")
+        player["guesses"] = int(player.get("guesses", 0) or 0) + 1
+        if result["type"] == "hit":
+            await self._minigame_bomb_finish(
+                event, gkey, game, winner_key=key, winner_name=name)
+            return
+        # low / high：提示太大/太小，换下一位
+        game["turn_count"] = int(game.get("turn_count", 0) or 0) + 1
+        if game["turn_count"] >= self.BOMB_MAX_TURNS:
+            await self._minigame_bomb_finish(event, gkey, game,
+                                             reason="回合数用尽")
+            return
+        next_key = self._minigame_next_bomb_turn(game)
+        next_p = players.get(next_key) or {}
+        token = time.time_ns()
+        game["turn_token"] = token
+        cfg = self._minigame_cfg()
+        turn_timeout = max(10, int(cfg["bomb_turn"]))
+        hint = "📉 太小了！" if result["type"] == "low" else "📈 太大了！"
+        chain = [Plain(f"{hint} {name} 猜 {number}。\n"
+                       f"范围收窄到 {num_game.low}-{num_game.high}。\n👉 轮到 "),
+                 self._minigame_at(next_p.get("uid") or "", next_p.get("name") or ""),
+                 Plain(f" 了（{turn_timeout} 秒内）。")]
+        await self._minigame_send_at(
+            event, chain,
+            f"{hint} {name} 猜 {number}。\n"
+            f"范围收窄到 {num_game.low}-{num_game.high}。\n"
+            f"👉 轮到 {next_p.get('name') or '玩家'} 了（{turn_timeout} 秒内）。")
+        self._minigame_schedule(gkey, game, turn_timeout, "bomb_turn", token)
+
+    async def _minigame_bomb_turn_timeout(self, gkey: str, game: dict,
+                                          token=None) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "bomb":
+            return
+        if token is not None and token != game.get("turn_token"):
+            return
+        ev = game.get("event")
+        if not ev:
+            self._minigame_sessions.pop(gkey, None)
+            return
+        if game.get("solo"):
+            await self._minigame_bomb_finish(ev, gkey, game, reason="超时")
+            return
+        players = game.get("players") or {}
+        cur_key = game.get("turn_key") or ""
+        cur = players.get(cur_key) or {}
+        game["turn_count"] = int(game.get("turn_count", 0) or 0) + 1
+        if game["turn_count"] >= self.BOMB_MAX_TURNS:
+            await self._minigame_bomb_finish(ev, gkey, game, reason="回合数用尽")
+            return
+        next_key = self._minigame_next_bomb_turn(game)
+        next_p = players.get(next_key) or {}
+        token = time.time_ns()
+        game["turn_token"] = token
+        cfg = self._minigame_cfg()
+        turn_timeout = max(10, int(cfg["bomb_turn"]))
+        chain = [Plain("⏭️ "), self._minigame_at(cur.get("uid") or "", cur.get("name") or ""),
+                 Plain(" 超时，跳过。\n👉 轮到 "),
+                 self._minigame_at(next_p.get("uid") or "", next_p.get("name") or ""),
+                 Plain(f" 了（{turn_timeout} 秒内）。")]
+        await self._minigame_send_at(
+            ev, chain,
+            f"⏭️ {cur.get('name') or '玩家'} 超时，跳过。\n"
+            f"👉 轮到 {next_p.get('name') or '玩家'} 了（{turn_timeout} 秒内）。")
+        self._minigame_schedule(gkey, game, turn_timeout, "bomb_turn", token)
+
+    async def _minigame_bomb_finish(self, event: AstrMessageEvent, gkey: str,
+                                    game: dict, winner_key: str = "",
+                                    winner_name: str = "", reason: str = "") -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        self._minigame_cancel_task(game)
+        self._minigame_sessions.pop(gkey, None)
+        num_game: BombGame = game["bomb"]
+        players = game.get("players") or {}
+        solo = bool(game.get("solo"))
+        cfg = self._minigame_cfg()
+        awarded, note = (0, "")
+        if winner_key:
+            awarded, note = self._minigame_award(
+                winner_key, winner_name or "玩家", cfg["reward"])
+        for k, p in players.items():
+            try:
+                self._minigame_db().record(
+                    k, p.get("name") or "", win=(k == winner_key))
+            except Exception:
+                pass
+
+        rows = []
+        if winner_key:
+            if awarded > 0:
+                chip = f'<span class="chip chip-win">+{awarded} 积分</span>'
+            elif note:
+                chip = '<span class="chip chip-gold">奖励上限</span>'
+            else:
+                chip = '<span class="chip chip-win">+0 积分</span>'
+            rows.append({
+                "n": 1, "title": winner_name or "玩家",
+                "right": chip, "meta": "猜中数字 · 获胜",
+            })
+        for k, p in players.items():
+            if k == winner_key:
+                continue
+            guesses = int(p.get("guesses", 0) or 0)
+            rows.append({
+                "n": len(rows) + 1, "title": p.get("name") or k,
+                "right": ('<span class="chip">未猜中</span>' if guesses else ""),
+                "meta": (f"猜了 {guesses} 次" if guesses else "未出手"),
+            })
+        if not rows:
+            rows = [{"n": "-", "title": "本局无人参与", "meta": ""}]
+
+        range_high = int(game.get("range_high", 100) or 100)
+        subtitle = (f"单人猜数字 · 目标 1-{range_high}" if solo
+                    else f"{len(players)} 人 · 目标 1-{range_high}")
+        if reason:
+            subtitle += f" · {reason}"
+        foot = ['<div><span class="k">再来</span>发送 <b>/小游戏</b> 开新局</div>']
+        if cfg["daily_cap"] > 0:
+            foot.append(f'<div class="dim"><span class="k">奖励</span>'
+                        f'每日游戏奖励上限 {cfg["daily_cap"]} 积分</div>')
+        lines = [("🧍 猜数字 · 单人结算" if solo else "🔢 猜数字 · 结算")]
+        if reason:
+            lines.append(f"状态：{reason}")
+        if winner_key:
+            if awarded > 0:
+                lines.append(f"🏆 猜中：{winner_name} +{awarded} 积分"
+                             f"（数字 {num_game.value}）{note}")
+            else:
+                lines.append(f"🏆 猜中：{winner_name}{note or '（无积分奖励）'}"
+                             f"（数字 {num_game.value}）")
+        else:
+            lines.append(f"本局无人猜中，数字是 {num_game.value}。")
+        lines.append("发送 /小游戏 再来一局。")
+        await self._minigame_send_result(
+            event, title=("猜数字 · 单人" if solo else "猜数字"),
+            subtitle=subtitle, rows=rows,
+            foot_lines=foot, text="\n".join(lines))
+
+    async def _minigame_start_cover(self, event: AstrMessageEvent, gkey: str,
+                                    game: dict, kind: str = "movie") -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        kind = kind if kind in COVER_KINDS else "movie"
+        info = COVER_KINDS[kind]
+        cfg = self._minigame_cfg()
+        self._minigame_cancel_task(game)
+        if not pillow_available():
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain(
+                "😕 封面猜猜需要 Pillow，当前环境未安装。\n"
+                "请管理员执行：pip install pillow")]))
+            return
+        await event.send(MessageChain([Plain(
+            f"🎬 正在准备{info['label']}题库，首次约 5-10 秒...")]))
+        pool = await self._minigame_cover_pool(kind)
+        cur = self._minigame_sessions.get(gkey)
+        if not cur or cur.get("id") != game.get("id"):
+            return
+        if len(pool) < 4:
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain(
+                f"😕 {info['label']}题库暂时不可用，换一类或先玩猜数字吧。")]))
+            return
+        owner_key = game.get("cover_owner_key") or ""
+        owner_name = game.get("cover_owner_name") or "玩家"
+        players = ({owner_key: {"name": owner_name, "correct": 0, "awarded": 0}}
+                   if owner_key else {})
+        game.update({
+            "stage": "cover",
+            "kind": kind,
+            "kind_label": info["label"],
+            "round": 0,
+            "total_rounds": cfg["cover_rounds"],
+            "pool": pool,
+            "used": set(),
+            "players": players,
+            "question": None,
+            "answered": True,
+            "wrong": set(),
+            "cover_started_at": time.time(),
+            "event": event,
+            "updated": time.time(),
+        })
+        await self._minigame_cover_next_round(event, gkey, game)
+
+    async def _minigame_send_cover_question(self, event: AstrMessageEvent,
+                                            game: dict, question: dict,
+                                            img: bytes, timeout: int) -> None:
+        """整页题目卡（马赛克封面 + 四选一）；渲染失败回退封面图 + 文本。"""
+        b64 = base64.b64encode(img).decode("ascii")
+        html = ""
+        if minigame_cover_question_html:
+            try:
+                html = minigame_cover_question_html(
+                    question=question, cover_b64=b64,
+                    round_no=int(game.get("round", 1) or 1),
+                    total=int(game.get("total_rounds", 1) or 1),
+                    timeout=int(timeout),
+                    kind_label=game.get("kind_label") or "")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 题目卡片构建失败，回退图片+文本: {e}")
+        card = None
+        cards_on, _ = self._list_card_cfg()
+        if cards_on and html and render_list_card:
+            try:
+                card = await asyncio.to_thread(render_list_card, html)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 题目卡片渲染失败，回退图片+文本: {e}")
+        if card and await self._send_card_image(event, card, "暮黎_封面猜猜.jpg"):
+            return
+        opts = "\n".join(f"{'ABCD'[i]}. {o.get('title')}"
+                         for i, o in enumerate(question.get("options") or []))
+        text = (
+            f"🎬 封面猜猜 · 单人 第 {game.get('round')}/{game.get('total_rounds')} 题\n"
+            f"{game.get('kind_label') or ''}\n"
+            "============================\n\n"
+            f"{opts}\n\n"
+            f"💡 提示：{question.get('hint') or '影视'}\n"
+            f"⏱️ {timeout} 秒内回复 A/B/C/D（仅发起者可作答）"
+        )
+        await self._minigame_send_image_text(event, img, text)
+
+    async def _minigame_cover_next_round(self, event: AstrMessageEvent, gkey: str,
+                                         game: dict) -> None:
+        cur = self._minigame_sessions.get(gkey)
+        if not cur or cur.get("id") != game.get("id") or cur.get("stage") != "cover":
+            return
+        game = cur
+        if int(game.get("round", 0)) >= int(game.get("total_rounds", 1)):
+            await self._minigame_cover_finish(event, gkey, game)
+            return
+        cfg = self._minigame_cfg()
+        game["round"] = int(game.get("round", 0)) + 1
+        question, img = None, None
+        for _ in range(4):
+            question = pick_question(game["pool"], game["used"])
+            if not question:
+                break
+            correct = question["correct"]
+            cid = correct.get("id") or re.sub(
+                r"[^\w\u4e00-\u9fff]", "", correct.get("title") or "")[:60]
+            cache_path = os.path.join(self._minigame_cover_dir(), f"{cid}.jpg")
+            img = await asyncio.to_thread(
+                fetch_cover_bytes, correct.get("cover") or "",
+                cache_path, cfg["cover_pixel"])
+            if img:
+                break
+        cur = self._minigame_sessions.get(gkey)
+        if not cur or cur.get("id") != game.get("id") or cur.get("stage") != "cover":
+            return
+        if not question or not img:
+            await event.send(MessageChain([Plain("😕 封面加载失败，本局提前结束。")]))
+            await self._minigame_cover_finish(event, gkey, game, early=True)
+            return
+        game.update({
+            "question": question,
+            "answered": False,
+            "wrong": set(),
+            "round_start": time.time(),
+            "event": event,
+            "updated": time.time(),
+        })
+        await self._minigame_send_cover_question(
+            event, game, question, img, cfg["cover_timeout"])
+        self._minigame_schedule(gkey, game, cfg["cover_timeout"], "cover")
+
+    async def _minigame_cover_answer(self, event: AstrMessageEvent, gkey: str,
+                                     game: dict, text: str) -> None:
+        choice = normalize_choice(text)
+        if not choice:
+            return
+        cfg = self._minigame_cfg()
+        key, uid, name = self._points_user(event)
+        name = name or uid or "玩家"
+        owner_key = game.get("cover_owner_key") or ""
+        if owner_key and key != owner_key:
+            owner_name = game.get("cover_owner_name") or "发起者"
+            await event.send(MessageChain([Plain(
+                f"🙋 封面猜猜是单人游戏，只有发起者 {owner_name} 可以作答。")]))
+            return
+        game["event"] = event
+        game["updated"] = time.time()
+        players = game.setdefault("players", {})
+        player = players.setdefault(key, {"name": name, "correct": 0, "awarded": 0})
+        player["name"] = name
+        if game.get("answered"):
+            return
+        question = game.get("question") or {}
+        correct_title = (question.get("correct") or {}).get("title") or "?"
+        if choice != question.get("answer"):
+            game["answered"] = True
+            self._minigame_cancel_task(game)
+            await event.send(MessageChain([Plain(
+                f"❌ {name} 选 {choice}，不对。正确答案是《{correct_title}》，下一题~")]))
+            await asyncio.sleep(1.0)
+            await self._minigame_cover_next_round(event, gkey, game)
+            return
+        game["answered"] = True
+        self._minigame_cancel_task(game)
+        player["correct"] = int(player.get("correct", 0) or 0) + 1
+        awarded, note = self._minigame_award(key, name, cfg["reward"])
+        player["awarded"] = int(player.get("awarded", 0) or 0) + awarded
+        msg = f"✅ {name} 答对了！答案是《{correct_title}》"
+        if awarded > 0:
+            msg += f"，+{awarded} 积分"
+        if note:
+            msg += note
+        await event.send(MessageChain([Plain(msg)]))
+        await asyncio.sleep(1.0)
+        await self._minigame_cover_next_round(event, gkey, game)
+
+    async def _minigame_cover_timeout(self, gkey: str, game: dict) -> None:
+        if game.get("answered"):
+            return
+        game["answered"] = True
+        question = game.get("question") or {}
+        title = (question.get("correct") or {}).get("title") or "?"
+        ev = game.get("event")
+        if not ev:
+            self._minigame_sessions.pop(gkey, None)
+            return
+        last = int(game.get("round", 0)) >= int(game.get("total_rounds", 1))
+        await ev.send(MessageChain([Plain(
+            f"⏰ 时间到！正确答案是《{title}》"
+            + ("，本局结束。" if last else "，下一题~"))]))
+        await asyncio.sleep(1.0)
+        await self._minigame_cover_next_round(ev, gkey, game)
+
+    async def _minigame_cover_finish(self, event: AstrMessageEvent, gkey: str,
+                                     game: dict, early: bool = False) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        self._minigame_cancel_task(game)
+        self._minigame_sessions.pop(gkey, None)
+        players = game.get("players") or {}
+        total_rounds = int(game.get("total_rounds", 0) or 0)
+        owner_key = game.get("cover_owner_key") or ""
+        owner_name = game.get("cover_owner_name") or "玩家"
+        owner = players.get(owner_key) or {}
+        correct = int(owner.get("correct", 0) or 0)
+        awarded = int(owner.get("awarded", 0) or 0)
+        started = float(game.get("cover_started_at") or time.time())
+        elapsed = max(1, int(time.time() - started))
+        if owner_key and correct > 0:
+            try:
+                self._minigame_db().record(owner_key, owner_name, win=True)
+            except Exception:
+                pass
+        entry = None
+        if owner_key and not early:
+            try:
+                entry = self._minigame_db().cover_record(
+                    owner_key, owner_name, correct, total_rounds,
+                    elapsed, awarded)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 封面成绩写入失败: {e}")
+        board = []
+        try:
+            board = self._minigame_db().cover_top(10)
+            count = self._minigame_db().cover_count()
+        except Exception:
+            count = 0
+        rows = []
+        seen = set()
+        for rank, k, v in board:
+            seen.add(k)
+            c = int(v.get("correct", 0) or 0)
+            total = int(v.get("total", total_rounds) or total_rounds)
+            sec = int(v.get("seconds", 0) or 0)
+            pts = int(v.get("awarded", 0) or 0)
+            title = v.get("name") or k
+            meta = f"用时 {sec} 秒" + (f" · +{pts} 积分" if pts > 0 else "")
+            rows.append({"n": rank, "title": title, "me": k == owner_key,
+                         "right": f'<span class="chip chip-win">答对 {c}/{total}</span>',
+                         "meta": meta})
+        if entry and owner_key not in seen:
+            rank = 0
+            try:
+                rank = self._minigame_db().cover_rank(owner_key)
+            except Exception:
+                pass
+            if rank:
+                c = int(entry.get("correct", 0) or 0)
+                total = int(entry.get("total", total_rounds) or total_rounds)
+                sec = int(entry.get("seconds", 0) or 0)
+                pts = int(entry.get("awarded", 0) or 0)
+                meta = f"用时 {sec} 秒" + (f" · +{pts} 积分" if pts > 0 else "")
+                rows.append({"n": rank, "title": owner_name, "me": True,
+                             "right": f'<span class="chip chip-win">答对 {c}/{total}</span>',
+                             "meta": meta})
+        if not rows:
+            rows = [{"n": "-", "title": "今日还没有封面成绩", "meta": ""}]
+        kind_label = game.get("kind_label") or ""
+        subtitle = (f"{kind_label} · 今日榜 · {count} 人"
+                    if kind_label else f"今日榜 · {count} 人")
+        subtitle += " · 先比答对题数，再比用时"
+        if early:
+            subtitle += " · 本局提前结束未计入"
+        cfg = self._minigame_cfg()
+        foot = ['<div><span class="k">再来</span>发送 <b>/小游戏 2</b> 开新局</div>']
+        if cfg["daily_cap"] > 0:
+            foot.append(f'<div class="dim"><span class="k">奖励</span>'
+                        f'每日游戏奖励上限 {cfg["daily_cap"]} 积分</div>')
+        lines = ["🎬 封面猜猜 · 今日排行榜"]
+        if early:
+            lines.append("本局提前结束，未计入今日榜。")
+        lines.append(
+            f"本局成绩：答对 {correct}/{total_rounds} 题，用时 {elapsed} 秒"
+            + (f"，+{awarded} 积分" if awarded > 0 else ""))
+        for rank, k, v in board:
+            c = int(v.get("correct", 0) or 0)
+            total = int(v.get("total", total_rounds) or total_rounds)
+            sec = int(v.get("seconds", 0) or 0)
+            lines.append(f"#{rank} {v.get('name') or k} · 答对 {c}/{total} · {sec} 秒")
+        lines.append("发送 /小游戏 2 再来一局。")
+        await self._minigame_send_result(
+            event, title="封面猜猜 · 今日排行榜", subtitle=subtitle,
+            rows=rows, foot_lines=foot, text="\n".join(lines),
+            page_ind="今日榜")
+
+    async def _minigame_send_cover_pick(self, event: AstrMessageEvent,
+                                        game: dict) -> None:
+        html = ""
+        if minigame_cover_pick_html:
+            try:
+                html = minigame_cover_pick_html(
+                    timeout=90,
+                    owner_name=game.get("cover_owner_name") or "")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[小游戏] 选题卡片构建失败，回退文本: {e}")
+        owner = game.get("cover_owner_name") or ""
+        text = ("🎬 封面猜猜 · 单选题库\n"
+                "============================\n\n"
+                + (f"发起者：{owner}\n仅发起者可作答。\n\n" if owner else "单人游戏。\n\n")
+                + "1. 电影\n2. 电视剧\n3. 动漫\n\n"
+                "💬 回复 1 / 2 / 3 选择；回复 0 关闭。\n"
+                "⏱️ 90 秒内未选择自动关闭。")
+        await self._send_list_card(event, html=html, text=text, total=1,
+                                   label="封面猜猜选题", force=True)
+
+    async def _handle_minigame_message(self, event: AstrMessageEvent,
+                                       text: str) -> bool:
+        """处理游戏内输入；返回 True 表示已消费，False 交回普通聊天。"""
+        gkey = self._minigame_group_key(event)
+        if not gkey:
+            return False
+        game = self._minigame_sessions.get(gkey)
+        if not game:
+            return False
+        # 用户正在搜索/选集时优先走原来的会话
+        if self._minigame_has_user_session(event):
+            return False
+        if time.time() - float(game.get("updated") or 0) > 900:
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            return False
+        cmd = (text or "").strip()
+        stage = game.get("stage")
+        game["event"] = event
+        game["updated"] = time.time()
+        if cmd in ("0", "结束", "不玩了", "退出", "关闭"):
+            await self._minigame_end(event, gkey, game, reason="手动结束")
+            return True
+        try:
+            if stage == "lobby":
+                if cmd in ("1", "猜数字", "数字炸弹", "炸弹"):
+                    await self._minigame_start_bomb(event, gkey, game)
+                    return True
+                if cmd in ("2", "封面猜猜", "封面", "猜封面"):
+                    key, uid, name = self._points_user(event)
+                    self._minigame_cancel_task(game)
+                    game.update({"stage": "cover_pick", "event": event,
+                                 "cover_owner_key": key,
+                                 "cover_owner_name": name or uid or "玩家",
+                                 "updated": time.time()})
+                    await self._minigame_send_cover_pick(event, game)
+                    self._minigame_schedule(gkey, game, 90, "cover_pick")
+                    return True
+                return False
+            if stage == "bomb_wait":
+                if cmd == "1":
+                    await self._minigame_bomb_join(event, gkey, game)
+                    return True
+                if cmd == "2":
+                    key, _uid, _name = self._points_user(event)
+                    if key != game.get("host_key"):
+                        await event.send(MessageChain([Plain(
+                            "🙋 只有房主可以立即开始，等房主回复 2 吧。")]))
+                    else:
+                        await self._minigame_bomb_begin(event, gkey, game)
+                    return True
+                return False
+            if stage == "bomb":
+                if re.fullmatch(r"\d{1,3}", cmd):
+                    await self._minigame_bomb_guess(event, gkey, game, cmd)
+                    return True
+                return False
+            if stage == "cover_pick":
+                key, _uid, _name = self._points_user(event)
+                if game.get("cover_owner_key") and key != game["cover_owner_key"]:
+                    owner_name = game.get("cover_owner_name") or "发起者"
+                    await event.send(MessageChain([Plain(
+                        f"🙋 封面猜猜是单人游戏，只有发起者 {owner_name} 可以选题。")]))
+                    return True
+                kinds = {"1": "movie", "2": "tv", "3": "anime"}
+                kind = kinds.get(cmd)
+                if kind:
+                    await self._minigame_start_cover(event, gkey, game, kind)
+                    return True
+                return False
+            if stage == "cover":
+                if normalize_choice(cmd):
+                    await self._minigame_cover_answer(event, gkey, game, cmd)
+                    return True
+                return False
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[小游戏] 处理失败 stage={stage}: {e}")
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            try:
+                await event.send(MessageChain([Plain(
+                    f"😕 小游戏处理失败，已结束：{str(e)[:100]}")]))
+            except Exception:
+                pass
+            return True
+        return False
+
     async def _check_cookie_silent(self) -> str | None:
         """
         静默检查 Cookie 有效性，不对外发消息。
@@ -1806,8 +2982,55 @@ class MuliyResourcesPlugin(Star):
             return resolve_download_link_618(link, cookie)
         return resolve_download_link(link, cookie)
 
+    async def _g_auto_login(self, reason: str = "") -> bool:
+        """xdgame Cookie 失效时，用配置的账号密码自动登录并持久化 Cookie。
+
+        只有登录流程不需要验证码时才能全自动完成；需要验证码时会放弃并提示
+        手动发送 /game_cookie_refresh（验证码必须由用户看图输入）。
+        """
+        if self._game_source() != "xdgame":
+            return False
+        cfg = self._get_config() or {}
+        username = (cfg.get("xdgame_username") or "").strip()
+        password = (cfg.get("xdgame_password") or "").strip()
+        if not username or not password:
+            return False
+        now = time.time()
+        if self._g_auto_login_busy or now < self._g_auto_login_next:
+            return False
+        self._g_auto_login_busy = True
+        try:
+            logger.info(f"[暮黎资源] xdgame Cookie 失效({reason})，尝试账号自动登录: {username[:4]}***")
+            result = await login_with_password_async(username, password)
+            if result.get("ok") and not result.get("needs_captcha"):
+                cookie_str = format_cookie_string(
+                    extract_xdgame_cookies(result.get("cookies") or {}))
+                if cookie_str:
+                    await self._update_config("cookie", cookie_str)
+                    logger.info(f"[暮黎资源] xdgame 自动登录成功，Cookie 已保存 "
+                                f"({len(cookie_str)} 字符)")
+                    self._g_auto_login_next = time.time() + 60
+                    return True
+            if result.get("needs_captcha"):
+                logger.warning("[暮黎资源] xdgame 自动登录需要验证码，已跳过；"
+                               "请管理员发送 /game_cookie_refresh 手动完成")
+                self._g_auto_login_next = now + 600
+            else:
+                logger.warning(f"[暮黎资源] xdgame 自动登录失败: "
+                               f"{result.get('error', '未知错误')}")
+                self._g_auto_login_next = now + 300
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] xdgame 自动登录异常: {e}")
+            self._g_auto_login_next = now + 300
+        finally:
+            self._g_auto_login_busy = False
+        return False
+
     async def _g_check_cookie(self):
-        """路由 Cookie 有效性检查。返回 None=有效，字符串=失效原因('expired'|'invalid'|'error:..')。"""
+        """路由 Cookie 有效性检查。返回 None=有效，字符串=失效原因('expired'|'invalid'|'error:..')。
+
+        xdgame 源：Cookie 失效时若配置了账号密码，先尝试一次自动登录，再复查。
+        """
         if self._game_source() == "switch618":
             cfg = self._get_config()
             cs = (cfg.get("switch618_cookie", "") if isinstance(cfg, dict) else "").strip()
@@ -1822,7 +3045,11 @@ class MuliyResourcesPlugin(Star):
             if ok is False:
                 return "expired"
             return "invalid"
-        return await self._check_cookie_silent()
+        bad = await self._check_cookie_silent()
+        if bad in ("expired", "invalid"):
+            if await self._g_auto_login(bad):
+                bad = await self._check_cookie_silent()
+        return bad
 
     async def _fetch_game_detail(self, event, url: str) -> dict:
         """取游戏详情；switch618 源会先校验 Cookie 有效性。
@@ -1908,11 +3135,8 @@ class MuliyResourcesPlugin(Star):
         if not detail.get("download_links"):
             self._search_sessions.delete(event); await event.send(MessageChain([Plain("无下载链接。")])); return
         self._search_sessions.update(event, detail=detail, stage="select_link")
-        links = detail["download_links"]
-        txt = "📦 " + (detail.get("name") or sel["title"]) + "\n" + "=" * 30 + f"\n找到{len(links)}个下载链接：\n\n"
-        for i, lk in enumerate(links, 1): txt += f"{emoji_index(i, len(links))} {SW_DISK_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n"
-        txt += f"\n请回复数字或网盘名（1-{len(links)}），回复0取消。"
-        await event.send(MessageChain([Plain(txt)])); return
+        await self._send_software_link_menu(event, detail, sel, detail["download_links"])
+        return
 
     async def _process_game_session_reply(self, event: AstrMessageEvent, text: str):
         """处理游戏搜索会话中的回复。"""
@@ -1950,11 +3174,8 @@ class MuliyResourcesPlugin(Star):
         if not detail.get("download_links"):
             self._sessions.delete(event); await event.send(MessageChain([Plain("无下载链接。")])); return
         self._sessions.update(event, game_detail=detail, stage="select_link")
-        links = detail["download_links"]
-        txt = "📦 " + (detail.get("name") or sel["title"]) + "\n" + "=" * 30 + f"\n找到{len(links)}个下载链接：\n\n"
-        for i, lk in enumerate(links, 1): txt += f"{emoji_index(i, len(links))} {GAME_PAN_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n"
-        txt += f"\n请回复数字或网盘名（1-{len(links)}），回复0取消。"
-        await event.send(MessageChain([Plain(txt)])); return
+        await self._send_game_link_menu(event, detail, sel, detail["download_links"])
+        return
 
     @filter.llm_tool(name="search_game")
     async def llm_search_game(self, event: AstrMessageEvent, game_name: str):
@@ -2257,6 +3478,18 @@ class MuliyResourcesPlugin(Star):
                 "selected": sel, "page": 0, "source": source,
                 "_updated": time.time(), "_llm_handled": True,
             })
+            # 详情卡（封面/简介/演职员/剧照）→ 再发资源类型选择
+            if movie_detail_card_html:
+                try:
+                    cover_b64, shot_b64 = await self._detail_media(
+                        detail.get("cover", ""), detail.get("screenshots") or [], "")
+                    html = movie_detail_card_html(
+                        detail, cover_b64=cover_b64, screenshots=shot_b64,
+                        source_name="暮黎影视",
+                        link_hint="在线播放 / 网盘资源，请选择下方编号")
+                    await self._send_detail_card(event, html, "影视详情")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[详情卡] 新站影视详情卡失败，回退文本: {e}")
             await event.send(MessageChain([Plain(tag + "\n" + format_resource_type(detail, resources))]))
             return f"{tag} 已发送资源类型选择（在线播放/网盘）。等待用户回复 1 或 2。"
 
@@ -2322,20 +3555,21 @@ class MuliyResourcesPlugin(Star):
                 return f"{tag} 节点序号超出范围。"
             node = playlist[num - 1]
             detail = ses.get("detail", {})
-            ep_end = node.get("ep_end", 0)
-            if ep_end and ep_end > 1:
-                # 剧集：让用户选集数
+            eps = node_episodes(node)
+            total = len(eps)
+            if total > 1:
+                # 剧集 / 综艺：发选集卡片（综艺带日期、上中下篇等集名）
                 self._movie_sessions_new.update(event, stage="select_episode_new",
-                                                selected_node=node, _llm_handled=True)
-                txt = f"📺 「{detail.get('name', '')}」共 {ep_end} 集\n" + "=" * 36 + "\n\n"
-                txt += f"💬 请输入想看的集数（1-{ep_end}），例如「5」= 第5集\n"
-                txt += "⏱️ 120秒无操作自动取消。回复 0 取消。"
-                await event.send(MessageChain([Plain(tag + "\n" + txt)]))
-                return f"{tag} 已发送选集提示（共{ep_end}集）。等待用户选集。"
+                                                selected_node=node, ep_page=0,
+                                                _llm_handled=True)
+                await self._send_episode_card(event, detail, node, 0,
+                                              prefix=tag + "\n")
+                return f"{tag} 已发送选集卡片（共{total}集）。等待用户选集。"
             else:
                 # 电影：直接获取 m3u8 直链
+                play_n = int(eps[0]["n"]) if eps else 1
                 await event.send(MessageChain([Plain(f"▶ 已选择：{node['t']}\n⏳ 正在获取播放直链...")]))
-                link = await self._get_play_link(client, node["i"], 1)
+                link = await self._get_play_link(client, node["i"], play_n)
                 if not link:
                     await event.send(MessageChain([Plain(f"{tag} ❌ 获取播放直链失败，请稍后重试或换一个播放节点。")]))
                     self._movie_sessions_new.delete(event)
@@ -2344,25 +3578,69 @@ class MuliyResourcesPlugin(Star):
                 self._movie_sessions_new.delete(event)
                 return f"{tag} 已发送「{detail.get('name', '')}」在线播放合并转发。"
 
-        # ===== 阶段3a-2：选集（剧集）=====
+        # ===== 阶段3a-2：选集（剧集 / 综艺，支持翻页）=====
         if stage == "select_episode_new":
             node = ses.get("selected_node", {})
             detail = ses.get("detail", {})
-            ep_end = node.get("ep_end", 0)
-            num = num0 if num0 != -2 else 1
-            if num < 1 or (ep_end and num > ep_end):
-                await event.send(MessageChain([Plain(f"{tag} 集数超出范围（1-{ep_end}），请重新输入。回复0取消。")]))
+            eps = node_episodes(node)
+            total = len(eps)
+            if total <= 1:
+                self._movie_sessions_new.delete(event)
+                await event.send(MessageChain([Plain(f"{tag} 该播放节点暂无可用集数，请重新搜索。")]))
+                return f"{tag} 选集数据异常。"
+            size = episode_page_size(eps)
+            pages = episode_pages(total, size)
+            page = normalize_ep_page(ses.get("ep_page", 0), total, size)
+
+            # 翻页：只影响展示，不影响回复数字（数字仍是全局集序号）
+            if text in ("下一页", "上一页", "末页", "首页", "最新") or text.startswith("跳"):
+                new_page = page
+                if text == "下一页":
+                    new_page = min(page + 1, pages - 1)
+                elif text == "上一页":
+                    new_page = max(0, page - 1)
+                elif text in ("末页", "最新"):
+                    new_page = pages - 1
+                elif text == "首页":
+                    new_page = 0
+                elif text.startswith("跳"):
+                    m = re.search(r"\d+", text)
+                    if m:
+                        new_page = max(0, min(pages - 1, int(m.group()) - 1))
+                if new_page == page:
+                    tip = "已经是最后一页了" if page >= pages - 1 else "已经是第一页了"
+                    await event.send(MessageChain([Plain(
+                        f"{tag} {tip}（第 {page + 1}/{pages} 页）。")]))
+                    self._movie_sessions_new.update(event, _llm_handled=True)
+                    return f"{tag} 选集翻页到边界，保持第{page + 1}页。"
+                self._movie_sessions_new.update(event, ep_page=new_page,
+                                                _llm_handled=True)
+                await self._send_episode_card(event, detail, node, new_page,
+                                              prefix=tag + "\n")
+                return f"{tag} 选集翻到第{new_page + 1}/{pages}页。等待用户选集。"
+
+            num = total if num0 == -2 else num0
+            if num < 1 or num > total:
+                await event.send(MessageChain([Plain(
+                    f"{tag} 集数超出范围（1-{total}），请重新输入。回复0取消。")]))
                 self._movie_sessions_new.update(event, _llm_handled=True)
                 return f"{tag} 集数超出范围。"
-            await event.send(MessageChain([Plain(f"▶ 第 {num} 集\n⏳ 正在获取播放直链...")]))
-            link = await self._get_play_link(client, node["i"], num)
+            ep = eps[num - 1]
+            try:
+                play_n = int(ep.get("n") or num)
+            except (TypeError, ValueError):
+                play_n = num
+            ep_label = episode_display_name(ep.get("name"))
+            shown = f"第 {num} 集" + (f" · {ep_label}" if ep_label else "")
+            await event.send(MessageChain([Plain(f"▶ {shown}\n⏳ 正在获取播放直链...")]))
+            link = await self._get_play_link(client, node["i"], play_n)
             if not link:
                 await event.send(MessageChain([Plain(f"{tag} ❌ 获取播放直链失败，请稍后重试或换一个播放节点。")]))
                 self._movie_sessions_new.delete(event)
                 return f"{tag} 播放直链获取失败。"
-            await self._send_movie_merged(event, detail, link, f"在线播放(第{num}集直链)")
+            await self._send_movie_merged(event, detail, link, f"在线播放({shown} · 直链)")
             self._movie_sessions_new.delete(event)
-            return f"{tag} 已发送「{detail.get('name', '')}」第{num}集在线播放合并转发。"
+            return f"{tag} 已发送「{detail.get('name', '')}」{shown}在线播放合并转发。"
 
         # ===== 阶段3b：选择网盘 =====
         if stage == "select_pan":
@@ -2477,6 +3755,207 @@ class MuliyResourcesPlugin(Star):
             pass
         return None
 
+    def _image_b64(self, url: str, referer: str = "",
+                   max_width: int = 300, timeout: float = 15) -> str:
+        """下载图片并压成 JPEG base64，供 HTML 详情卡内嵌；失败返回空串。"""
+        if not url or not requests:
+            return ""
+        try:
+            if not referer and url.startswith("http"):
+                referer = "/".join(url.split("/")[:3]) + "/"
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0",
+                                           "Referer": referer}, timeout=timeout)
+            if r.status_code != 200 or len(r.content) < 512:
+                return ""
+            try:
+                from PIL import Image, ImageOps
+            except ImportError:
+                return ""
+            img = Image.open(io.BytesIO(r.content))
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            w, h = img.size
+            if w > max_width:
+                img = img.resize((max_width, max(1, int(h * max_width / w))),
+                                 Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=82, optimize=True)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[详情卡] 图片处理失败: {e}")
+            return ""
+
+    async def _prefetch_covers(self, items: list, referer: str = "",
+                               max_width: int = 140, limit: int = 8) -> dict:
+        """并发下载列表页当前页的封面，返回 {原图 URL: base64}。
+
+        卡片渲染是同步线程，不能在里面下载网络图，所以统一在发送前预取。
+        单张失败只影响自己，卡片会自动退回渐变色块。
+        """
+        urls = []
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            u = str(it.get("cover") or "").strip()
+            if u and u not in urls:
+                urls.append(u)
+        urls = urls[:max(0, int(limit or 8))]
+        if not urls or not requests:
+            return {}
+
+        async def _one(u: str):
+            try:
+                b64 = await asyncio.to_thread(
+                    self._image_b64, u, referer, max_width, 8)
+                return u, b64
+            except Exception:  # noqa: BLE001
+                return u, ""
+
+        pairs = await asyncio.gather(*(_one(u) for u in urls))
+        return {u: b for u, b in pairs if b}
+
+    async def _detail_media(self, cover: str, screenshots: list | None,
+                            referer: str = "", *, max_shots: int = 3):
+        """下载详情卡需要的封面与截图，返回 (封面 base64, [截图 base64])。"""
+        shots = [u for u in (screenshots or []) if u and u != cover][:max_shots]
+
+        async def _one(u, w):
+            try:
+                return await asyncio.to_thread(self._image_b64, u, referer, w, 10)
+            except Exception:  # noqa: BLE001
+                return ""
+
+        tasks = ([_one(cover, 240)] if cover else [""])
+        tasks += [_one(u, 300) for u in shots]
+        vals = await asyncio.gather(*tasks)
+        cover_b64 = vals[0] if cover else ""
+        shot_b64 = [x for x in vals[1:] if x]
+        return cover_b64, shot_b64
+
+    @staticmethod
+    def _link_text(title: str, pan: str, url: str, *, code: str = "",
+                   extra: str = "", icon: str = "📥") -> str:
+        """链接单独发送时的纯文本（详情信息已在卡片里，不重复长简介）。"""
+        lines = [f"📦 {title}", f"{icon} {pan}"]
+        if extra:
+            lines.append(extra)
+        lines.append(url or "（链接获取失败）")
+        if code:
+            lines.append(f"🔑 提取码：{code}")
+        return "\n".join(lines)
+
+    async def _send_detail_card(self, event: AstrMessageEvent, html: str,
+                                label: str = "详情") -> bool:
+        """尝试把详情页渲染成图片；任何失败都返回 False，由调用方走原文本兜底。"""
+        if not html or render_list_card is None:
+            return False
+        try:
+            img = await asyncio.to_thread(render_list_card, html)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[详情卡] {label} 渲染异常，回退文本: {e}")
+            return False
+        if not img:
+            return False
+        try:
+            if await self._send_card_image(event, img, f"暮黎_{label}.jpg"):
+                logger.info(f"[详情卡] {label} 已发图片（{len(img) // 1024}KB）")
+                return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[详情卡] {label} 发送异常，回退文本: {e}")
+        return False
+
+    async def _send_game_detail_card(self, event: AstrMessageEvent, detail: dict,
+                                     meta: dict | None = None, *,
+                                     link_hint: str = "选好网盘后会单独发送下载链接") -> bool:
+        if not game_detail_card_html:
+            return False
+        try:
+            # 头部用搜索列表里的游戏小图标（不是详情页第一张截图）
+            icon_url = str((meta or {}).get("cover") or "").strip()
+            _cover_b64, shot_b64 = await self._detail_media(
+                icon_url, detail.get("screenshots") or [],
+                GAME_BASE_URL + "/")
+            html = game_detail_card_html(
+                detail, cover_b64=_cover_b64, screenshots=shot_b64,
+                meta=meta or {}, source_name="暮黎游戏", link_hint=link_hint)
+            return await self._send_detail_card(event, html, "游戏详情")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[详情卡] 游戏详情卡失败，回退旧样式: {e}")
+            return False
+
+    async def _send_software_detail_card(self, event: AstrMessageEvent, detail: dict,
+                                         meta: dict | None = None, *,
+                                         link_hint: str = "选好网盘后会单独发送下载链接") -> bool:
+        if not software_detail_card_html:
+            return False
+        try:
+            cover_b64, shot_b64 = await self._detail_media(
+                detail.get("cover", ""), detail.get("screenshots") or [],
+                SW_BASE_URL + "/")
+            html = software_detail_card_html(
+                detail, cover_b64=cover_b64, screenshots=shot_b64,
+                meta=meta or {}, source_name="暮黎软件", link_hint=link_hint)
+            return await self._send_detail_card(event, html, "软件详情")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[详情卡] 软件详情卡失败，回退旧样式: {e}")
+            return False
+
+    async def _send_game_link_menu(self, event: AstrMessageEvent, detail: dict,
+                                   selected: dict, links: list) -> None:
+        """选择游戏后：先发详情卡，再发网盘列表（此时还没选网盘）。"""
+        await self._send_game_detail_card(event, detail, selected)
+        name = detail.get("name") or (selected or {}).get("title") or "游戏"
+        txt = f"📦 {name}\n" + "=" * 30 + f"\n共 {len(links)} 个网盘：\n\n"
+        for i, lk in enumerate(links, 1):
+            extra = ""
+            if lk.get("code"):
+                extra += f"  提取码:{lk['code']}"
+            if lk.get("password"):
+                extra += f"  游戏密码:{lk['password']}"
+            txt += (f"{emoji_index(i, len(links))} "
+                    f"{GAME_PAN_ICONS.get(lk['pan'], '📥')} {lk['pan']}{extra}\n")
+        txt += (f"\n请回复数字或网盘名选择网盘（1-{len(links)}），"
+                f"选好后发送下载链接；回复 0 取消。")
+        await event.send(MessageChain([Plain(txt)]))
+
+    async def _send_software_link_menu(self, event: AstrMessageEvent, detail: dict,
+                                       selected: dict, links: list) -> None:
+        """选择软件后：先发详情卡，再发网盘列表（此时还没选网盘）。"""
+        await self._send_software_detail_card(event, detail, selected)
+        name = detail.get("name") or (selected or {}).get("title") or "资源"
+        txt = f"📦 {name}\n" + "=" * 30 + f"\n共 {len(links)} 个网盘：\n\n"
+        for i, lk in enumerate(links, 1):
+            txt += (f"{emoji_index(i, len(links))} "
+                    f"{SW_DISK_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n")
+        txt += (f"\n请回复数字或网盘名选择网盘（1-{len(links)}），"
+                f"选好后发送下载链接；回复 0 取消。")
+        await event.send(MessageChain([Plain(txt)]))
+
+    async def _send_download_link(self, event: AstrMessageEvent, title: str,
+                                  pan: str, url: str, *, code: str = "",
+                                  password: str = "", source_name: str = "暮黎资源",
+                                  kind: str = "") -> bool:
+        """网盘选好后只发链接（群聊优先合并转发，私聊普通文本）。"""
+        note = ""
+        if kind:
+            ok, note = self._points_final_charge(event, kind, title)
+            if not ok:
+                await event.send(MessageChain([Plain(note)]))
+                return False
+        extra = f"🔒 游戏密码：{password}" if password else ""
+        text = self._link_text(title, pan, url, code=code, extra=extra) + note
+        if (event.get_group_id() and self._supports_merged_forward(event)
+                and Nodes and Node):
+            try:
+                sid = event.get_self_id()
+                nd = Nodes([])
+                nd.nodes.append(Node(uin=sid, name=source_name, content=[Plain(text)]))
+                await event.send(MessageChain([nd]))
+                return True
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[下载链接] 合并转发失败，改发文本: {e}")
+        await event.send(MessageChain([Plain(text)]))
+        return True
+
     async def _send_text_with_images(self, event: AstrMessageEvent, text: str,
                                      images: list, referer: str = ""):
         """兜底发送：普通文本 + 若干截图/封面。发送失败再降级为纯文本。发完清理临时文件。"""
@@ -2559,31 +4038,75 @@ class MuliyResourcesPlugin(Star):
         # 3) 普通文本 + 图片（兜底）
         await self._send_text_with_images(event, text, images, referer)
 
-    async def _send_movie_merged(self, event: AstrMessageEvent, detail: dict,
-                                 link: str, link_label: str):
-        """新站影视结果发送：标题+封面+简介+链接。统一走 _send_resource_result
-        （合并转发→Markdown→文本+图片 三级降级）。"""
-        text = build_merged_text(detail, link, link_label)
-        cover = detail.get("cover", "")
-        # 封面可达性验证（GET stream，404 则跳过，避免拖垮发送）
-        if cover and requests:
+    async def _send_movie_links(self, event: AstrMessageEvent, detail: dict,
+                                link: str, link_label: str, note: str = "") -> None:
+        """链接单独发送：QQ 群走合并转发，其他平台走普通文本。"""
+        if not link:
+            return
+        name = (detail or {}).get("name") or "影视"
+        pwd = extract_pwd(link)
+        lines = [f"🎬 《{name}》", f"▶ {link_label}"]
+        if pwd:
+            lines.append(f"🔑 提取码：{pwd}")
+        lines.append(link)
+        text = "\n".join(lines) + note
+        if (event.get_group_id() and self._supports_merged_forward(event)
+                and Nodes and Node):
             try:
-                def _probe_cover():
-                    r = requests.get(cover, timeout=6, stream=True)
-                    ct = r.headers.get("content-type", "")
-                    code = r.status_code
-                    r.close()
-                    return code, ct
-                _code, _ct = await asyncio.to_thread(_probe_cover)
-                if not (_code == 200 and "image" in _ct):
-                    logger.warning(f"[暮黎资源] 封面不可达 {cover} status={_code}，跳过封面")
-                    cover = ""
-            except Exception as e:
-                logger.warning(f"[暮黎资源] 封面验证失败: {e}，跳过封面")
-                cover = ""
-        await self._send_resource_result(event, text=text,
-                                         images=[cover] if cover else [],
-                                         referer="", source_name="暮黎影视")
+                sid = event.get_self_id()
+                nd = Nodes([])
+                nd.nodes.append(Node(uin=sid, name="暮黎影视", content=[Plain(text)]))
+                await event.send(MessageChain([nd]))
+                return
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[详情卡] 链接合并转发失败，改发文本: {e}")
+        await event.send(MessageChain([Plain(text)]))
+
+    async def _send_movie_merged(self, event: AstrMessageEvent, detail: dict,
+                                 link: str, link_label: str,
+                                 referer: str = ""):
+        """影视结果：先发 HTML 详情卡，再单独发播放/下载链接。
+
+        详情卡包含封面、简介、导演/主演、年份/类型/地区、剧照（有则显示）。
+        链接不写进图里；QQ 群用合并聊天记录发送，其他平台发文本。
+        """
+        if not link:
+            return
+        text = build_merged_text(detail, link, link_label)
+        name = (detail or {}).get("name") or "影视"
+        ok, note = self._points_final_charge(event, "movie", name)
+        if not ok:
+            await event.send(MessageChain([Plain(note)]))
+            return
+        cover = detail.get("cover", "")
+        shots = [u for u in (detail.get("screenshots") or [])
+                 if u and u != cover]
+        card_sent = False
+        if movie_detail_card_html and render_list_card:
+            try:
+                cover_b64 = await asyncio.to_thread(
+                    self._image_b64, cover, referer, 240) if cover else ""
+                shot_b64 = []
+                for u in shots[:3]:
+                    b = await asyncio.to_thread(self._image_b64, u, referer, 300)
+                    if b:
+                        shot_b64.append(b)
+                html = movie_detail_card_html(
+                    detail, cover_b64=cover_b64, screenshots=shot_b64,
+                    source_name="暮黎影视",
+                    link_hint="播放 / 下载链接已单独发送")
+                img = await asyncio.to_thread(render_list_card, html)
+                if img and await self._send_card_image(event, img, "暮黎_影视详情.jpg"):
+                    card_sent = True
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[详情卡] 影视详情卡构建/发送失败，回退旧样式: {e}")
+        if card_sent:
+            await self._send_movie_links(event, detail, link, link_label, note=note)
+            return
+        imgs = ([cover] if cover else []) + [u for u in shots[:3] if u]
+        await self._send_resource_result(event, text=text + note,
+                                         images=imgs,
+                                         referer=referer, source_name="暮黎影视")
 
     async def _get_play_link(self, client, node_i: str, ep: int) -> str:
         """健壮获取播放直链：先取，失败则强制刷新登录再取一次。
@@ -2674,6 +4197,39 @@ class MuliyResourcesPlugin(Star):
             self._movie_sessions.update(event, _llm_handled=True)
             logger.info(f"[暮黎资源] 翻页 影视 第{cur+1}→{new_page+1}页 (共{t}条) → 直接 send")
             return f"[已发送给用户] 第 {new_page+1}/{pt} 页，共 {t} 个结果。用户后续操作由 on_any_message 处理。"
+
+        # ——— 新站影视·选集翻页 ———
+        ses5 = self._movie_sessions_new.get(event)
+        if ses5 and ses5.get("stage") == "select_episode_new":
+            node = ses5.get("selected_node", {})
+            eps = node_episodes(node)
+            total = len(eps)
+            size = episode_page_size(eps)
+            pages = episode_pages(total, size)
+            cur = normalize_ep_page(ses5.get("ep_page", 0), total, size)
+            new_page = cur
+            if "上一页" in action or action == "prev":
+                new_page = max(0, cur - 1)
+            elif "下一页" in action or action == "next":
+                new_page = min(cur + 1, pages - 1)
+            elif "末页" in action:
+                new_page = pages - 1
+            elif "最新" in action:
+                new_page = pages - 1
+            elif "首页" in action:
+                new_page = 0
+            elif "跳" in action:
+                m = re.search(r'(\d+)', action)
+                if m:
+                    new_page = max(0, min(pages - 1, int(m.group(1)) - 1))
+            if new_page == cur:
+                return f"{tag} 选集已经是第{cur+1}/{pages}页，没有{action}了。"
+            self._movie_sessions_new.update(event, ep_page=new_page, _llm_handled=True)
+            await self._send_episode_card(event, ses5.get("detail", {}), node,
+                                          new_page, prefix=tag + "\n")
+            logger.info(f"[暮黎资源] 翻页 新站选集 第{cur+1}→{new_page+1}页")
+            return (f"[已发送给用户] 选集第 {new_page+1}/{pages} 页（共{total}集）。"
+                    "用户后续操作由 on_any_message 处理。")
 
         # ——— 新站影视会话 ———
         ses4 = self._movie_sessions_new.get(event)
@@ -2807,16 +4363,10 @@ class MuliyResourcesPlugin(Star):
                 self._sessions.delete(event)
                 return f"{tag} 「{sel['title']}」暂无下载链接。"
             self._sessions.update(event, game_detail=detail, stage="select_link")
-            links = detail["download_links"]
-            txt = (tag + " 📦 " + (detail.get("name") or sel["title"]) + "\n" + "="*30 +
-                   f"\n共 {len(links)} 个下载链接：\n\n")
-            for i, lk in enumerate(links, 1):
-                txt += f"{emoji_index(i, len(links))} {GAME_PAN_ICONS.get(lk['pan'],'📥')} {lk['pan']}\n"
-            txt += f"\n请回复数字或网盘名选择（1-{len(links)}），回复0取消。"
-            await event.send(MessageChain([Plain(txt)]))
+            await self._send_game_link_menu(event, detail, sel, detail["download_links"])
             self._sessions.update(event, _llm_handled=True)
-            logger.info(f"[暮黎资源] 游戏 '{sel['title']}' → {len(links)}个下载链接")
-            return f"{tag} 已发送{len(links)}个下载链接给用户。请等待用户回复数字或网盘名，**不要**自行调用 select_download_link。"
+            logger.info(f"[暮黎资源] 游戏 '{sel['title']}' → {len(detail['download_links'])}个网盘")
+            return f"{tag} 已发送游戏详情卡和网盘列表给用户。请等待用户回复数字或网盘名，**不要**自行调用 select_download_link。"
 
         # 软件会话
         ses2 = self._search_sessions.get(event)
@@ -2838,16 +4388,10 @@ class MuliyResourcesPlugin(Star):
                 self._search_sessions.delete(event)
                 return f"{tag} 「{sel['title']}」暂无下载链接。"
             self._search_sessions.update(event, detail=detail, stage="select_link")
-            links = detail["download_links"]
-            txt = (tag + " 📦 " + (detail.get("name") or sel["title"]) + "\n" + "="*30 +
-                   f"\n共 {len(links)} 个下载链接：\n\n")
-            for i, lk in enumerate(links, 1):
-                txt += f"{emoji_index(i, len(links))} {SW_DISK_ICONS.get(lk['pan'],'📥')} {lk['pan']}\n"
-            txt += f"\n请回复数字或网盘名选择（1-{len(links)}），回复0取消。"
-            await event.send(MessageChain([Plain(txt)]))
+            await self._send_software_link_menu(event, detail, sel, detail["download_links"])
             self._search_sessions.update(event, _llm_handled=True)
-            logger.info(f"[暮黎资源] 软件 '{sel['title']}' → {len(links)}个下载链接")
-            return f"{tag} 已发送{len(links)}个下载链接给用户。请等待用户回复数字或网盘名，**不要**自行调用 select_download_link。"
+            logger.info(f"[暮黎资源] 软件 '{sel['title']}' → {len(detail['download_links'])}个网盘")
+            return f"{tag} 已发送软件详情卡和网盘列表给用户。请等待用户回复数字或网盘名，**不要**自行调用 select_download_link。"
 
         logger.warning(f"[暮黎资源] select_search_result({number}) → 无活跃会话")
         return f"{tag} 当前没有活跃的搜索结果。请先使用 search_game / search_software / search_movie 搜索，或回复0取消。"
@@ -2887,33 +4431,13 @@ class MuliyResourcesPlugin(Star):
             except Exception: rlink = sl
             sg = ses["results"][ses["selected_index"]]
             gn = detail.get("name") or sg["title"]
-            gid = event.get_group_id(); uid = event.get_sender_id()
-            logger.info(f"[暮黎资源] 发送资源 '{gn}' → {rlink.get('pan','?')} gid={gid} uid={uid}")
-            if gid:
-                await self._send_sw_merged(event, gn, detail, rlink, GAME_PAN_ICONS, GAME_BASE_URL, "暮黎游戏搜索", gid, "g_")
-                self._sessions.delete(event)
-                return f"{tag} 已发送「{gn}」合并转发资源到群。"
-            elif uid:
-                safe_name = re.sub(r'[\\/:*?"<>|]',"_",gn)[:30]
-                hc = await asyncio.to_thread(generate_game_html, gn, detail.get("desc","") or "",
-                                               detail.get("cover","") or "",
-                                               detail.get("screenshots",[]) or [], rlink, ses["keyword"])
-                fd, tp = tempfile.mkstemp(suffix=f"_{safe_name}.html",prefix="g_"); os.close(fd)
-                with open(tp,"w",encoding="utf-8") as f: f.write(hc)
-                fn = f"{gn[:30]}.html"; cl = self._get_best_client(event)
-                logger.info(f"[暮黎资源] 私聊HTML: {fn}")
-                if cl:
-                    with open(tp,"rb") as f: b64 = base64.b64encode(f.read()).decode("utf-8")
-                    if str(uid).isdigit(): await cl.call_action(action="upload_private_file",user_id=int(uid),file=f"base64://{b64}",name=fn)
-                    else: await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}",MessageChain([FileComponent(file=tp,name=fn)]))
-                else: await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}",MessageChain([Plain(f"📄 {gn}\n\n"),FileComponent(file=tp,name=fn)]))
-                if os.path.exists(tp):
-                    try: os.unlink(tp)
-                    except Exception: pass
-                self._sessions.delete(event)
-                return f"{tag} 已发送「{gn}」的资源文件到私聊。"
+            logger.info(f"[暮黎资源] 发送资源 '{gn}' → {rlink.get('pan','?')}")
+            await self._send_download_link(
+                event, gn, rlink.get("pan", "下载链接"), rlink.get("real_url", ""),
+                code=rlink.get("code", ""), password=rlink.get("password", ""),
+                source_name="暮黎游戏", kind="game")
             self._sessions.delete(event)
-            return f"{tag} 无法确定发送目标。"
+            return f"{tag} 已发送「{gn}」的下载链接。"
 
         ses2 = self._search_sessions.get(event)
         if ses2 and ses2.get("stage") == "select_link":
@@ -2928,47 +4452,15 @@ class MuliyResourcesPlugin(Star):
             logger.info(f"[暮黎资源] 用户选择软件链接#{num}: {sl['pan']}")
             sr = ses2["results"][ses2["selected_index"]]
             sn = detail.get("name") or sr["title"]
-            gid = event.get_group_id(); uid = event.get_sender_id()
-            logger.info(f"[暮黎资源] 发送软件 '{sn}' → {sl['pan']} gid={gid} uid={uid}")
-            if gid:
-                await self._send_sw_merged(event, sn, detail, sl, SW_DISK_ICONS, SW_BASE_URL, "暮黎软件搜索", gid, "sw_")
-                self._search_sessions.delete(event)
-                return f"{tag} 已发送「{sn}」合并转发资源到群。"
-            elif uid:
-                safe_name = re.sub(r'[\\/:*?"<>|]',"_",sn)[:30]
-                hc = await asyncio.to_thread(generate_search_html, sn, detail.get("desc","") or "",
-                                               detail.get("cover","") or "",
-                                               detail.get("screenshots",[]) or [], sl, ses2["keyword"])
-                fd, tp = tempfile.mkstemp(suffix=f"_{safe_name}.html",prefix="sw_"); os.close(fd)
-                with open(tp,"w",encoding="utf-8") as f: f.write(hc)
-                fn = f"{sn[:30]}.html"; cl = self._get_best_client(event)
-                logger.info(f"[暮黎资源] 私聊HTML: {fn}")
-                if cl:
-                    with open(tp,"rb") as f: b64 = base64.b64encode(f.read()).decode("utf-8")
-                    if str(uid).isdigit(): await cl.call_action(action="upload_private_file",user_id=int(uid),file=f"base64://{b64}",name=fn)
-                    else: await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}",MessageChain([FileComponent(file=tp,name=fn)]))
-                else: await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}",MessageChain([Plain(f"📄 {sn}\n\n"),FileComponent(file=tp,name=fn)]))
-                if os.path.exists(tp):
-                    try: os.unlink(tp)
-                    except Exception: pass
-                self._search_sessions.delete(event)
-                return f"{tag} 已发送「{sn}」的资源文件到私聊。"
+            logger.info(f"[暮黎资源] 发送软件 '{sn}' → {sl['pan']}")
+            await self._send_download_link(
+                event, sn, sl.get("pan", "下载链接"), sl.get("url", ""),
+                source_name="暮黎软件", kind="software")
             self._search_sessions.delete(event)
-            return f"{tag} 无法确定发送目标。"
+            return f"{tag} 已发送「{sn}」的下载链接。"
 
         logger.warning(f"[暮黎资源] select_download_link('{selection}') → 无活跃会话")
         return f"{tag} 当前没有活跃的下载选择会话。请先搜索并选择资源，或回复0取消。"
-
-    async def _send_sw_merged(self, event, name: str, detail: dict, link: dict, icons: dict, referer: str, source_name: str, gid: str, prefix: str):
-        """群聊资源结果发送（合并转发→Markdown→文本+图片 三级降级）。私聊用 HTML 文件。"""
-        t2 = ("【暮黎资源】 📦 " + name + "\n📖 " + (detail.get("desc", "暂无简介") or "暂无简介")[:400] +
-              "\n📥 " + icons.get(link["pan"], "📥") + " " + link["pan"] +
-              "\n🔗 " + (link.get("real_url") or link.get("url", "")))
-        if link.get("code"):
-            t2 += "\n🔑 提取码: " + link["code"]
-        await self._send_resource_result(event, text=t2,
-                                         images=detail.get("screenshots") or [],
-                                         referer=referer + "/", source_name=source_name)
 
     def _parse_selection(self, selection: str, links: list) -> int:
         """解析用户选择：数字/中文序数/网盘名 → 1-based index。0=取消, -1=无效"""
@@ -3279,6 +4771,50 @@ class MuliyResourcesPlugin(Star):
         except Exception as e:
             logger.warning(f"[暮黎资源·积分] 管理员调整失败: {e}")
             yield event.plain_result(f"❌ 积分操作失败：{str(e)[:100]}")
+
+    # ==================== 群聊小游戏命令 ====================
+
+    @filter.command("小游戏")
+    async def cmd_minigame(self, event: AstrMessageEvent):
+        """打开群游戏大厅：猜数字 / 封面猜猜。支持 /小游戏 1、/小游戏 2 直接开始。"""
+        raw = (event.message_str or "").strip()
+        arg = re.sub(r"^/?\s*小游戏\s*", "", raw).strip()
+        start = ""
+        if arg in ("1", "猜数字", "数字炸弹", "炸弹"):
+            start = "guess"
+        elif arg in ("2", "封面猜猜", "封面", "猜封面"):
+            start = "cover"
+        try:
+            await self._minigame_open_lobby(event, start=start)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[小游戏] 打开大厅失败: {e}")
+            yield event.plain_result(f"😕 小游戏启动失败：{str(e)[:100]}")
+
+    @filter.command("结束游戏")
+    async def cmd_minigame_stop(self, event: AstrMessageEvent):
+        """提前结束当前群的游戏。"""
+        gkey = self._minigame_group_key(event)
+        if not gkey:
+            yield event.plain_result("【暮黎资源】小游戏只能在群聊里玩。")
+            return
+        game = self._minigame_sessions.get(gkey)
+        if not game:
+            yield event.plain_result("【暮黎资源】当前没有进行中的小游戏。")
+            return
+        if (game.get("stage") in ("cover_pick", "cover")
+                and game.get("cover_owner_key")):
+            key, _uid, _name = self._points_user(event)
+            if key != game["cover_owner_key"]:
+                yield event.plain_result(
+                    "【暮黎资源】封面猜猜是单人游戏，只有发起者可以结束。")
+                return
+        try:
+            await self._minigame_end(event, gkey, game, reason="手动结束")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[小游戏] 结束失败: {e}")
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            yield event.plain_result(f"😕 结束游戏失败，已强制关闭：{str(e)[:100]}")
 
     @filter.command("找游戏")
     async def cmd_game_search(self, event: AstrMessageEvent):
@@ -4425,19 +5961,9 @@ class MuliyResourcesPlugin(Star):
                 controller.stop()
                 return
 
-            # 展示下载链接列表
-            links = game_detail["download_links"]
-            txt = ("📦 " + (game_detail.get("name") or selected_game["title"]) + "\n" +
-                   "=" * 30 + f"\n找到 {len(links)} 个下载链接：\n\n")
-            for i, lk in enumerate(links, 1):
-                extra = ""
-                if lk.get("code"):
-                    extra += f"  提取码:{lk['code']}"
-                if lk.get("password"):
-                    extra += f"  游戏密码:{lk['password']}"
-                txt += f"{emoji_index(i, len(links))} {GAME_PAN_ICONS.get(lk['pan'], '📥')} {lk['pan']}{extra}\n"
-            txt += f"\n请直接回复数字选择下载链接（1-{len(links)}），回复 0 取消。"
-            await ev.send(MessageChain([Plain(txt)]))
+            # 先发详情卡，再发网盘列表
+            await self._send_game_link_menu(
+                ev, game_detail, selected_game, game_detail["download_links"])
             controller.stop()
 
         try:
@@ -4488,20 +6014,11 @@ class MuliyResourcesPlugin(Star):
                 rlink = sl
 
             gn = game_detail.get("name") or selected_game["title"]
-            safe_name = re.sub(r'[\\/:*?"<>|]', "_", gn)[:30]
-            gid = ev.get_group_id()
-            uid = ev.get_sender_id()
-            logger.info(f"[执行] 游戏 {gn} gid={gid} uid={uid} url={rlink.get('real_url', '')[:40]}")
-
-            if gid:
-                t2 = ("📦 " + gn + "\n📖 " + (game_detail.get("desc", "暂无简介") or "暂无简介")[:400] +
-                      "\n📥 " + GAME_PAN_ICONS.get(rlink["pan"], "📥") + " " + rlink["pan"] +
-                      "\n" + rlink.get("real_url", ""))
-                if rlink.get("code"):
-                    t2 += "  提取码: " + rlink["code"]
-                await self._send_game_group_msg(ev, gn, game_detail, rlink, t2)
-            elif uid:
-                await self._send_game_private_msg(ev, gn, game_detail, rlink, keyword, safe_name, uid)
+            logger.info(f"[执行] 游戏 {gn} url={rlink.get('real_url', '')[:40]}")
+            await self._send_download_link(
+                ev, gn, rlink.get("pan", "下载链接"), rlink.get("real_url", ""),
+                code=rlink.get("code", ""), password=rlink.get("password", ""),
+                source_name="暮黎游戏", kind="game")
 
             selected_link = rlink
             controller.stop()
@@ -4510,50 +6027,6 @@ class MuliyResourcesPlugin(Star):
             await _link_waiter(event)
         except TimeoutError:
             yield event.plain_result("⏰ 选择超时，已自动取消。")
-
-    async def _send_game_group_msg(self, event, gn, detail, rlink, text_content):
-        """在群聊中发送游戏下载信息（合并转发→Markdown→文本+截图 三级降级）"""
-        await self._send_resource_result(event, text=text_content,
-                                         images=detail.get("screenshots") or [],
-                                         referer=GAME_BASE_URL + "/",
-                                         source_name="暮黎游戏搜索")
-
-    async def _send_game_private_msg(self, event, gn, detail, rlink, keyword, safe_name, uid):
-        """在私聊中发送游戏 HTML 文件"""
-        hc = await asyncio.to_thread(
-            generate_game_html, gn,
-            detail.get("desc", "") or "",
-            detail.get("cover", "") or "",
-            detail.get("screenshots", []) or [],
-            rlink, keyword
-        )
-        fd, tp = tempfile.mkstemp(suffix=f"_{safe_name}.html", prefix="g_")
-        os.close(fd)
-        with open(tp, "w", encoding="utf-8") as f:
-            f.write(hc)
-        fn = f"{gn[:30]}.html"
-        cl = self._get_best_client(event)
-        logger.info(f"[执行] 私聊HTML {fn}")
-        if cl:
-            with open(tp, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            if str(uid).isdigit():
-                await cl.call_action(action="upload_private_file", user_id=int(uid), file=f"base64://{b64}", name=fn)
-            else:
-                await self.context.send_message(
-                    f"{event.get_platform_id()}:FriendMessage:{uid}",
-                    MessageChain([FileComponent(file=tp, name=fn)])
-                )
-        else:
-            await self.context.send_message(
-                f"{event.get_platform_id()}:FriendMessage:{uid}",
-                MessageChain([Plain(f"📄 {gn}\n\n"), FileComponent(file=tp, name=fn)])
-            )
-        if os.path.exists(tp):
-            try:
-                os.unlink(tp)
-            except Exception:
-                pass
 
     # ==================== 软件搜索交互流程 (session_waiter) ====================
 
@@ -4685,13 +6158,8 @@ class MuliyResourcesPlugin(Star):
                 controller.stop()
                 return
 
-            links = sw_detail["download_links"]
-            txt = ("📦 " + (sw_detail.get("name") or selected_sw["title"]) + "\n" +
-                   "=" * 30 + f"\n找到 {len(links)} 个下载链接：\n\n")
-            for i, lk in enumerate(links, 1):
-                txt += f"{emoji_index(i, len(links))} {SW_DISK_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n"
-            txt += f"\n请直接回复数字选择下载链接（1-{len(links)}），回复 0 取消。"
-            await ev.send(MessageChain([Plain(txt)]))
+            await self._send_software_link_menu(
+                ev, sw_detail, selected_sw, sw_detail["download_links"])
             controller.stop()
 
         try:
@@ -4733,54 +6201,10 @@ class MuliyResourcesPlugin(Star):
             await ev.send(MessageChain([Plain(f"已选择 {sl['pan']}，处理中...")]))
 
             sn = sw_detail.get("name") or selected_sw["title"]
-            safe_name = re.sub(r'[\\/:*?"<>|]', "_", sn)[:30]
-            gid = ev.get_group_id()
-            uid = ev.get_sender_id()
-            logger.info(f"[执行] 软件 {sn} gid={gid} uid={uid}")
-
-            if gid:
-                t2 = ("📦 " + sn + "\n📖 " + (sw_detail.get("desc", "暂无简介") or "暂无简介")[:400] +
-                      "\n📥 " + SW_DISK_ICONS.get(sl["pan"], "📥") + " " + sl["pan"] +
-                      "\n" + (sl.get("url", "")))
-                await self._send_resource_result(ev, text=t2,
-                                                 images=sw_detail.get("screenshots") or [],
-                                                 referer=SW_BASE_URL + "/",
-                                                 source_name="暮黎软件搜索")
-            elif uid:
-                hc = await asyncio.to_thread(
-                    generate_search_html, sn,
-                    sw_detail.get("desc", "") or "",
-                    sw_detail.get("cover", "") or "",
-                    sw_detail.get("screenshots", []) or [],
-                    sl, keyword
-                )
-                fd, tp = tempfile.mkstemp(suffix=f"_{safe_name}.html", prefix="sw_")
-                os.close(fd)
-                with open(tp, "w", encoding="utf-8") as f:
-                    f.write(hc)
-                fn = f"{sn[:30]}.html"
-                cl = self._get_best_client(ev)
-                logger.info(f"[执行] 私聊HTML {fn}")
-                if cl:
-                    with open(tp, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode("utf-8")
-                    if str(uid).isdigit():
-                        await cl.call_action(action="upload_private_file", user_id=int(uid), file=f"base64://{b64}", name=fn)
-                    else:
-                        await self.context.send_message(
-                            f"{ev.get_platform_id()}:FriendMessage:{uid}",
-                            MessageChain([FileComponent(file=tp, name=fn)])
-                        )
-                else:
-                    await self.context.send_message(
-                        f"{ev.get_platform_id()}:FriendMessage:{uid}",
-                        MessageChain([Plain(f"📄 {sn}\n\n"), FileComponent(file=tp, name=fn)])
-                    )
-                if os.path.exists(tp):
-                    try:
-                        os.unlink(tp)
-                    except Exception:
-                        pass
+            logger.info(f"[执行] 软件 {sn} url={(sl.get('url') or '')[:50]}")
+            await self._send_download_link(
+                ev, sn, sl.get("pan", "下载链接"), sl.get("url", ""),
+                source_name="暮黎软件", kind="software")
 
             controller.stop()
 
@@ -5172,20 +6596,17 @@ class MuliyResourcesPlugin(Star):
         """
         ep_tag = f" 第{ep['n']}集" if ep else ""
         if gid:
-            t2 = (
-                f"🎬 {name}{ep_tag}\n"
-                f"📡 {line_name}\n"
-                + (f"🎭 主演：{cast}\n" if cast else "")
-                + (f"📖 {desc[:200]}\n" if desc else "")
-                + f"🔗 {chosen_url}"
-            )
             detail_obj = self._movie_sessions.get(event)
-            detail = detail_obj.get("detail", {}) if detail_obj else {}
-            cover = detail.get("cover") or ""
-            await self._send_resource_result(event, text=t2,
-                                             images=[cover] if cover else [],
-                                             referer=MV_BASE_URL + "/",
-                                             source_name="暮黎影视搜索")
+            detail = dict(detail_obj.get("detail", {}) if detail_obj else {})
+            detail["name"] = name or detail.get("name") or "未知影视"
+            if desc:
+                detail["desc"] = desc
+            if cast and not detail.get("zhuyan"):
+                detail["zhuyan"] = [cast]
+            await self._send_movie_merged(
+                event, detail, chosen_url,
+                f"{line_name}{ep_tag}".strip(),
+                referer=MV_BASE_URL + "/")
         elif uid:
             safe_name = re.sub(r'[\\/:*?"<>|]', "_", name)[:30]
             link = {"pan": "在线播放", "url": chosen_url, "real_url": chosen_url}
@@ -6378,6 +7799,15 @@ class MuliyResourcesPlugin(Star):
         session_text = re.sub(r"\[CQ:at,[^\]]+\]", "", text)
         session_text = re.sub(r"^@\S+\s*", "", session_text).strip()
 
+        # ── 群聊小游戏：只消费明确的游戏输入，普通聊天继续走原流程 ──
+        if session_text and not text.startswith("/"):
+            try:
+                if await self._handle_minigame_message(event, session_text):
+                    event.stop_event()
+                    return
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"[小游戏] 兜底处理失败: {e}")
+
         # ══════════════════════════════════════════════
         # 影视会话（pdy0 / 片库主站）
         # 在线程内（已出搜索结果 / 资源菜单 / 选集）直接处理，
@@ -6489,12 +7919,7 @@ class MuliyResourcesPlugin(Star):
                         await event.send(MessageChain([Plain("无下载链接。")]))
                         return
                     self._sessions.update(event, game_detail=detail, stage="select_link")
-                    links = detail["download_links"]
-                    txt = "📦 " + (detail.get("name") or sel["title"]) + "\n" + "=" * 30 + f"\n找到{len(links)}个下载链接：\n\n"
-                    for i, lk in enumerate(links, 1):
-                        txt += f"{emoji_index(i, len(links))} {GAME_PAN_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n"
-                    txt += f"\n请回复数字或网盘名（1-{len(links)}），回复0取消。"
-                    await event.send(MessageChain([Plain(txt)]))
+                    await self._send_game_link_menu(event, detail, sel, detail["download_links"])
                     return
 
             # ── 3. select_link 阶段 ──
@@ -6516,31 +7941,11 @@ class MuliyResourcesPlugin(Star):
                     rlink = sl
                 sg = ses["results"][ses["selected_index"]]
                 gn = detail.get("name") or sg["title"]
-                safe = re.sub(r'[\\/:*?"<>|]', "_", gn)[:30]
-                gid = event.get_group_id(); uid = event.get_sender_id()
-                logger.info(f"[执行] 游戏 {gn} gid={gid} uid={uid}")
-                if gid:
-                    t2 = "📦 " + gn + "\n📖 " + detail.get("desc", "暂无简介")[:400] + "\n📥 " + GAME_PAN_ICONS.get(rlink["pan"], "📥") + " " + rlink["pan"] + "\n" + rlink.get("real_url", "") + ((" 提取码:" + rlink.get("code", "")) if rlink.get("code") else "")
-                    await self._send_resource_result(event, text=t2,
-                                                     images=detail.get("screenshots", []),
-                                                     referer=GAME_BASE_URL + "/",
-                                                     source_name="暮黎游戏搜索")
-                elif uid:
-                    hc = await asyncio.to_thread(generate_game_html, gn, detail.get("desc", ""), detail.get("cover", ""), detail.get("screenshots", []), rlink, ses.get("keyword", ""))
-                    fd, tp = tempfile.mkstemp(suffix=f"_{safe}.html", prefix="g_"); os.close(fd)
-                    with open(tp, "w", encoding="utf-8") as f: f.write(hc)
-                    fn = f"{gn[:30]}.html"; cl = self._get_best_client(event)
-                    if cl:
-                        with open(tp, "rb") as f: b64 = base64.b64encode(f.read()).decode("utf-8")
-                        if str(uid).isdigit():
-                            await cl.call_action(action="upload_private_file", user_id=int(uid), file=f"base64://{b64}", name=fn)
-                        else:
-                            await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}", MessageChain([FileComponent(file=tp, name=fn)]))
-                    else:
-                        await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}", MessageChain([Plain(f"📄 {gn}\n\n"), FileComponent(file=tp, name=fn)]))
-                    if os.path.exists(tp):
-                        try: os.unlink(tp)
-                        except Exception: pass
+                logger.info(f"[执行] 游戏 {gn} url={rlink.get('real_url', '')[:40]}")
+                await self._send_download_link(
+                    event, gn, rlink.get("pan", "下载链接"), rlink.get("real_url", ""),
+                    code=rlink.get("code", ""), password=rlink.get("password", ""),
+                    source_name="暮黎游戏", kind="game")
                 self._sessions.delete(event)
                 return
 
@@ -6603,12 +8008,7 @@ class MuliyResourcesPlugin(Star):
                         await event.send(MessageChain([Plain("无下载链接。")]))
                         return
                     self._search_sessions.update(event, detail=detail, stage="select_link")
-                    links = detail["download_links"]
-                    txt = "📦 " + (detail.get("name") or sel["title"]) + "\n" + "=" * 30 + f"\n找到{len(links)}个下载链接：\n\n"
-                    for i, lk in enumerate(links, 1):
-                        txt += f"{emoji_index(i, len(links))} {SW_DISK_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n"
-                    txt += f"\n请回复数字或网盘名（1-{len(links)}），回复0取消。"
-                    await event.send(MessageChain([Plain(txt)]))
+                    await self._send_software_link_menu(event, detail, sel, detail["download_links"])
                     return
 
             # ── 3. select_link 阶段 ──
@@ -6626,31 +8026,10 @@ class MuliyResourcesPlugin(Star):
                 await event.send(MessageChain([Plain(f"已选择{sl['pan']}，处理中...")]))
                 sr = ses2["results"][ses2["selected_index"]]
                 sn = detail.get("name") or sr["title"]
-                safe = re.sub(r'[\\/:*?"<>|]', "_", sn)[:30]
-                gid = event.get_group_id(); uid = event.get_sender_id()
-                logger.info(f"[执行] 软件 {sn} gid={gid} uid={uid}")
-                if gid:
-                    t2 = "📦 " + sn + "\n📖 " + (detail.get("desc") or "暂无简介")[:400] + "\n📥 " + SW_DISK_ICONS.get(sl["pan"], "📥") + " " + sl["pan"] + "\n" + (sl.get("url") or "")
-                    await self._send_resource_result(event, text=t2,
-                                                     images=detail.get("screenshots", []),
-                                                     referer=SW_BASE_URL + "/",
-                                                     source_name="暮黎软件搜索")
-                elif uid:
-                    hc = await asyncio.to_thread(generate_search_html, sn, detail.get("desc") or "", detail.get("cover") or "", detail.get("screenshots") or [], sl, ses2.get("keyword", ""))
-                    fd, tp = tempfile.mkstemp(suffix=f"_{safe}.html", prefix="sw_"); os.close(fd)
-                    with open(tp, "w", encoding="utf-8") as f: f.write(hc)
-                    fn = f"{sn[:30]}.html"; cl = self._get_best_client(event)
-                    if cl:
-                        with open(tp, "rb") as f: b64 = base64.b64encode(f.read()).decode("utf-8")
-                        if str(uid).isdigit():
-                            await cl.call_action(action="upload_private_file", user_id=int(uid), file=f"base64://{b64}", name=fn)
-                        else:
-                            await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}", MessageChain([FileComponent(file=tp, name=fn)]))
-                    else:
-                        await self.context.send_message(f"{event.get_platform_id()}:FriendMessage:{uid}", MessageChain([Plain(f"📄 {sn}\n\n"), FileComponent(file=tp, name=fn)]))
-                    if os.path.exists(tp):
-                        try: os.unlink(tp)
-                        except Exception: pass
+                logger.info(f"[执行] 软件 {sn} url={(sl.get('url') or '')[:50]}")
+                await self._send_download_link(
+                    event, sn, sl.get("pan", "下载链接"), sl.get("url", ""),
+                    source_name="暮黎软件", kind="software")
                 self._search_sessions.delete(event)
                 return
 
@@ -6891,6 +8270,10 @@ class MuliyResourcesPlugin(Star):
                             f"😕 {det.get('error', '未获取到资源链接')}，换一部试试？")]))
                         return
                     title = det.get("title") or sel["title"]
+                    ok, note = self._points_final_charge(event, "drama", title)
+                    if not ok:
+                        await event.send(MessageChain([Plain(note)]))
+                        return
                     lines = [
                         f"🎬 {title}",
                         "=" * 30,
@@ -6899,7 +8282,7 @@ class MuliyResourcesPlugin(Star):
                         "",
                         "💡 复制资源链接到夸克网盘转存即可观看。",
                     ]
-                    await event.send(MessageChain([Plain("\n".join(lines))]))
+                    await event.send(MessageChain([Plain("\n".join(lines) + note)]))
                     logger.info(f"[执行] 短剧 {title} → {det.get('link','')}")
                     return
 
@@ -6992,6 +8375,12 @@ class MuliyResourcesPlugin(Star):
                 multi = len(fmt_list) > 1
                 fmt_label = "、".join(f.upper() for f in fmt_list)
                 suffix = "（多格式将依次抓取，请稍候…）" if multi else ""
+                can, balance, cost = self._points_can_afford(event, "novel")
+                if not can:
+                    await event.send(MessageChain([Plain(
+                        f"【暮黎资源·积分】\n💰 获取小说需要 {cost} 积分，"
+                        f"你当前只有 {balance} 积分。\n📅 发送 /签到 领取每日积分后再试。")]))
+                    return
                 await event.send(MessageChain([Plain(
                     f"⏳ 已提交《{sel.get('book_name', '')}》下载任务，"
                     f"生成格式：{fmt_label}{suffix}")]))
@@ -7036,6 +8425,12 @@ class MuliyResourcesPlugin(Star):
                         msg = e.message if isinstance(e, NovelApiError) else str(e)[:200]
                         results.append((fmt, None, msg, 0))
                 ok_count = sum(1 for r in results if r[1])
+                point_note = ""
+                if ok_count > 0:
+                    okc, bal, pcost = self._points_spend_now(event, "novel")
+                    if okc and pcost > 0:
+                        point_note = (f"\n\n💰 本次获取资源消耗 {pcost} 积分，"
+                                      f"剩余 {bal} 积分（发送 /签到 领取每日积分）")
                 lines = [
                     f"✅ 下载完成：《{book_name}》／{author}",
                     f"📦 已发送 {ok_count}/{len(fmt_list)} 个格式",
@@ -7050,7 +8445,7 @@ class MuliyResourcesPlugin(Star):
                 if ok_count == 0:
                     lines.append("💡 全部格式失败：PDF 多为 so-novel 缺中文字体（见上方提示），"
                                  "其余可换一个书源或改用 TXT 重试。")
-                await event.send(MessageChain([Plain("\n".join(lines))]))
+                await event.send(MessageChain([Plain("\n".join(lines) + point_note)]))
                 self._novel_sessions.delete(event)
                 return
 
@@ -8038,16 +9433,18 @@ class MuliyResourcesPlugin(Star):
                     pass
 
     async def _send_list_card(self, event: AstrMessageEvent, *, html: str, text: str,
-                              total: int, label: str = "列表") -> bool:
+                              total: int, label: str = "列表",
+                              force: bool = False) -> bool:
         """超长列表优先发图片卡片；未启用 / 条目不多 / 渲染失败时发文本。
 
         触发条件：条目数超过阈值，**或**文本已经很长（长标题 4~5 条就够刷屏）。
+        force=True 时忽略条目数阈值（选集卡片即使只有 2 集也出图）。
         返回是否成功发了图片。无论走哪条路都只发一条消息。
         """
         enabled, threshold = self._list_card_cfg()
         long_text = len(text) > 400   # 纯文本超过约 400 字，即使条目少也出图
         if (not enabled or not html or render_list_card is None
-                or (total <= threshold and not long_text)):
+                or (not force and total <= threshold and not long_text)):
             await event.send(MessageChain([Plain(text)]))
             return False
         img = None
@@ -8070,21 +9467,43 @@ class MuliyResourcesPlugin(Star):
                                 page: int = 0, page_size: int = 8,
                                 note: str = "") -> None:
         """游戏 / 软件 / 影视 / 短剧搜索列表：统一走长列表图片卡片。"""
+        ses = ses or {}
         total = (len(results) if results is not None
-                 else len((ses or {}).get("results") or []))
+                 else len(ses.get("results") or []))
         html = ""
+        covers: dict = {}
         try:
+            # 只给当前页预取封面，避免一次性下载几十张图拖慢响应
+            enabled, threshold = self._list_card_cfg()
+            if (enabled and render_list_card is not None
+                    and (total > threshold or len(text) > 400)):
+                all_results = (results if results is not None
+                               else (ses.get("results") or []))
+                p = page if results is not None else ses.get("page", 0)
+                ps = page_size if results is not None else ses.get("page_size", 8)
+                ps = max(1, int(ps or 8))
+                st = max(0, int(p or 0)) * ps
+                page_items = all_results[st:st + ps]
+                if kind == "game":
+                    referer = ("https://www.switch618.com/"
+                               if self._game_source() == "switch618"
+                               else GAME_BASE_URL + "/")
+                else:
+                    referer = {"movie": MV_BASE_URL + "/"}.get(kind, "")
+                covers = (await self._prefetch_covers(page_items, referer=referer)
+                          if kind in ("movie", "movie_new", "game") else {})
+
             if kind == "game" and game_card_html:
-                html = game_card_html(ses or {}, note=note)
+                html = game_card_html(ses, note=note, covers=covers)
             elif kind == "software" and software_card_html:
-                html = software_card_html(ses or {}, note=note)
+                html = software_card_html(ses, note=note, covers=covers)
             elif kind == "movie" and movie_card_html:
-                html = movie_card_html(ses or {}, note=note)
+                html = movie_card_html(ses, note=note, covers=covers)
             elif kind == "movie_new" and movie_new_card_html:
                 html = movie_new_card_html(results or [], keyword, page, page_size,
-                                           note=note)
+                                           note=note, covers=covers)
             elif kind == "drama" and drama_card_html:
-                html = drama_card_html(ses or {}, note=note)
+                html = drama_card_html(ses, note=note, covers=covers)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[列表卡片] {kind} 卡片构建失败，回退文本: {e}")
         label = {"game": "游戏列表", "software": "软件列表", "movie": "影视列表",
@@ -8112,6 +9531,22 @@ class MuliyResourcesPlugin(Star):
                 logger.warning(f"[列表卡片] 网盘卡片构建失败，回退文本: {e}")
         return await self._send_list_card(event, html=html, text=text,
                                           total=len(filtered), label="网盘列表")
+
+    async def _send_episode_card(self, event: AstrMessageEvent, detail: dict,
+                                 node: dict, page: int = 0,
+                                 prefix: str = "") -> bool:
+        """在线播放选集：整页集数渲染成图片（剧集只显示数字，综艺显示集名）。"""
+        eps = node_episodes(node)
+        text = prefix + format_episode_list(detail, node, page)
+        html = ""
+        if episode_card_html:
+            try:
+                html = episode_card_html(detail, node, page=page, timeout=120)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[列表卡片] 选集卡片构建失败，回退文本: {e}")
+        return await self._send_list_card(event, html=html, text=text,
+                                          total=len(eps), label="选集列表",
+                                          force=True)
 
     async def _sw_send_report(self, img_bytes, zp, text: str = ""):
         config = self._get_config()

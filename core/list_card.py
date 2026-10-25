@@ -37,6 +37,10 @@ from html import escape
 from .constants import logger
 from .brand import logo_img
 from .mdi_icons import svg as _svg
+from .episode_utils import (
+    episode_display_name, episode_page_size, episode_pages,
+    episodes_are_named, node_episodes, normalize_ep_page,
+)
 
 CARD_WIDTH = 760          # CSS 像素宽度（截图按 scale 放大）
 DEFAULT_SCALE = 2         # 2x 出图，聊天里缩放到手机宽度仍清晰
@@ -125,12 +129,27 @@ body{
 
 /* ---- 列表 ---- */
 .rows{list-style:none}
-.row{display:flex;gap:14px;padding:15px 0}
+.row{display:flex;gap:14px;padding:14px 0;border-radius:12px}
 .row+.row{border-top:1px solid #f2f2f2}
 .num{flex:0 0 auto;width:30px;height:30px;margin-top:1px;border-radius:10px;
   border:1px solid #e6e6e6;background:#fafafa;color:#1a1a1a;
   font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;
   font-variant-numeric:tabular-nums}
+/* 行首封面：有图放图，无图用标题色相生成渐变块，保证每行视觉节奏一致 */
+.row-cover{position:relative;flex:0 0 auto;width:58px;height:80px;margin-top:1px;
+  border-radius:10px;overflow:hidden;background:#f2f2f2;
+  border:1px solid rgba(0,0,0,.045);display:flex;align-items:center;justify-content:center}
+.row-cover.icon{width:56px;height:56px;margin-top:5px;border-radius:14px;border:none}
+.row-cover.icon svg{display:block;opacity:.95}
+.row-cover.square{width:56px;height:56px;margin-top:5px;border-radius:14px}
+.row-cover-wrap{position:relative;flex:0 0 auto;display:block;align-self:flex-start}
+.row-cover img{display:block;width:100%;height:100%;object-fit:cover}
+.row-cover.ph .ph-char{font-size:23px;font-weight:700;color:rgba(255,255,255,.96);
+  line-height:1;text-shadow:0 1px 2px rgba(0,0,0,.18)}
+.row-no{position:absolute;left:4px;top:4px;z-index:2;min-width:20px;height:20px;
+  padding:0 5px;border-radius:6px;background:rgba(22,22,22,.74);color:#fff;
+  font-size:12px;font-weight:700;line-height:20px;text-align:center;
+  font-variant-numeric:tabular-nums;box-shadow:0 1px 3px rgba(0,0,0,.22)}
 .row-main{flex:1;min-width:0}
 .row-line{display:flex;align-items:flex-start;gap:10px}
 .row-title{flex:1;min-width:0;font-size:18px;font-weight:600;line-height:1.45;
@@ -143,6 +162,123 @@ body{
   font-size:14px;font-weight:500;white-space:nowrap}
 .chip-src{background:#f9f0d8;color:#7a6520}
 .chip-pan{flex:0 0 auto;margin-top:3px;background:#f5f5f5;color:#555;height:23px}
+
+/* ---- 选集宫格 ---- */
+.ep-grid{display:grid;gap:9px}
+.ep-grid.named{grid-template-columns:repeat(3,1fr)}
+.ep-grid.plain{grid-template-columns:repeat(6,1fr)}
+.ep-cell{background:#fafafa;border:1px solid #ededed;border-radius:11px;
+  padding:9px 11px;min-width:0}
+.ep-grid.plain .ep-cell{display:flex;align-items:center;justify-content:center;
+  padding:9px 4px}
+.ep-cell.named{background:#fffdf3;border-color:#f2e9cd}
+.ep-num{display:block;font-size:17px;font-weight:700;line-height:1.25;
+  font-variant-numeric:tabular-nums;color:#2a2a2a}
+.ep-grid.plain .ep-num{font-size:18px}
+.ep-cell.named .ep-num{color:#7a6520}
+.ep-name{display:-webkit-box;margin-top:4px;overflow:hidden;font-size:14px;
+  color:#7a7a7a;line-height:1.45;word-break:break-word;
+  -webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ep-cell.named .ep-name{color:#6c5a1e}
+
+/* ---- 小游戏结算 ---- */
+.chip-win{background:#eef8ef;color:#1f7a3d}
+.chip-loss{background:#faf3e1;color:#8a6a1f}
+.chip-gold{background:#ffe28a;color:#5c4a12}
+
+/* ---- 小游戏大厅 / 组队 / 题目 ---- */
+.mg-games{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.mg-game{background:#fafafa;border:1px solid #ededed;border-radius:16px;padding:16px}
+.mg-game-top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.mg-icon{width:42px;height:42px;border-radius:12px;display:flex;align-items:center;
+  justify-content:center;flex:0 0 auto}
+.mg-icon-bomb{background:#fff1e0;color:#c2410c}
+.mg-icon-number{background:#eef8ef;color:#1f7a3d}
+.mg-icon-cover{background:#eef4ff;color:#2563eb}
+.mg-badge{font-size:12px;color:#8a8a8a;background:#f1f1f2;padding:3px 8px;border-radius:999px;
+  white-space:nowrap}
+.mg-game-name{margin-top:12px;font-size:21px;font-weight:700;line-height:1.3}
+.mg-game-desc{margin-top:7px;font-size:14px;line-height:1.65;color:#7a7a7a;min-height:66px}
+.mg-game-meta{margin-top:10px;font-size:13px;color:#9a9a9a;display:flex;gap:8px;
+  align-items:center;flex-wrap:wrap}
+.mg-game-key{margin-top:12px;font-size:14px;color:#5c5c5c;display:flex;align-items:center;gap:8px}
+.mg-key{display:inline-flex;width:26px;height:26px;border-radius:8px;background:#1a1a1a;
+  color:#fff;font-weight:700;font-size:14px;align-items:center;justify-content:center}
+.mg-wait{display:flex;gap:24px;align-items:center;margin-top:4px}
+.mg-timer{flex:0 0 auto;width:122px;height:122px;border-radius:50%;border:2px solid #ffe28a;
+  background:#fffdf3;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mg-timer b{font-size:46px;line-height:1;font-variant-numeric:tabular-nums}
+.mg-timer small{font-size:12px;color:#9a8a4a;margin-top:6px}
+.mg-players{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:0}
+.mg-player{background:#fafafa;border:1px solid #ededed;border-radius:10px;padding:8px 10px;
+  font-size:14px;display:flex;gap:8px;align-items:center;min-width:0}
+.mg-player .no{font-size:12px;color:#9a9a9a;width:16px;flex:0 0 auto}
+.mg-player .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mg-player .host{font-size:11px;color:#8a6a1f;background:#f9f0d8;padding:1px 6px;
+  border-radius:6px;flex:0 0 auto}
+.mg-player.empty{color:#c4c4c4;border-style:dashed;background:#fff}
+.mg-note{margin-top:14px;font-size:14px;color:#7a7a7a;line-height:1.75}
+.mg-note b{color:#1a1a1a}
+.mg-types{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.mg-type{background:#fafafa;border:1px solid #ededed;border-radius:14px;padding:14px}
+.mg-type-top{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:700}
+.mg-type-desc{margin-top:6px;font-size:13px;color:#8a8a8a;line-height:1.6}
+.mg-type-key{margin-top:10px;font-size:13px;color:#5c5c5c}
+.mg-cover-wrap{display:flex;gap:22px;align-items:flex-start}
+.mg-cover{flex:0 0 230px;border-radius:14px;overflow:hidden;background:#f2f2f2;
+  border:1px solid #e8e8e8}
+.mg-cover img{display:block;width:230px;height:auto}
+.mg-cover-side{flex:1;min-width:0}
+.mg-hint{font-size:14px;color:#8a7a45;background:#fffdf3;border:1px solid #f2e9cd;
+  border-radius:10px;padding:9px 12px;margin-bottom:10px;line-height:1.6}
+.mg-opts{display:flex;flex-direction:column;gap:8px}
+.mg-opt{display:flex;align-items:center;gap:10px;background:#fafafa;border:1px solid #ededed;
+  border-radius:12px;padding:10px 12px}
+.mg-opt .l{flex:0 0 auto;width:28px;height:28px;border-radius:8px;background:#1a1a1a;
+  color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;
+  font-size:14px}
+.mg-opt .t{font-size:15px;font-weight:600;line-height:1.45;word-break:break-word}
+
+/* ---- 影视详情卡 ---- */
+.md-hero{display:flex;gap:22px;align-items:flex-start}
+.md-cover{flex:0 0 220px;border-radius:14px;overflow:hidden;background:#f2f2f2;
+  border:1px solid #e8e8e8}
+.md-cover img{display:block;width:220px;height:auto}
+.md-cover .ph{width:220px;height:300px;display:flex;align-items:center;
+  justify-content:center;font-size:54px;font-weight:800;color:#c4c4c4;background:#f7f7f8}
+.md-main{flex:1;min-width:0}
+.md-tags{display:flex;flex-wrap:wrap;gap:7px}
+.md-tag{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;
+  border-radius:7px;background:#f5f5f6;color:#5c5c5c;font-size:13px;white-space:nowrap}
+.md-tag svg{display:block;opacity:.82;flex:0 0 auto}
+.md-tag.score{background:#fffdf3;color:#8a6a1f}
+.md-credits{margin-top:14px;font-size:14px;line-height:2;color:#5c5c5c}
+.md-credits .k{display:inline-flex;align-items:center;gap:4px;min-width:44px;
+  color:#a3a3a3;vertical-align:middle}
+.md-credits .k svg{display:block;opacity:.8;flex:0 0 auto}
+.md-desc{margin-top:12px;font-size:14px;line-height:1.8;color:#6f6f6f;
+  white-space:pre-wrap;word-break:break-word}
+.md-shots{margin-top:20px}
+.md-shots-title{font-size:14px;color:#9a9a9a;display:flex;align-items:center;gap:6px}
+.md-shot-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.md-shot-grid.one{grid-template-columns:1fr}
+.md-shot-grid.two{grid-template-columns:repeat(2,1fr)}
+.md-shot-grid.hero{grid-template-columns:repeat(2,1fr)}
+.md-shot-grid.hero .md-shot:first-child{grid-column:1/-1}
+.md-shot{border-radius:10px;overflow:hidden;background:#f2f2f2;border:1px solid #ededed}
+.md-shot img{display:block;width:100%;height:auto}
+.md-empty{margin-top:18px;padding:12px 14px;border-radius:10px;background:#fafafa;
+  color:#9a9a9a;font-size:14px}
+
+/* ---- 通用详情信息（游戏 / 软件 / 短剧 / 小说）---- */
+.dt-head{display:flex;align-items:center;gap:15px;padding:16px 18px;border-radius:16px;
+  background:linear-gradient(135deg,#fffdf3,#f7f7f8);border:1px solid #f2e9cd}
+.dt-icon{flex:0 0 auto;width:56px;height:56px;border-radius:15px;background:#ffe28a;
+  color:#5c4a12;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.dt-icon.cover{padding:0;background:#f2f2f2;border:1px solid rgba(0,0,0,.05)}
+.dt-icon.cover img{display:block;width:100%;height:100%;object-fit:cover}
+.dt-head-main{flex:1;min-width:0}
+.dt-head-sub{margin-top:6px;font-size:14px;color:#8a7a45;line-height:1.55}
 
 /* ---- 底部提示 ---- */
 .foot{margin-top:18px;padding:14px 18px;border-radius:14px;background:#f7f7f8;
@@ -273,14 +409,55 @@ def _shell(*, kind: str, page_ind: str, title: str, subtitle: str,
                        icon_html=icon_html)
 
 
+def _hue(text: str) -> int:
+    """由标题稳定生成色相，保证同一资源每次渲染的渐变色一致。"""
+    try:
+        digest = hashlib.md5((text or "").encode("utf-8")).hexdigest()
+        return int(digest[:2], 16) * 360 // 256
+    except Exception:  # noqa: BLE001
+        return 214
+
+
+def _row_cover(text: str, cover: str = "", icon: str = "",
+               square: bool = False) -> str:
+    """行首视觉：有图用图；没有图用 56×56 小图标；再兜底才用首字渐变块。"""
+    if cover:
+        src = cover if cover.startswith("data:") else f"data:image/jpeg;base64,{cover}"
+        cls = "row-cover square" if square else "row-cover"
+        return f'<span class="{cls}"><img src="{src}" alt=""></span>'
+    h = _hue(text)
+    if icon:
+        return (f'<span class="row-cover icon" style="background:linear-gradient(145deg,'
+                f'hsl({h} 62% 58%),hsl({(h + 28) % 360} 64% 42%))">'
+                f'{_svg(icon, 34, "#fff")}</span>')
+    char = escape(_initial(text))
+    return (f'<span class="row-cover ph" style="background:linear-gradient(145deg,'
+            f'hsl({h} 62% 58%),hsl({(h + 28) % 360} 64% 42%))">'
+            f'<span class="ph-char">{char}</span></span>')
+
+
 def _rows(items: list) -> str:
     out = []
     for it in items:
-        out.append(f"""      <li class="row">
-        <span class="num">{it['n']}</span>
+        title = escape(it['title'])
+        if it.get("me"):
+            title += '<span class="me-chip">你</span>'
+        cover = it.get("cover") or ""
+        if it.get("tile"):
+            h = _hue(it['title'])
+            leading = (f'<span class="row-cover-wrap">'
+                       f'{_row_cover(it["title"], cover, it.get("icon") or "", bool(it.get("square")))}'
+                       f'<span class="row-no">{it["n"]}</span></span>')
+            style = (f' style="background:linear-gradient(90deg,'
+                     f'hsla({h},72%,56%,.065),rgba(255,255,255,0) 64%)"')
+        else:
+            leading = f'<span class="num">{it["n"]}</span>'
+            style = ""
+        out.append(f"""      <li class="row"{style}>
+        {leading}
         <div class="row-main">
           <div class="row-line">
-            <div class="row-title">{escape(it['title'])}</div>{it.get('right', '')}
+            <div class="row-title">{title}</div>{it.get('right', '')}
           </div>
           <div class="row-meta">{it.get('meta', '')}</div>
         </div>
@@ -324,6 +501,7 @@ def novel_card_html(ses: dict, *, timeout: int = 120, note: str = "") -> str:
             "n": i,
             "title": _clip(x.get("book_name") or "未知书名", 40),
             "meta": meta,
+            "tile": True, "icon": "book",
         })
 
     subtitle = (f'共 <b>{total}</b> 条结果'
@@ -378,6 +556,7 @@ def pan_card_html(panlist: list, *, page: int = 0, page_size: int = 12,
             "title": name,
             "right": f'<span class="chip chip-pan">{escape(pan_type)}</span>',
             "meta": meta,
+            "tile": True, "icon": "cloud",
         })
 
     head_title = escape(_clip(title or "网盘资源", 26))
@@ -403,6 +582,246 @@ def pan_card_html(panlist: list, *, page: int = 0, page_size: int = 12,
         subtitle=subtitle,
         rows=_rows(items),
         foot=_foot(lines),
+    )
+
+
+def episode_card_html(detail: dict, node: dict, *, page: int = 0,
+                      timeout: int = 120) -> str:
+    """在线播放选集卡片：纯序号用 6 列数字键盘，有集名时用 3 列宫格。
+
+    分页口径与 `format_episode_list` 完全一致；回复数字仍是**全局集序号**
+    （不受当前页影响），所以用户可以直接输入任意集数。
+    """
+    detail = detail or {}
+    node = node or {}
+    eps = node_episodes(node)
+    total = len(eps)
+    named = episodes_are_named(eps)
+    size = episode_page_size(eps)
+    pages = episode_pages(total, size)
+    page = normalize_ep_page(page, total, size)
+    st, ed = page * size, min(page * size + size, total)
+
+    cells = []
+    for i, ep in enumerate(eps[st:ed], st + 1):
+        label = _strip_emoji(episode_display_name(ep.get("name"))) if named else ""
+        if label:
+            cells.append(
+                f'<div class="ep-cell named"><span class="ep-num">{i}</span>'
+                f'<span class="ep-name">{escape(label)}</span></div>')
+        else:
+            cells.append(
+                f'<div class="ep-cell"><span class="ep-num">{i}</span></div>')
+    grid_cls = "named" if named else "plain"
+    body = (f'<div class="ep-grid {grid_cls}">\n'
+            + "\n".join(cells) + "\n    </div>")
+
+    head_title = escape(_clip(detail.get("name") or "在线播放", 24))
+    bits = [f'共 <b>{total}</b> 集']
+    node_t = _strip_emoji(str(node.get("t") or "")).strip()
+    if node_t:
+        bits.insert(0, escape(node_t))
+    if named:
+        bits.append("含集名")
+    bits.append(f"本页 {st + 1}–{ed}")
+    subtitle = '<span class="dot">·</span>'.join(bits)
+
+    lines = [f'<div><span class="k">选集</span>回复数字 <b>1–{total}</b>'
+             f'<span class="dim">（可直接输入任意集数）</span>；回复 <b>0</b> 取消</div>']
+    if pages > 1:
+        lines.append('<div><span class="k">翻页</span>「上一页」/「下一页」/「末页」/「跳 3」'
+                     f'<span class="dim"> · 末页=最新 · {timeout} 秒无操作自动结束</span></div>')
+    else:
+        lines.append(f'<div class="dim"><span class="k">超时</span>{timeout} 秒无操作自动结束</div>')
+
+    return _page_shell(
+        kind="选集播放",
+        icon_html=_svg("movie", 15, "currentColor"),
+        page_ind=(f"第 {page + 1} / {pages} 页" if pages > 1 else "全部集数"),
+        title=head_title,
+        subtitle=subtitle,
+        body=body,
+        foot=_foot(lines),
+    )
+
+
+def minigame_lobby_html(*, reward_text: str = "", timeout: int = 90) -> str:
+    """群游戏大厅：两张玩法卡片 + 编号入口。"""
+    guess_icon = _svg("casino", 22, "currentColor")
+    cover_icon = _svg("movie", 22, "currentColor")
+    users = _svg("users", 13, "currentColor")
+    clock = _svg("clock", 13, "currentColor")
+    body = f"""    <div class="mg-games">
+      <div class="mg-game">
+        <div class="mg-game-top">
+          <span class="mg-icon mg-icon-number">{guess_icon}</span>
+          <span class="mg-badge">多人轮流</span>
+        </div>
+        <div class="mg-game-name">猜数字</div>
+        <div class="mg-game-desc">1-100 起，人数越多范围越大；每次提示大了/小了，猜中直接赢积分。</div>
+        <div class="mg-game-meta">{users} 1-6 人<span class="dot">·</span>{clock} 约 2 分钟</div>
+        <div class="mg-game-key"><span class="mg-key">1</span> 开始组队</div>
+      </div>
+      <div class="mg-game">
+        <div class="mg-game-top">
+          <span class="mg-icon mg-icon-cover">{cover_icon}</span>
+          <span class="mg-badge">四选一</span>
+        </div>
+        <div class="mg-game-name">封面猜猜</div>
+        <div class="mg-game-desc">选电影 / 电视剧 / 动漫，看马赛克封面猜片名，四选一作答。</div>
+        <div class="mg-game-meta">{users} 1-10 人<span class="dot">·</span>{clock} 约 2 分钟</div>
+        <div class="mg-game-key"><span class="mg-key">2</span> 选择题库</div>
+      </div>
+    </div>"""
+    foot = ['<div><span class="k">选择</span>回复 <b>1</b> 猜数字 / <b>2</b> 封面猜猜；回复 <b>0</b> 关闭</div>']
+    if reward_text:
+        foot.append(f'<div><span class="k">奖励</span>{escape(reward_text)}</div>')
+    foot.append(f'<div class="dim"><span class="k">超时</span>{timeout} 秒内未选择自动关闭</div>')
+    return _page_shell(
+        kind="暮黎游戏厅",
+        icon_html=_svg("gamepad", 15, "currentColor"),
+        page_ind="群聊小游戏",
+        title='<span class="hl">今晚玩点什么？</span>',
+        subtitle="一局几分钟，群友一起玩",
+        body=body,
+        foot=_foot(foot),
+    )
+
+
+def minigame_bomb_wait_html(*, host_name: str, players: list | None = None,
+                            seconds: int = 30, max_players: int = 6,
+                            timeout: int = 90) -> str:
+    """猜数字组队卡：倒计时 + 已加入玩家 + 空位。"""
+    players = players or []
+    cells = []
+    for i, p in enumerate(players[:max_players], 1):
+        name = escape(_clip(p.get("name") or "玩家", 10))
+        host = '<span class="host">房主</span>' if p.get("host") else ""
+        cells.append(f'<div class="mg-player"><span class="no">{i}</span>'
+                     f'<span class="nm">{name}</span>{host}</div>')
+    show_slots = max_players
+    for i in range(len(players), show_slots):
+        cells.append(f'<div class="mg-player empty"><span class="no">{i + 1}</span>'
+                     f'<span class="nm">等待加入…</span></div>')
+    body = f"""    <div class="mg-wait">
+      <div class="mg-timer"><b>{int(seconds)}</b><small>秒后开始</small></div>
+      <div class="mg-players">{"".join(cells)}</div>
+    </div>
+    <div class="mg-note">群友回复 <b>1</b> 加入；房主回复 <b>2</b> 立即开始。<br>
+      人数越多范围越大（1 人 1-100，6 人 1-600），猜中直接获胜；<br>
+      {int(timeout)} 秒内无人加入将进入<b>单人猜数字</b>（猜中即获胜）。</div>"""
+    return _page_shell(
+        kind="猜数字",
+        icon_html=_svg("casino", 15, "currentColor"),
+        page_ind="组队中",
+        title='<span class="hl">猜数字 · 组队</span>',
+        subtitle=f"房主 {escape(_clip(host_name or '玩家', 12))} 已加入"
+                 f"<span class=\"dot\">·</span>已加入 {len(players)}/{max_players}",
+        body=body,
+        foot=_foot([
+            '<div><span class="k">加入</span>回复 <b>1</b></div>',
+            '<div><span class="k">开始</span>房主回复 <b>2</b> 立即开始</div>',
+            '<div class="dim"><span class="k">取消</span>发送 /结束游戏</div>',
+            f'<div class="dim"><span class="k">超时</span>{timeout} 秒后自动开始</div>',
+        ]),
+    )
+
+
+def minigame_cover_pick_html(*, timeout: int = 90, owner_name: str = "") -> str:
+    """封面猜猜领域选择卡：单人游戏，电影 / 电视剧 / 动漫。"""
+    items = [
+        ("movie", "电影", "最新电影海报", "1"),
+        ("tv", "电视剧", "热播剧集海报", "2"),
+        ("anime", "动漫", "新番 / 动画海报", "3"),
+    ]
+    cards = []
+    for icon, name, desc, key in items:
+        cards.append(
+            f'<div class="mg-type">'
+            f'<div class="mg-type-top">{_svg(icon, 18, "currentColor")}{escape(name)}</div>'
+            f'<div class="mg-type-desc">{escape(desc)}</div>'
+            f'<div class="mg-type-key"><span class="mg-key">{key}</span> 选这一类</div>'
+            f'</div>')
+    body = f'    <div class="mg-types">{"".join(cards)}</div>'
+    sub = "单人游戏 · 仅发起者可作答 · 题目来自片库最新更新"
+    if owner_name:
+        sub = (f"单人游戏 · 发起者 {escape(_clip(owner_name, 12))} 可作答"
+               f"<span class=\"dot\">·</span>题目来自片库最新更新")
+    return _page_shell(
+        kind="封面猜猜",
+        icon_html=_svg("image", 15, "currentColor"),
+        page_ind="选择题库",
+        title='<span class="hl">你想猜哪一类？</span>',
+        subtitle=sub,
+        body=body,
+        foot=_foot([
+            '<div><span class="k">选择</span>回复 <b>1</b> 电影 / <b>2</b> 电视剧 / <b>3</b> 动漫；回复 <b>0</b> 关闭</div>',
+            f'<div class="dim"><span class="k">超时</span>{timeout} 秒内未选择自动关闭</div>',
+        ]),
+    )
+
+
+def minigame_cover_question_html(*, question: dict, cover_b64: str,
+                                 round_no: int, total: int, timeout: int,
+                                 kind_label: str = "", solo: bool = True) -> str:
+    """封面猜猜题目卡：马赛克封面 + 四个选项，整页出图。"""
+    question = question or {}
+    options = question.get("options") or []
+    hint = question.get("hint") or "影视"
+    opts = []
+    for i, o in enumerate(options):
+        opts.append(
+            f'<div class="mg-opt"><span class="l">{"ABCD"[i]}</span>'
+            f'<span class="t">{escape(o.get("title") or "?")}</span></div>')
+    body = f"""    <div class="mg-cover-wrap">
+      <div class="mg-cover"><img src="data:image/jpeg;base64,{cover_b64}" alt="cover"></div>
+      <div class="mg-cover-side">
+        <div class="mg-hint">提示：{escape(hint)}</div>
+        <div class="mg-opts">{"".join(opts)}</div>
+      </div>
+    </div>"""
+    bits = []
+    if solo:
+        bits.append("单人")
+    if kind_label:
+        bits.append(escape(kind_label))
+    bits.append(f"第 {round_no}/{total} 题")
+    sub = '<span class="dot">·</span>'.join(bits)
+    return _page_shell(
+        kind="封面猜猜",
+        icon_html=_svg("image", 15, "currentColor"),
+        page_ind=f"第 {round_no} / {total} 题",
+        title='<span class="hl">猜猜这是哪部作品？</span>',
+        subtitle=sub,
+        body=body,
+        foot=_foot([
+            '<div><span class="k">作答</span>回复 <b>A / B / C / D</b> 选择</div>',
+            f'<div class="dim"><span class="k">限时</span>{timeout} 秒内作答，答错直接下一题</div>',
+        ]),
+    )
+
+
+def minigame_result_card_html(*, title: str, subtitle: str = "",
+                              rows: list | None = None,
+                              foot_lines: list | None = None,
+                              page_ind: str = "本局结算") -> str:
+    """小游戏结算卡片。
+
+    rows: [{n, title, right?, meta?}]，right/meta 由调用方保证是安全 HTML
+    （用 escape() 处理玩家昵称后再拼 chip）。
+    """
+    rows = rows or []
+    if not rows:
+        rows = [{"n": "-", "title": "本局无人参与", "meta": ""}]
+    body = '<ol class="rows">\n' + _rows(rows) + '\n    </ol>'
+    return _page_shell(
+        kind="游戏结算",
+        icon_html=_svg("gamepad", 15, "currentColor"),
+        page_ind=page_ind,
+        title=f'<span class="hl">{escape(_clip(title or "小游戏", 20))}</span>',
+        subtitle=escape(subtitle or ""),
+        body=body,
+        foot=_foot(foot_lines or []),
     )
 
 
@@ -445,7 +864,7 @@ def points_card_html(*, name: str = "", uid: str = "", balance: int = 0,
         chips = "".join(
             f'<span class="p-cost">{escape(labels.get(k, k))} <b>{int(v)}</b><i>积分</i></span>'
             for k, v in costs.items())
-        cost_html = (f'    <div class="p-sec">搜索消耗</div>\n'
+        cost_html = (f'    <div class="p-sec">获取资源消耗</div>\n'
                      f'    <div class="p-costs">{chips}</div>\n')
 
     body = f"""    <div class="p-hero">
@@ -530,52 +949,315 @@ def _meta(*parts) -> str:
     return '<span class="dot">·</span>'.join(vals) or '<span class="dim">查看详情</span>'
 
 
-def game_card_html(ses: dict, *, timeout: int = 120, note: str = "") -> str:
-    """游戏搜索结果卡片：序号 + 标题 + 类型/更新日期。"""
+def _cover_of(item: dict, covers: dict | None) -> str:
+    """从预下载的封面映射里取 base64；键优先用 cover URL，其次 id/url。"""
+    if not covers or not isinstance(item, dict):
+        return ""
+    for key in (item.get("cover"), item.get("id"), item.get("url")):
+        if key and key in covers:
+            return covers[key]
+    return ""
+
+
+def _type_icon(kind: str, category: str = "", title: str = "") -> str:
+    """按资源类型/分类选 56×56 小图标（不请求站点图片）。"""
+    cat = str(category or "")
+    name = str(title or "")
+    if kind == "software":
+        # 分类优先，避免标题里的 "WPS/Office" 把所有条目的图标都盖成文档
+        if any(k in cat for k in ("办公", "学习")):
+            return "book"
+        if any(k in cat for k in ("影音", "视频", "剪辑", "音乐", "播放")):
+            return "movie"
+        if any(k in cat for k in ("安卓", "手机", "Android")):
+            return "apps"
+        if any(k in cat for k in ("会员", "活动", "福利", "领取")):
+            return "star"
+        if any(k in cat for k in ("游戏", "辅助", "修改器")):
+            return "gamepad"
+        text = f"{cat} {name}"
+        if any(k in text for k in ("办公", "学习", "Office", "WPS", "文档")):
+            return "book"
+        if any(k in text for k in ("影音", "视频", "剪辑", "音乐", "播放")):
+            return "movie"
+        if any(k in text for k in ("安卓", "Android", "手机")):
+            return "apps"
+        if any(k in text for k in ("会员", "活动", "福利", "领取")):
+            return "star"
+        return "package"
+    if kind == "game":
+        text = f"{cat} {name}"
+        if any(k in text for k in ("模拟", "经营", "策略")):
+            return "apps"
+        if any(k in text for k in ("体育", "竞速", "赛车")):
+            return "play"
+        return "gamepad"
+    return "apps"
+
+
+def game_card_html(ses: dict, *, timeout: int = 120, note: str = "",
+                   covers: dict | None = None) -> str:
+    """游戏搜索结果卡片：封面 + 序号 + 标题 + 类型/更新日期。"""
     r = ses.get("results") or []
     p, pages, st, ed, ps = _page_bounds(len(r), ses.get("page", 0),
                                         ses.get("page_size", 8))
     items = []
     for i, x in enumerate(r[st:ed], 1):
         items.append({"n": i, "title": _clip(x.get("title") or "未知游戏", 56),
-                      "meta": _meta(x.get("type"), x.get("date"))})
+                      "meta": _meta(x.get("type"), x.get("date")),
+                      "tile": True, "cover": _cover_of(x, covers), "square": True,
+                      "icon": _type_icon("game", x.get("type"), x.get("title"))})
     return _search_card(kind="游戏搜索", icon="gamepad", keyword=ses.get("keyword", ""),
                         total=len(r), page=p, page_size=ps, items=_rows(items),
                         unit="游戏", timeout=timeout, note=note)
 
 
-def software_card_html(ses: dict, *, timeout: int = 120, note: str = "") -> str:
-    """软件搜索结果卡片：序号 + 标题 + 更新时间。"""
+def software_card_html(ses: dict, *, timeout: int = 120, note: str = "",
+                       covers: dict | None = None) -> str:
+    """软件搜索结果卡片：渐变封面 + 序号 + 标题 + 更新时间。"""
     r = ses.get("results") or []
     p, pages, st, ed, ps = _page_bounds(len(r), ses.get("page", 0),
                                         ses.get("page_size", 8))
     items = []
     for i, x in enumerate(r[st:ed], 1):
         items.append({"n": i, "title": _clip(x.get("title") or "未知资源", 56),
-                      "meta": _meta(x.get("update_time") or x.get("date"))})
+                      "meta": _meta(x.get("category"), x.get("update_time") or x.get("date")),
+                      "tile": True, "cover": "",
+                      "icon": _type_icon("software", x.get("category"), x.get("title"))})
     return _search_card(kind="软件搜索", icon="package", keyword=ses.get("keyword", ""),
                         total=len(r), page=p, page_size=ps, items=_rows(items),
                         unit="资源", timeout=timeout, note=note)
 
 
-def movie_card_html(ses: dict, *, timeout: int = 120, note: str = "") -> str:
-    """影视搜索（a123tv）卡片：序号 + 片名 + 类别/年份。"""
+def movie_card_html(ses: dict, *, timeout: int = 120, note: str = "",
+                    covers: dict | None = None) -> str:
+    """影视搜索（a123tv）卡片：封面 + 序号 + 片名 + 类别/年份。"""
     r = ses.get("results") or []
     p, pages, st, ed, ps = _page_bounds(len(r), ses.get("page", 0),
                                         ses.get("page_size", 8))
     items = []
     for i, x in enumerate(r[st:ed], 1):
         items.append({"n": i, "title": _clip(x.get("title") or "未知影视", 56),
-                      "meta": _meta(x.get("category"), x.get("year"))})
+                      "meta": _meta(x.get("category"), x.get("year")),
+                      "tile": True, "icon": "movie", "cover": _cover_of(x, covers)})
     return _search_card(kind="影视搜索", icon="movie", keyword=ses.get("keyword", ""),
                         total=len(r), page=p, page_size=ps, items=_rows(items),
                         unit="影视", timeout=timeout, note=note)
 
 
+def movie_detail_card_html(detail: dict, *, cover_b64: str = "",
+                           screenshots: list | None = None,
+                           source_name: str = "暮黎影视",
+                           link_hint: str = "播放 / 下载链接已单独发送") -> str:
+    """影视详情卡：封面 + 简介 + 导演/主演 + 年份/类型/地区 + 剧照。"""
+    detail = detail or {}
+    screenshots = screenshots or []
+    name = detail.get("name") or "未知影视"
+    year = str(detail.get("year") or "").strip()
+    status = _strip_emoji(str(detail.get("status") or "")).strip()
+    score = _strip_emoji(str(detail.get("score_db") or detail.get("score") or "")).strip()
+    leixing = detail.get("leixing") or []
+    diqu = detail.get("diqu") or []
+    if isinstance(leixing, str):
+        leixing = [x.strip() for x in re.split(r"[,，/]", leixing) if x.strip()]
+    if isinstance(diqu, str):
+        diqu = [x.strip() for x in re.split(r"[,，/]", diqu) if x.strip()]
+    daoyan = detail.get("daoyan") or []
+    zhuyan = detail.get("zhuyan") or []
+    if isinstance(daoyan, str):
+        daoyan = [x.strip() for x in re.split(r"[,，/]", daoyan) if x.strip()]
+    if isinstance(zhuyan, str):
+        zhuyan = [x.strip() for x in re.split(r"[,，/]", zhuyan) if x.strip()]
+    desc = str(detail.get("desc") or "").strip() or "暂无简介"
+
+    tags = []
+    if year:
+        tags.append(f'<span class="md-tag">{_svg("event", 12, "currentColor")}'
+                    f'{escape(year)}</span>')
+    for x in leixing[:3]:
+        tags.append(f'<span class="md-tag">{_svg("apps", 12, "currentColor")}'
+                    f'{escape(_clip(str(x), 12))}</span>')
+    for x in diqu[:2]:
+        tags.append(f'<span class="md-tag">{_svg("location", 12, "currentColor")}'
+                    f'{escape(_clip(str(x), 10))}</span>')
+    if score:
+        tags.append(f'<span class="md-tag score">{_svg("star", 12, "currentColor")} '
+                    f'{escape(score)}</span>')
+    if status:
+        tags.append(f'<span class="md-tag">{_svg("clock", 12, "currentColor")}'
+                    f'{escape(_clip(status, 14))}</span>')
+
+    if cover_b64:
+        cover_html = (f'<div class="md-cover"><img src="data:image/jpeg;base64,'
+                      f'{cover_b64}" alt="cover"></div>')
+    else:
+        ph = escape(_clip(name, 1) or "影")
+        cover_html = f'<div class="md-cover"><div class="ph">{ph}</div></div>'
+
+    credit_lines = []
+    if daoyan:
+        credit_lines.append('<div><span class="k">' + _svg("movie", 13, "currentColor")
+                            + '导演</span>'
+                            + escape("、".join(str(x) for x in daoyan[:4])) + '</div>')
+    if zhuyan:
+        credit_lines.append('<div><span class="k">' + _svg("users", 13, "currentColor")
+                            + '主演</span>'
+                            + escape("、".join(str(x) for x in zhuyan[:6])) + '</div>')
+    credits = ('<div class="md-credits">' + "".join(credit_lines) + '</div>'
+               if credit_lines else "")
+
+    tags_html = (f'<div class="md-tags">{"".join(tags)}</div>' if tags else "")
+    body = f"""    <div class="md-hero">
+      {cover_html}
+      <div class="md-main">
+        {tags_html}
+        {credits}
+        <div class="md-desc">{escape(_clip(desc, 320))}</div>
+      </div>
+    </div>"""
+    if screenshots:
+        valid = [b64 for b64 in screenshots[:3] if b64]
+        shots = "".join(
+            f'<div class="md-shot"><img src="data:image/jpeg;base64,{b64}" alt="shot"></div>'
+            for b64 in valid)
+        if shots:
+            grid_cls = " one" if len(valid) == 1 else (" two" if len(valid) == 2 else "")
+            body += (f'\n    <div class="md-shots">'
+                     f'<div class="md-shots-title">{_svg("image", 14, "currentColor")}'
+                     f' 剧照</div><div class="md-shot-grid{grid_cls}">{shots}</div></div>')
+    foot = [f'<div><span class="k">链接</span>{escape(link_hint)}</div>',
+            f'<div class="dim"><span class="k">来源</span>{escape(source_name)}</div>']
+    return _page_shell(
+        kind="影视详情",
+        icon_html=_svg("movie", 15, "currentColor"),
+        page_ind="详情",
+        title=f'<span class="hl">{escape(_clip(name, 26))}</span>',
+        subtitle="封面 / 简介 / 演职员 / 剧照",
+        body=body,
+        foot=_foot(foot),
+    )
+
+
+def _detail_tag(icon: str, text, cls: str = "") -> str:
+    if text in (None, ""):
+        return ""
+    c = f" {cls}" if cls else ""
+    return (f'<span class="md-tag{c}">{_svg(icon, 12, "currentColor")}'
+            f'{escape(str(text))}</span>')
+
+
+def _detail_shots(screenshots: list | None, title: str = "截图") -> str:
+    valid = [b64 for b64 in (screenshots or [])[:3] if b64]
+    if not valid:
+        return ""
+    shots = "".join(
+        f'<div class="md-shot"><img src="data:image/jpeg;base64,{b64}" alt="shot"></div>'
+        for b64 in valid)
+    if len(valid) >= 3:
+        grid_cls = " hero"       # 一张大图在上，两张并排在下
+    elif len(valid) == 1:
+        grid_cls = " one"
+    else:
+        grid_cls = " two"
+    return (f'\n    <div class="md-shots">'
+            f'<div class="md-shots-title">{_svg("image", 14, "currentColor")}'
+            f' {escape(title)}</div>'
+            f'<div class="md-shot-grid{grid_cls}">{shots}</div></div>')
+
+
+def _detail_head(icon: str, cover_b64: str, tags: list,
+                 subtitle: str = "") -> str:
+    """详情卡头部：小尺寸封面图标 + 标签，避免大图占掉半张卡。"""
+    if cover_b64:
+        icon_html = (f'<span class="dt-icon cover"><img src="data:image/jpeg;base64,'
+                     f'{cover_b64}" alt="cover"></span>')
+    else:
+        icon_html = f'<span class="dt-icon">{_svg(icon, 26, "currentColor")}</span>'
+    sub = f'<div class="dt-head-sub">{escape(subtitle)}</div>' if subtitle else ""
+    return (f'    <div class="dt-head">\n      {icon_html}\n'
+            f'      <div class="dt-head-main">\n'
+            f'        <div class="md-tags">{"".join(tags)}</div>\n'
+            f'        {sub}\n      </div>\n    </div>')
+
+
+def game_detail_card_html(detail: dict, *, cover_b64: str = "",
+                          screenshots: list | None = None,
+                          meta: dict | None = None,
+                          source_name: str = "暮黎游戏",
+                          link_hint: str = "选好网盘后会单独发送下载链接") -> str:
+    """游戏详情卡：小封面图标 + 简介 + 二段式截图 + 网盘数量。"""
+    detail = detail or {}
+    meta = meta or {}
+    name = detail.get("name") or meta.get("title") or "未知游戏"
+    desc = str(detail.get("desc") or "").strip() or "暂无简介"
+    links = detail.get("download_links") or []
+
+    tags = [_detail_tag("gamepad", "游戏")]
+    if meta.get("type"):
+        tags.append(_detail_tag("apps", _clip(str(meta["type"]), 12)))
+    if meta.get("date"):
+        tags.append(_detail_tag("event", meta["date"]))
+    if links:
+        tags.append(_detail_tag("download", f"{len(links)} 个网盘", "score"))
+
+    body = _detail_head("gamepad", cover_b64, tags)
+    body += (f'\n    <div class="md-desc" style="margin-top:14px">'
+             f'{escape(_clip(desc, 420))}</div>')
+    body += _detail_shots(screenshots, "游戏截图")
+    foot = [f'<div><span class="k">链接</span>{escape(link_hint)}</div>',
+            f'<div class="dim"><span class="k">来源</span>{escape(source_name)}</div>']
+    return _page_shell(
+        kind="游戏详情",
+        icon_html=_svg("gamepad", 15, "currentColor"),
+        page_ind="详情",
+        title=f'<span class="hl">{escape(_clip(name, 26))}</span>',
+        subtitle="简介 / 截图 / 网盘选择",
+        body=body,
+        foot=_foot(foot),
+    )
+
+
+def software_detail_card_html(detail: dict, *, cover_b64: str = "",
+                              screenshots: list | None = None,
+                              meta: dict | None = None,
+                              source_name: str = "暮黎软件",
+                              link_hint: str = "选好网盘后会单独发送下载链接") -> str:
+    """软件详情卡：小封面图标 + 简介 + 二段式截图 + 网盘数量。"""
+    detail = detail or {}
+    meta = meta or {}
+    name = detail.get("name") or meta.get("title") or "未知资源"
+    desc = str(detail.get("desc") or "").strip() or "暂无简介"
+    links = detail.get("download_links") or []
+
+    tags = [_detail_tag("package", "软件资源")]
+    if meta.get("category"):
+        tags.append(_detail_tag("apps", _clip(str(meta["category"]), 12)))
+    if meta.get("date"):
+        tags.append(_detail_tag("event", meta["date"]))
+    if links:
+        tags.append(_detail_tag("download", f"{len(links)} 个网盘", "score"))
+
+    body = _detail_head("package", cover_b64, tags)
+    body += (f'\n    <div class="md-desc" style="margin-top:14px">'
+             f'{escape(_clip(desc, 420))}</div>')
+    body += _detail_shots(screenshots, "资源截图")
+    foot = [f'<div><span class="k">链接</span>{escape(link_hint)}</div>',
+            f'<div class="dim"><span class="k">来源</span>{escape(source_name)}</div>']
+    return _page_shell(
+        kind="软件详情",
+        icon_html=_svg("package", 15, "currentColor"),
+        page_ind="详情",
+        title=f'<span class="hl">{escape(_clip(name, 26))}</span>',
+        subtitle="简介 / 截图 / 网盘选择",
+        body=body,
+        foot=_foot(foot),
+    )
+
+
 def movie_new_card_html(results: list, keyword: str = "", page: int = 0,
                         page_size: int = 8, *, timeout: int = 120,
-                        note: str = "") -> str:
-    """影视搜索（片库新站）卡片：序号 + 片名 + 类型/年份/评分。"""
+                        note: str = "", covers: dict | None = None) -> str:
+    """影视搜索（片库 / pdy0）卡片：封面 + 序号 + 片名 + 类型/年份/评分。"""
     r = results or []
     p, pages, st, ed, ps = _page_bounds(len(r), page, page_size)
     items = []
@@ -584,21 +1266,24 @@ def movie_new_card_html(results: list, keyword: str = "", page: int = 0,
         if x.get("score"):
             bits.append(f'{x.get("score")} 分')
         items.append({"n": i, "title": _clip(x.get("title") or "未知影视", 56),
-                      "meta": _meta(*bits)})
+                      "meta": _meta(*bits), "tile": True, "icon": "movie",
+                      "cover": _cover_of(x, covers)})
     return _search_card(kind="影视搜索", icon="movie", keyword=keyword,
                         total=len(r), page=p, page_size=ps, items=_rows(items),
                         unit="影视", timeout=timeout, note=note)
 
 
-def drama_card_html(ses: dict, *, timeout: int = 120, note: str = "") -> str:
-    """短剧搜索结果卡片：序号 + 剧名 + 分类/日期。"""
+def drama_card_html(ses: dict, *, timeout: int = 120, note: str = "",
+                    covers: dict | None = None) -> str:
+    """短剧搜索结果卡片：渐变封面 + 序号 + 剧名 + 分类/日期。"""
     r = ses.get("results") or []
     p, pages, st, ed, ps = _page_bounds(len(r), ses.get("page", 0),
                                         ses.get("page_size", 8))
     items = []
     for i, x in enumerate(r[st:ed], 1):
         items.append({"n": i, "title": _clip(x.get("title") or "未知短剧", 56),
-                      "meta": _meta(x.get("category") or "短剧", x.get("date"))})
+                      "meta": _meta(x.get("category") or "短剧", x.get("date")),
+                      "tile": True, "icon": "tv", "cover": _cover_of(x, covers)})
     return _search_card(kind="短剧搜索", icon="movie", keyword=ses.get("keyword", ""),
                         total=len(r), page=p, page_size=ps, items=_rows(items),
                         unit="短剧", timeout=timeout, note=note)
@@ -702,6 +1387,15 @@ class _CardRenderer:
         if "<body>" in body and "</body>" in body:
             body = body.split("<body>", 1)[1].rsplit("</body>", 1)[0]
         page.evaluate("(h) => { document.body.innerHTML = h; }", body)
+        # 等内嵌封面/截图解码完成（最多 3 秒，避免坏图卡死整张卡片）
+        try:
+            page.evaluate(
+                "() => Promise.race(["
+                " Promise.all(Array.from(document.images).map(i => i.complete ? true :"
+                "   new Promise(r => { i.onload = i.onerror = () => r(true); }))),"
+                " new Promise(r => setTimeout(() => r(true), 3000))])")
+        except Exception:
+            pass
         # 等字体就绪 + 两帧渲染，比固定 sleep 快且稳
         page.evaluate(
             "() => (document.fonts && document.fonts.ready)"

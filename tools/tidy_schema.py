@@ -13,7 +13,7 @@ PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "_conf_schema.json")
 
 GROUP_ORDER = [
-    "list_card", "browser", "game", "software", "movie", "shortdrama",
+    "list_card", "minigame", "browser", "game", "software", "movie", "shortdrama",
     "novel", "music", "vip_video", "verify", "points",
 ]
 
@@ -40,6 +40,11 @@ ITEM_ORDER = {
     "vip_video": ["video_vip_parse", "video_vip_timeout"],
     "browser": ["browser_channel", "browser_exe"],
     "list_card": ["list_card_enabled", "list_card_threshold"],
+    "minigame": ["minigame_enabled", "minigame_group_ids",
+                 "minigame_points_reward", "minigame_daily_cap",
+                 "minigame_bomb_timeout", "minigame_bomb_turn_timeout",
+                 "minigame_cover_rounds", "minigame_cover_timeout",
+                 "minigame_cover_pool_ttl", "minigame_cover_pixel"],
     "verify": ["join_verify_enabled", "join_verify_group_ids",
                "join_verify_timeout", "join_verify_max_attempts",
                "join_verify_recall", "join_verify_kick",
@@ -79,6 +84,8 @@ COLLAPSED = {
                "checkin_recommend_movies", "points_cost_game",
                "points_cost_software", "points_cost_movie",
                "points_cost_drama", "points_cost_novel"},
+    "minigame": {"minigame_bomb_turn_timeout", "minigame_cover_pool_ttl",
+                 "minigame_cover_pixel"},
 }
 
 # 条件显隐（与原 condition 合并，多个键为 AND）
@@ -148,7 +155,8 @@ HINTS = {
     "music": "网易云语音名片；自建接口、Cookie、代理在「更多配置」里。",
     "vip_video": "爱奇艺/腾讯/优酷/芒果 VIP 链接解析。",
     "verify": "QQ 新成员图形验证码审核；超时/机会/撤回等在「更多配置」里。",
-    "points": "签到与积分系统；初始积分、连续加成、推荐清单、搜索消耗在「更多配置」里。",
+    "points": "签到与积分系统；初始积分、连续加成、推荐清单、资源消耗在「更多配置」里。",
+    "minigame": "猜数字（最多 6 人，范围随人数扩大）+ 封面猜猜（单人）；只在群聊里通过 /小游戏 启动，不主动推送。",
 }
 
 

@@ -180,6 +180,14 @@ def search_movies(keyword: str, max_results: int = 24) -> list:
         if not title or len(title) < 1:
             continue
         rid = "mv_" + href.rsplit("/", 1)[-1].replace(".html", "")
+        # 搜索结果封面：a123tv 列表项里是 <figure class="w4-item-cover"><img data-src="//...jpg">
+        cover = ""
+        figure = a.find("figure")
+        img = (figure.find("img") if figure else None) or a.find("img")
+        if img:
+            src = img.get("data-src") or img.get("data-original") or img.get("src") or ""
+            if src and not src.startswith("data:") and "defaultpic" not in src.lower():
+                cover = _fix_url(src)
         results.append({
             "id": rid,
             "title": title,
@@ -188,6 +196,7 @@ def search_movies(keyword: str, max_results: int = 24) -> list:
             "meta": meta,
             "raw_title": title_raw,
             "url": _fix_url(href),
+            "cover": cover,
         })
         if len(results) >= max_results:
             break
