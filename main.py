@@ -283,6 +283,87 @@ _CONF_GROUPS = {
 }
 _KEY_TO_GROUP = {k: g for g, ks in _CONF_GROUPS.items() for k in ks}
 
+# ========================================================================
+#  可视化配置视图（AstrBot 插件页面）
+# ========================================================================
+# 页面按 _conf_schema.json 自动生成表单；下面只补充「更好看/更好填」的展示信息，
+# 不改变配置结构，也不影响原配置页。
+_VIEW_GROUP_ORDER = [
+    "game", "software", "movie", "shortdrama", "novel", "music",
+    "vip_video", "points", "verify", "minigame", "list_card", "browser",
+]
+_VIEW_GROUP_ICONS = {
+    "game": "gamepad", "software": "package", "movie": "movie",
+    "shortdrama": "tv", "novel": "book", "music": "music",
+    "vip_video": "play", "points": "star", "verify": "verified",
+    "minigame": "casino", "list_card": "image", "browser": "globe",
+}
+# string 字段的推荐值（页面渲染为下拉框）；list 字段为多选。
+_VIEW_FIELD_OPTIONS = {
+    "game_source": [
+        {"value": "auto", "label": "自动（推荐）"},
+        {"value": "xdgame", "label": "xdgame"},
+        {"value": "switch618", "label": "switch618"},
+    ],
+    "movie_source": [
+        {"value": "", "label": "new · pdy0（默认）"},
+        {"value": "new", "label": "new · pdy0"},
+        {"value": "old", "label": "old · 片库主站"},
+    ],
+    "wyy_backend": [
+        {"value": "direct", "label": "direct · 内置直连（推荐）"},
+        {"value": "custom", "label": "custom · 自建接口"},
+    ],
+    "wyy_music_type": [
+        {"value": "standard", "label": "standard · 标准"},
+        {"value": "exhigh", "label": "exhigh · 较高"},
+        {"value": "lossless", "label": "lossless · 无损"},
+        {"value": "hires", "label": "hires · Hi-Res"},
+        {"value": "sky", "label": "sky · 沉浸环绕"},
+        {"value": "jymaster", "label": "jymaster · 超清母带"},
+    ],
+    "wyy_audio_format": [
+        {"value": "mp3", "label": "mp3 · 兼容好（推荐）"},
+        {"value": "wav", "label": "wav"},
+    ],
+    "checkin_info_module": [
+        {"value": "epic", "label": "Epic 喜加一（推荐）"},
+        {"value": "history", "label": "历史上的今天"},
+        {"value": "poem", "label": "今日诗词"},
+        {"value": "weather", "label": "实时天气"},
+        {"value": "off", "label": "关闭"},
+    ],
+    "browser_channel": [
+        {"value": "", "label": "自动（插件自带 Chromium）"},
+        {"value": "chrome", "label": "本机 Chrome"},
+    ],
+    "movie_sections": [
+        {"value": "mv", "label": "电影"},
+        {"value": "tv", "label": "剧集"},
+        {"value": "ac", "label": "动漫"},
+    ],
+    "sonovel_format": [
+        {"value": "txt", "label": "TXT"},
+        {"value": "epub", "label": "EPUB"},
+        {"value": "html", "label": "HTML"},
+        {"value": "pdf", "label": "PDF"},
+    ],
+}
+# 多选字段允许的值（后端仍会校验，避免手改 API 写入脏数据）
+_VIEW_LIST_CHOICES = {
+    "movie_sections": {"mv", "tv", "ac"},
+    "sonovel_format": {"txt", "epub", "html", "pdf"},
+}
+# 改动这些键后需要重新注册定时任务
+_VIEW_SCHEDULE_KEYS = {
+    "schedule_hour", "schedule_minute",
+    "game_report_enabled", "game_schedule_hour", "game_schedule_minute",
+    "movie_report_enabled", "movie_schedule_hour", "movie_schedule_minute",
+    "drama_report_enabled", "drama_schedule_hour", "drama_schedule_minute",
+}
+# 敏感字段：页面默认隐藏明文（仍可点击眼睛显示）
+_VIEW_SECRET_HINTS = ("password", "cookie", "token", "secret", "api_key", "apikey")
+
 # 积分消耗类型 → 展示名（搜索类命令 / LLM 工具共用）
 _POINTS_LABELS = {
     "game": "游戏",
@@ -298,11 +379,14 @@ _POINTS_LABELS = {
 # ========================================================================
 
 @register("astrbot_plugin_muliyresources", "暮黎 Muliy",
-          "暮黎资源聚合 - 影视搜索(pdy0/片库) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到&管理 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.17.0")
+          "暮黎资源聚合 - 影视搜索(pdy0/片库) / 游戏搜索 / 软件日报&搜索 / 短剧搜索&日报 / 小说搜索&下载 / 长列表出图 / 积分签到&管理 / 网易云语音名片 / 摸头杀GIF / 舔狗表情 / 入群审核", "1.17.5")
 class MuliyResourcesPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
+        # 保留 AstrBot 的 AstrBotConfig 对象，可视化页面保存时直接写回
+        # data/config/<插件名>_config.json（不能只写本地兜底文件）。
+        self._raw_config = config
         self._plugin_config = self._migrate_config(config)
         self._sessions = SessionManager()
         self._search_sessions = SearchSessionManager()
@@ -359,6 +443,9 @@ class MuliyResourcesPlugin(Star):
         self._debug_log_path: str = ""
         self._reports_dir: str = ""
         self._reports_retention_days: int = 5
+        # 日报「留空=全部群」：记录机器人见过的群，作为无 get_group_list 平台的后备
+        self._seen_groups: dict = {}
+        self._all_groups_cache: dict = {}
         # 全局积分 / 每日签到（懒加载，数据文件位于 AstrBot data 目录）
         self._points_store: Optional[PointsStore] = None
         # 群聊小游戏：会话按「平台:群号」保存，题库/战绩懒加载
@@ -371,6 +458,8 @@ class MuliyResourcesPlugin(Star):
         self._g_auto_login_busy: bool = False
         # 签到推荐动态抓取缓存 {(类型:来源:日期): (过期时间, 推荐或 None)}
         self._rec_cache: dict = {}
+        # 可视化配置页（AstrBot 插件页面）后端 API
+        self._register_config_view()
 
     # ==================== 生命周期 ====================
 
@@ -417,6 +506,8 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[暮黎资源] 本地配置恢复失败: {e}")
         # 恢复各日报「今日已发送」状态：重装/热重载后不再重复补发当天日报
         self._load_report_state()
+        # 恢复「见过的群」缓存（日报留空时用于推送全部群）
+        self._load_seen_groups()
         # VIP 解析接口缓存（片库 /zjx 上次抓取结果，避免每次开浏览器）
         try:
             self._load_vip_interface_cache()
@@ -1150,36 +1241,240 @@ class MuliyResourcesPlugin(Star):
     def _resolve_group_ids(self, specific_key: str):
         """解析某日报的目标群（各自独立配置，不共享软件群）。
 
-        - 仅读取各自专属键（game_group_ids / movie_group_ids）；
+        - 仅读取各自专属键（game_group_ids / movie_group_ids 等）；
         - 不回退软件群 group_ids（用户要求三日报群号分开）；
         - 返回 (群列表, 是否走了回退) —— 当前不共享，fb 恒为 False。
+        - 留空时由 `_resolve_report_groups` 决定是否推送到平台全部群。
         """
         config = self._get_config()
         raw = config.get(specific_key, []) if isinstance(config, dict) else []
         return self._parse_multi(raw), False
+
+    # ---------- 日报目标群：留空 = 平台全部群 ----------
+
+    def _seen_groups_path(self) -> str:
+        return os.path.join(self._plugin_data_dir(), "report_groups.json")
+
+    def _load_seen_groups(self):
+        """加载「机器人见过的群」缓存，作为无 get_group_list 平台的后备。"""
+        try:
+            p = self._seen_groups_path()
+            if not os.path.exists(p):
+                return
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return
+            cleaned = {}
+            for pid, groups in data.items():
+                if not isinstance(groups, list):
+                    continue
+                vals = []
+                for gid in groups:
+                    s = str(gid).strip()
+                    if s and s not in vals:
+                        vals.append(s)
+                if vals:
+                    cleaned[str(pid)] = vals
+            # 合并而不是覆盖：initialize 之前可能已经通过消息记录过群
+            for pid, vals in cleaned.items():
+                cur = self._seen_groups.setdefault(pid, [])
+                for gid in vals:
+                    if gid not in cur:
+                        cur.append(gid)
+            logger.info(f"[暮黎资源] 已加载日报群缓存: {sum(len(v) for v in self._seen_groups.values())} 个群")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] 读取日报群缓存失败(忽略): {e!r}")
+
+    def _save_seen_groups(self):
+        try:
+            p = self._seen_groups_path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._seen_groups, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, p)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] 保存日报群缓存失败(忽略): {e!r}")
+
+    def _remember_seen_group(self, platform_id, group_id):
+        """记录机器人实际见过的群；新群才落盘，避免每条消息都写文件。"""
+        pid = str(platform_id or "").strip()
+        gid = str(group_id or "").strip()
+        if not pid or not gid:
+            return
+        groups = self._seen_groups.setdefault(pid, [])
+        if gid in groups:
+            return
+        groups.append(gid)
+        self._all_groups_cache.pop(pid, None)
+        self._save_seen_groups()
+
+    @staticmethod
+    def _extract_group_ids(payload) -> list:
+        """从 OneBot/适配器返回的群列表里提取群号，兼容 dict/list 多种结构。"""
+        if isinstance(payload, dict):
+            for key in ("data", "groups", "group_list", "result"):
+                if key in payload:
+                    payload = payload[key]
+                    break
+        if not isinstance(payload, list):
+            return []
+        out, seen = [], set()
+        for item in payload:
+            if isinstance(item, dict):
+                gid = (item.get("group_id") or item.get("group")
+                       or item.get("id") or item.get("chat_id"))
+            elif isinstance(item, (str, int)):
+                gid = item
+            else:
+                gid = getattr(item, "id", None) or getattr(item, "chat_id", None)
+            if gid is None or gid == "":
+                continue
+            s = str(gid).strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    async def _fetch_platform_group_list(self, platform_id: str) -> list:
+        """尝试调用平台适配器/协议端 API 获取全部群。失败返回 []。"""
+        platform = None
+        try:
+            platform = self.context.get_platform_inst(platform_id)
+        except Exception:
+            platform = None
+        if platform is None:
+            try:
+                for p in self.context.platform_manager.get_insts():
+                    if str(p.meta().id) == str(platform_id):
+                        platform = p
+                        break
+            except Exception:
+                pass
+        if platform is None:
+            return []
+        # ① 适配器自身可能提供群列表方法
+        for name in ("get_group_list", "get_groups"):
+            fn = getattr(platform, name, None)
+            if not callable(fn):
+                continue
+            try:
+                res = fn()
+                if asyncio.iscoroutine(res):
+                    res = await res
+                gids = self._extract_group_ids(res)
+                if gids:
+                    return gids
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[暮黎资源] 平台 {platform_id}.{name} 获取群列表失败: {e!r}")
+        # ② OneBot 协议端 get_group_list
+        try:
+            client = platform.get_client()
+        except Exception:
+            client = None
+        if client is None:
+            return []
+        try:
+            if hasattr(client, "call_action"):
+                res = await client.call_action(action="get_group_list")
+            elif hasattr(client, "api") and hasattr(client.api, "call_action"):
+                try:
+                    res = await client.api.call_action(action="get_group_list")
+                except TypeError:
+                    res = await client.api.call_action("get_group_list")
+            else:
+                return []
+            return self._extract_group_ids(res)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[暮黎资源] 平台 {platform_id} get_group_list 失败: {e!r}")
+            return []
+
+    async def _get_all_report_groups(self) -> list:
+        """获取日报平台的全部群；协议端不支持时回退到「见过的群」缓存。"""
+        apid = self._resolve_report_platform()
+        now = time.time()
+        cached_result = self._all_groups_cache.get(apid)
+        if cached_result and now - cached_result[0] < 300:
+            return list(cached_result[1])
+        try:
+            gids = await asyncio.wait_for(self._fetch_platform_group_list(apid), timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning(f"[暮黎资源] 获取平台 {apid} 群列表超时（10s），本次使用缓存")
+            gids = []
+        if gids:
+            groups = self._seen_groups.setdefault(apid, [])
+            changed = False
+            for gid in gids:
+                if gid not in groups:
+                    groups.append(gid)
+                    changed = True
+            if changed:
+                self._save_seen_groups()
+            self._all_groups_cache[apid] = (now, list(gids))
+            return gids
+        cached = list(self._seen_groups.get(apid, []))
+        self._all_groups_cache[apid] = (now, list(cached))
+        if cached:
+            logger.info(f"[暮黎资源] 平台 {apid} 不支持群列表 API，使用已见过的 {len(cached)} 个群")
+        return cached
+
+    async def _resolve_report_groups(self, key: str) -> list:
+        """日报目标群：配置了白名单就用白名单，留空则推送到平台全部群。"""
+        config = self._get_config()
+        gids = self._parse_multi(config.get(key, []) if isinstance(config, dict) else [])
+        if gids:
+            return gids
+        gids = await self._get_all_report_groups()
+        if gids:
+            logger.info(f"[暮黎资源] {key} 未配置，日报将推送到平台全部群（{len(gids)} 个）")
+        else:
+            logger.warning(f"[暮黎资源] {key} 未配置，且无法获取平台群列表（请填群号或先让机器人在目标群收到消息）")
+        return gids
 
     def _get_cookie(self) -> str:
         return self._get_config().get("cookie", "").strip()
 
     async def _update_config(self, key: str, value: object):
         """持久化更新插件配置中的某个字段（issue4 修复：用插件 id 持久化 + 本地文件兜底）"""
+        await self._update_configs({key: value})
+
+    async def _update_configs(self, values: dict):
+        """批量持久化插件配置（可视化配置页一次保存多个字段时只写一次磁盘）。"""
+        if not isinstance(values, dict) or not values:
+            return
         cfg = self._plugin_config
         if not isinstance(cfg, dict):
             cfg = {}
-        g = _KEY_TO_GROUP.get(key)
-        if g is not None:
-            if not isinstance(cfg.get(g), dict):
-                cfg[g] = {}
-            cfg[g][key] = value
-        else:
-            cfg[key] = value
+        for key, value in values.items():
+            g = _KEY_TO_GROUP.get(key)
+            if g is not None:
+                if not isinstance(cfg.get(g), dict):
+                    cfg[g] = {}
+                cfg[g][key] = value
+            else:
+                cfg[key] = value
         self._plugin_config = cfg
+        # ① 写回 AstrBot 的 AstrBotConfig（data/config/<插件名>_config.json）。
+        #    这是当前 AstrBot 配置页真正读取的配置对象，必须同步更新，
+        #    否则可视化页面保存后重载插件会回到旧值。
+        raw_cfg = getattr(self, "_raw_config", None)
+        save_cfg = getattr(raw_cfg, "save_config", None)
+        if callable(save_cfg):
+            try:
+                save_cfg(cfg)
+                names = ", ".join(values.keys())
+                logger.info(f"[暮黎资源] 配置已写入 AstrBot: {names}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[暮黎资源] 写回 AstrBot 配置失败: {e}")
+        # ② 兼容旧版/其他实现的 update_plugin_config
         try:
             if hasattr(self.context, 'update_plugin_config'):
                 pid = self._plugin_id()
                 # AstrBot 签名：update_plugin_config(plugin_id: str, config: dict)
                 await self.context.update_plugin_config(pid, cfg)
-                logger.info(f"[暮黎资源] 配置已持久化: {key}=已更新 (pid={pid})")
+                names = ", ".join(values.keys())
+                logger.info(f"[暮黎资源] 配置已持久化: {names} (pid={pid})")
         except Exception as e:
             logger.warning(f"[暮黎资源] 配置持久化(update_plugin_config)失败: {e}")
         # 兜底：写入本地文件，防止 AstrBot 配置未落盘导致重装/重启后 Cookie 丢失
@@ -1189,9 +1484,21 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[暮黎资源] 配置本地文件写入失败: {e}")
 
     def _plugin_id(self) -> str:
-        """返回插件 id（即插件目录名，也是 AstrBot 配置存储键）"""
-        mod = self.__class__.__module__  # 形如 astrbot_plugin_muliyresources.main
-        return mod.split(".")[0] if "." in mod else str(mod)
+        """返回插件名（与 AstrBot WebUI / 插件页面 bridge 使用的 pluginName 一致）。
+
+        AstrBot 的插件模块路径实际是 ``data.plugins.<插件目录名>.main``，
+        直接取 ``module.split('.')[0]`` 会得到 ``data``，导致：
+        ① 配置回写用错插件名；② register_web_api 注册到 /data/... 路由，
+        插件页面请求 /<插件名>/... 时提示「未找到该路由」。
+        """
+        name = getattr(self, "name", None)
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        mod = self.__class__.__module__
+        parts = [p for p in mod.split(".") if p]
+        if len(parts) >= 2:
+            return parts[-2] if parts[-1] == "main" else parts[-1]
+        return os.path.basename(os.path.dirname(os.path.abspath(__file__)))
 
     def _plugin_data_dir(self) -> str:
         """插件持久化数据目录：<AstrBot data>/plugin_data/astrbot_plugin_muliyresources。
@@ -1252,6 +1559,430 @@ class MuliyResourcesPlugin(Star):
             except Exception:
                 return {}
         return {}
+
+    # ==================== 可视化配置页面（AstrBot 插件页面） ====================
+
+    def _register_config_view(self):
+        """注册可视化配置页所需的后端 Web API。
+
+        页面本体位于 pages/config/（兼容 views/config/）。旧版 AstrBot 没有
+        register_web_api 时静默跳过，不影响插件本身和原配置页。
+        """
+        register = getattr(self.context, "register_web_api", None)
+        if not callable(register):
+            logger.info("[暮黎资源] 当前 AstrBot 不支持插件页面 API，继续使用原配置页")
+            return
+        pid = self._plugin_id()
+        try:
+            register(f"/{pid}/config-view", self.view_config_get, ["GET"],
+                     "读取暮黎资源可视化配置")
+            register(f"/{pid}/config-view/save", self.view_config_save, ["POST"],
+                     "保存暮黎资源可视化配置")
+            logger.info(f"[暮黎资源] 可视化配置页 API 已注册: /{pid}/config-view")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] 可视化配置页 API 注册失败: {e}")
+
+    def _load_conf_schema(self) -> dict:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_conf_schema.json")
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _view_bool(value, default=False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("true", "1", "yes", "y", "on", "开", "是"):
+                return True
+            if s in ("false", "0", "no", "n", "off", "关", "否"):
+                return False
+        if value is None:
+            return bool(default)
+        return bool(value)
+
+    @staticmethod
+    def _view_int(value, default=0) -> int:
+        try:
+            if isinstance(value, bool):
+                return int(default)
+            if isinstance(value, str) and not value.strip():
+                return int(default)
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return int(default)
+
+    @staticmethod
+    def _view_secret_key(key: str) -> bool:
+        k = key.lower()
+        return any(h in k for h in _VIEW_SECRET_HINTS)
+
+    @staticmethod
+    def _view_long_list(value) -> bool:
+        """推荐清单这类长文本列表用多行文本框，群号这类短列表用标签编辑器。"""
+        if not isinstance(value, (list, tuple)) or not value:
+            return False
+        # 推荐项通常带「名称|一句话」，长度明显大于群号；阈值放宽到 16，
+        # 让 Discord 等较长 ID 也能用多行文本，避免标签过长。
+        return max(len(str(x)) for x in value) > 16
+
+    def _view_value_for(self, field: dict, cfg: dict):
+        """把当前配置值按 schema 类型归一化，供前端直接渲染。"""
+        key = field.get("_key", "")
+        default = field.get("default")
+        raw = cfg.get(key, default)
+        if raw is None and default is not None:
+            raw = default
+        ftype = str(field.get("type") or "string").lower()
+        if ftype == "bool":
+            return self._view_bool(raw, self._view_bool(default, False))
+        if ftype in ("int", "integer"):
+            val = self._view_int(raw, self._view_int(default, 0))
+            mn, mx = field.get("min"), field.get("max")
+            if mn is not None:
+                val = max(self._view_int(mn, val), val)
+            if mx is not None:
+                val = min(self._view_int(mx, val), val)
+            return val
+        if ftype in ("float", "number"):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                try:
+                    return float(default or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        if ftype == "list":
+            return self._parse_multi(raw)
+        if ftype == "dict":
+            return raw if isinstance(raw, dict) else (default if isinstance(default, dict) else {})
+        if raw is None:
+            return "" if default is None else str(default)
+        return str(raw)
+
+    def _view_coerce(self, key: str, field: dict, value):
+        """校验并归一化前端提交的单个字段。返回 (ok, value, error)。"""
+        ftype = str(field.get("type") or "string").lower()
+        label = str(field.get("description") or key)
+        if ftype == "bool":
+            if isinstance(value, bool):
+                return True, value, ""
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return True, bool(value), ""
+            if isinstance(value, str):
+                s = value.strip().lower()
+                if s in ("true", "1", "yes", "y", "on", "开", "是"):
+                    return True, True, ""
+                if s in ("false", "0", "no", "n", "off", "关", "否"):
+                    return True, False, ""
+            return False, None, f"{label} 需要是开关值"
+        if ftype in ("int", "integer", "float", "number"):
+            try:
+                if isinstance(value, bool):
+                    raise ValueError
+                if isinstance(value, str) and not value.strip():
+                    raise ValueError
+                num = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return False, None, f"{label} 需要是数字"
+            if not (num == num and num not in (float("inf"), float("-inf"))):
+                return False, None, f"{label} 需要是有效数字"
+            if ftype in ("int", "integer"):
+                num = int(num)
+                mn, mx = field.get("min"), field.get("max")
+                if mn is not None:
+                    num = max(int(mn), num)
+                if mx is not None:
+                    num = min(int(mx), num)
+                return True, num, ""
+            return True, float(num), ""
+        if ftype == "list":
+            if value is None:
+                raw = []
+            elif isinstance(value, str):
+                raw = re.split(r"[\n,，;；]", value)
+            elif isinstance(value, (list, tuple, set)):
+                raw = list(value)
+            else:
+                raw = [value]
+            out, seen = [], set()
+            for item in raw:
+                if isinstance(item, (dict, list, tuple, set)):
+                    return False, None, f"{label} 的每一项都需要是文本"
+                s = str(item).strip()
+                if not s or s in seen:
+                    continue
+                seen.add(s)
+                out.append(s)
+            allowed = _VIEW_LIST_CHOICES.get(key)
+            if allowed is None:
+                raw_options = field.get("options")
+                if isinstance(raw_options, list) and raw_options:
+                    allowed = {str(x) for x in raw_options}
+            if allowed is not None:
+                bad = [x for x in out if x not in allowed]
+                if bad:
+                    return False, None, f"{label} 不支持：{', '.join(bad)}"
+            return True, out, ""
+        if ftype == "dict":
+            return False, None, f"{label} 是嵌套配置，请使用原配置页编辑"
+        if isinstance(value, (dict, list, tuple, set)):
+            return False, None, f"{label} 需要是文本"
+        return True, ("" if value is None else str(value)).strip(), ""
+
+    def _view_next_run(self, job_id: str) -> str:
+        try:
+            if self._using_framework_scheduler:
+                sch = self._framework_scheduler()
+                job = sch.get_job(job_id) if sch else None
+            else:
+                job = self._apscheduler.get_job(job_id) if self._apscheduler else None
+            dt = self._job_next_run(job, self._timezone)
+            if dt:
+                return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+        return ""
+
+    def _view_meta(self, groups: list, cfg: dict) -> dict:
+        meta = {"display_name": "暮黎资源聚合", "version": ""}
+        try:
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.yaml")
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+            m = re.search(r'^display_name:\s*["\']?([^"\'\n]+)', text, re.M)
+            if m:
+                meta["display_name"] = m.group(1).strip()
+            m = re.search(r'^version:\s*["\']?([^"\'\s]+)', text, re.M)
+            if m:
+                meta["version"] = m.group(1).strip()
+        except Exception:
+            pass
+
+        def _clock(key: str, default: int, upper: int) -> int:
+            return max(0, min(upper, self._view_int(cfg.get(key), default)))
+
+        schedules = [
+            {
+                "key": "software", "name": "软件日报", "enabled": True,
+                "hour": _clock("schedule_hour", 22, 23),
+                "minute": _clock("schedule_minute", 0, 59),
+                "groups": len(self._parse_multi(cfg.get("group_ids", []))),
+                "all_groups": not bool(self._parse_multi(cfg.get("group_ids", []))),
+                "next": self._view_next_run(self._scheduler_job_id),
+            },
+            {
+                "key": "game", "name": "游戏日报",
+                "enabled": self._view_bool(cfg.get("game_report_enabled"), True),
+                "hour": _clock("game_schedule_hour", 18, 23),
+                "minute": _clock("game_schedule_minute", 0, 59),
+                "groups": len(self._parse_multi(cfg.get("game_group_ids", []))),
+                "all_groups": not bool(self._parse_multi(cfg.get("game_group_ids", []))),
+                "next": self._view_next_run(self._game_scheduler_job_id),
+            },
+            {
+                "key": "movie", "name": "影视日报",
+                "enabled": self._view_bool(cfg.get("movie_report_enabled"), True),
+                "hour": _clock("movie_schedule_hour", 20, 23),
+                "minute": _clock("movie_schedule_minute", 0, 59),
+                "groups": len(self._parse_multi(cfg.get("movie_group_ids", []))),
+                "all_groups": not bool(self._parse_multi(cfg.get("movie_group_ids", []))),
+                "next": self._view_next_run(self._movie_scheduler_job_id),
+            },
+            {
+                "key": "drama", "name": "短剧日报",
+                "enabled": self._view_bool(cfg.get("drama_report_enabled"), True),
+                "hour": _clock("drama_schedule_hour", 21, 23),
+                "minute": _clock("drama_schedule_minute", 0, 59),
+                "groups": len(self._parse_multi(cfg.get("drama_group_ids", []))),
+                "all_groups": not bool(self._parse_multi(cfg.get("drama_group_ids", []))),
+                "next": self._view_next_run(self._drama_scheduler_job_id),
+            },
+        ]
+        mode = "idle"
+        running = False
+        if self._using_framework_scheduler:
+            mode = "framework"
+            running = self._framework_scheduler() is not None
+        elif self._apscheduler is not None:
+            mode = "local"
+            running = bool(getattr(self._apscheduler, "running", False))
+        features = [
+            {"key": "list_card", "label": "长列表图片",
+             "enabled": self._view_bool(cfg.get("list_card_enabled"), True)},
+            {"key": "points", "label": "签到积分",
+             "enabled": self._view_bool(cfg.get("points_enabled"), False)},
+            {"key": "music", "label": "网易云名片",
+             "enabled": self._view_bool(cfg.get("wyy_auto_parse"), True)},
+            {"key": "vip_video", "label": "VIP 视频解析",
+             "enabled": self._view_bool(cfg.get("video_vip_parse"), True)},
+            {"key": "verify", "label": "入群审核",
+             "enabled": self._view_bool(cfg.get("join_verify_enabled"), False)},
+            {"key": "minigame", "label": "群聊小游戏",
+             "enabled": self._view_bool(cfg.get("minigame_enabled"), True)},
+        ]
+        meta.update({
+            "plugin_name": self._plugin_id(),
+            "description": "影视 / 游戏 / 软件 / 短剧 / 小说 多源搜索与定时日报",
+            "timezone": (
+                (getattr(self._timezone, "key", None) or str(self._timezone))
+                if self._timezone is not None else "系统本地"
+            ),
+            "data_dir": self._view_safe_path(self._plugin_data_dir),
+            "config_backup": self._view_safe_path(self._config_file_path),
+            "scheduler_mode": mode,
+            "scheduler_running": running,
+            "schedules": schedules,
+            "features": features,
+            "group_count": len(groups),
+            "field_count": sum(len(g.get("fields", [])) for g in groups),
+        })
+        return meta
+
+    @staticmethod
+    def _view_safe_path(getter):
+        """路径解析失败时不影响整个配置页面。"""
+        try:
+            return getter()
+        except Exception:
+            return ""
+
+    async def view_config_get(self):
+        """GET：返回 schema + 当前值 + 运行状态，供可视化配置页渲染。"""
+        try:
+            schema = self._load_conf_schema()
+            current = self._get_config()
+            cfg = current if isinstance(current, dict) else {}
+            groups = []
+            order = [g for g in _VIEW_GROUP_ORDER if g in schema]
+            order += [g for g in schema if g not in order]
+            for gkey in order:
+                group = schema.get(gkey)
+                if not isinstance(group, dict):
+                    continue
+                items = group.get("items")
+                if not isinstance(items, dict):
+                    continue
+                fields = []
+                for fkey, field in items.items():
+                    if not isinstance(field, dict):
+                        continue
+                    f = dict(field)
+                    f["_key"] = fkey
+                    ftype = str(f.get("type") or "string").lower()
+                    value = self._view_value_for(f, cfg)
+                    default = f.get("default")
+                    if ftype == "list":
+                        default = self._parse_multi(default)
+                        value = self._parse_multi(value)
+                    options = _VIEW_FIELD_OPTIONS.get(fkey)
+                    if options is None:
+                        raw_options = f.get("options")
+                        if isinstance(raw_options, list) and raw_options:
+                            labels = f.get("labels")
+                            labels = labels if isinstance(labels, list) else []
+                            options = [
+                                {
+                                    "value": str(opt),
+                                    "label": str(labels[i]) if i < len(labels) else str(opt),
+                                }
+                                for i, opt in enumerate(raw_options)
+                            ]
+                    fields.append({
+                        "key": fkey,
+                        "type": ftype,
+                        "label": str(f.get("description") or fkey),
+                        "hint": str(f.get("hint") or ""),
+                        "default": default,
+                        "value": value,
+                        "min": f.get("min"),
+                        "max": f.get("max"),
+                        "condition": f.get("condition") if isinstance(f.get("condition"), dict) else {},
+                        "options": options,
+                        "secret": self._view_secret_key(fkey),
+                        "long_items": ftype == "list" and self._view_long_list(default),
+                    })
+                groups.append({
+                    "key": gkey,
+                    "title": str(group.get("description") or gkey),
+                    "hint": str(group.get("hint") or ""),
+                    "icon": _VIEW_GROUP_ICONS.get(gkey, "apps"),
+                    "fields": fields,
+                })
+            return {"status": "ok", "data": {"groups": groups, "meta": self._view_meta(groups, cfg)}}
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[暮黎资源] 读取可视化配置失败: {e}\n{traceback.format_exc()}")
+            return {"status": "error", "message": f"读取配置失败：{e}"}
+
+    async def _view_read_json(self) -> dict:
+        try:
+            from astrbot.api.web import request as web_request
+        except Exception:
+            web_request = None
+        if web_request is not None:
+            try:
+                data = await web_request.json(default={})
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        try:
+            from quart import request as quart_request
+            data = await quart_request.get_json(silent=True)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    async def view_config_save(self):
+        """POST：批量保存可视化配置页提交的字段，并按需重载定时任务。"""
+        try:
+            payload = await self._view_read_json()
+            values = payload.get("values") if isinstance(payload.get("values"), dict) else payload
+            if not isinstance(values, dict) or not values:
+                return {"status": "error", "message": "没有收到需要保存的配置项"}
+            if len(values) > 300:
+                return {"status": "error", "message": "一次提交的配置项过多"}
+            schema = self._load_conf_schema()
+            fields = {}
+            for group in schema.values():
+                items = group.get("items") if isinstance(group, dict) else None
+                if isinstance(items, dict):
+                    fields.update({k: v for k, v in items.items() if isinstance(v, dict)})
+            cleaned, errors = {}, {}
+            for key, value in values.items():
+                if key not in fields:
+                    errors[key] = "未知配置项"
+                    continue
+                ok, val, err = self._view_coerce(key, fields[key], value)
+                if not ok:
+                    errors[key] = err
+                    continue
+                cleaned[key] = val
+            if errors:
+                first = next(iter(errors.values()))
+                return {"status": "error", "message": first, "errors": errors}
+            if not cleaned:
+                return {"status": "ok", "data": {"saved": 0, "schedule_reloaded": False, "values": {}}}
+            await self._update_configs(cleaned)
+            reloaded = False
+            if _VIEW_SCHEDULE_KEYS & set(cleaned):
+                try:
+                    await self._start_sw_scheduler()
+                    reloaded = True
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[暮黎资源] 保存配置后重载定时任务失败: {e}")
+            logger.info(f"[暮黎资源] 可视化配置已保存 {len(cleaned)} 项: {', '.join(cleaned)}")
+            return {"status": "ok", "data": {
+                "saved": len(cleaned),
+                "schedule_reloaded": reloaded,
+                "values": cleaned,
+            }}
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[暮黎资源] 保存可视化配置失败: {e}\n{traceback.format_exc()}")
+            return {"status": "error", "message": f"保存失败：{e}"}
 
     # ==================== 全局积分 / 每日签到 ====================
 
@@ -5684,15 +6415,17 @@ class MuliyResourcesPlugin(Star):
         dgroups, dfb = self._resolve_group_ids("drama_group_ids")
         dmx = int(config.get("drama_report_max", 12) or 12) if isinstance(config, dict) else 12
         dnxt = _nxt(self._drama_scheduler_job_id); dlr = self._drama_last_run_date or "从未执行"
+        def _gl(v):
+            return f"{len(v)}个" if v else "全部"
         yield event.plain_result(
             f"📊 暮黎资源聚合\n{'='*30}\n"
             f"🌍 时区: {tz} | 调度: {'✅' if sk else '❌'} | 模式: {mode}\n"
-            f"📦 软件日报: 每日 {h:02d}:{m:02d} | 群{len(groups)}个 | 上次:{lr} | 下次:{nxt}\n"
-            f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{len(ggroups)}个{'（共享）' if gfb else ''} | 上限{gmx}\n"
+            f"📦 软件日报: 每日 {h:02d}:{m:02d} | 群{_gl(groups)} | 上次:{lr} | 下次:{nxt}\n"
+            f"🎮 游戏日报: {'✅开' if gen else '❌关'} 每日 {gh:02d}:{gm:02d} | 群{_gl(ggroups)}{'（共享）' if gfb else ''} | 上限{gmx}\n"
             f"   上次:{glr} | 下次:{gnxt}\n"
-            f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{len(mgroups)}个{'（共享）' if mfb else ''} | 上限{mmx}\n"
+            f"🎬 影视日报: {'✅开' if men else '❌关'} 每日 {int(mh):02d}:{int(mm):02d} | 群{_gl(mgroups)}{'（共享）' if mfb else ''} | 上限{mmx}\n"
             f"   区块:{msec} | 上次:{mlr} | 下次:{mnxt}\n"
-            f"📺 短剧日报: {'✅开' if den else '❌关'} 每日 {int(dh):02d}:{int(dmn):02d} | 群{len(dgroups)}个{'（共享）' if dfb else ''} | 上限{dmx}\n"
+            f"📺 短剧日报: {'✅开' if den else '❌关'} 每日 {int(dh):02d}:{int(dmn):02d} | 群{_gl(dgroups)}{'（共享）' if dfb else ''} | 上限{dmx}\n"
             f"   上次:{dlr} | 下次:{dnxt}\n"
             f"🖼️ 软件图片: {'是' if ei else '否'} | 软件上限: {mx}\n"
             f"⚡ 命令: /找软件 | /找游戏 | /找短剧 | /game_report | /movie_report | /drama_report")
@@ -7765,6 +8498,16 @@ class MuliyResourcesPlugin(Star):
 
     # ==================== 消息处理（ALL，仅在有活跃会话时触发） ====================
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=1)
+    async def _track_report_group(self, event: AstrMessageEvent):
+        """记录机器人见过的群，供「日报留空=全部群」在非 OneBot 平台兜底。"""
+        try:
+            gid = event.get_group_id()
+            if gid:
+                self._remember_seen_group(event.get_platform_id(), gid)
+        except Exception:
+            pass
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=999999)
     async def on_any_message(self, event: AstrMessageEvent):
         """会话内硬指令处理：有 session → 用 event.set_result() 注入已格式化文本 →
@@ -8861,9 +9604,9 @@ class MuliyResourcesPlugin(Star):
     def _movie_cached_path(self, ds: str) -> str:
         return os.path.join(self._reports_dir, f"movie_report_{ds}.zip") if self._reports_dir else ""
 
-    async def _movie_send_report(self, img_bytes, ts, text: str = ""):
-        config = self._get_config()
-        gids, _fb = self._resolve_group_ids("movie_group_ids")
+    async def _movie_send_report(self, img_bytes, ts, text: str = "", gids=None):
+        if gids is None:
+            gids = await self._resolve_report_groups("movie_group_ids")
         if not gids: return 0
         apid = self._resolve_report_platform()
         logger.info(f"[暮黎资源] 影视日报推送目标平台: {apid} | 目标群: {gids}")
@@ -8876,7 +9619,7 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[暮黎资源] 影视日报本次成功推送 {sent}/{len(gids)} 个群")
         return sent
 
-    async def _movie_build_and_send(self, items: list, ts: str, source_label: str = "pdy0"):
+    async def _movie_build_and_send(self, items: list, ts: str, source_label: str = "pdy0", gids=None):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         html = build_glass_html(items, date_label, source_label=source_label)
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
@@ -8928,7 +9671,7 @@ class MuliyResourcesPlugin(Star):
                              for i, it in enumerate(items, 1)))
         if not img_bytes:
             logger.warning("[影视日报] 图片渲染失败，将改用文字版推送")
-        return await self._movie_send_report(img_bytes, ts, text)
+        return await self._movie_send_report(img_bytes, ts, text, gids=gids)
 
     async def _movie_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -8938,16 +9681,17 @@ class MuliyResourcesPlugin(Star):
             if self._movie_last_run_date == ts:
                 logger.info(f"[暮黎资源] 影视日报今日({ts})已运行过，跳过")
                 return
+            config = self._get_config()
+            if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
+                logger.warning("[暮黎资源] 影视日报已触发，但 movie_report_enabled 关闭，跳过")
+                self._mark_report_ran("movie", ts)
+                return
+            gs_list = await self._resolve_report_groups("movie_group_ids")
+            if not gs_list:
+                logger.warning("[暮黎资源] 影视日报未能获取目标群（留空=全部群），等待兜底重试")
+                return
             self._mark_report_ran("movie", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 影视日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
-        config = self._get_config()
-        if not (config.get("movie_report_enabled", True) if isinstance(config, dict) else True):
-            logger.warning("[暮黎资源] 影视日报已触发，但 movie_report_enabled 关闭，跳过")
-            return
-        gs_list, fb = self._resolve_group_ids("movie_group_ids")
-        if not gs_list:
-            logger.warning("[暮黎资源] 影视日报已触发，但未配置 movie_group_ids，跳过发送")
-            return
         cookie = (config.get("muliy_cookie", "") or "") if isinstance(config, dict) else ""
         username = (config.get("muliy_username", "") or "") if isinstance(config, dict) else ""
         password = (config.get("muliy_password", "") or "") if isinstance(config, dict) else ""
@@ -8976,7 +9720,7 @@ class MuliyResourcesPlugin(Star):
                 shutil.copy2(zp, self._movie_cached_path(ts))
                 self._sw_cleanup_reports()
         except Exception as e: logger.warning(f"[影视日报] 缓存 zip 失败: {e}")
-        sent = await self._movie_build_and_send(items, ts, src_label)
+        sent = await self._movie_build_and_send(items, ts, src_label, gids=gs_list)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
             self._mark_report_ran("movie", ts)
@@ -9055,9 +9799,9 @@ class MuliyResourcesPlugin(Star):
     def _drama_cached_path(self, ds: str) -> str:
         return os.path.join(self._reports_dir, f"drama_report_{ds}.zip") if self._reports_dir else ""
 
-    async def _drama_send_report(self, img_bytes, ts, text: str = ""):
-        config = self._get_config()
-        gids, _fb = self._resolve_group_ids("drama_group_ids")
+    async def _drama_send_report(self, img_bytes, ts, text: str = "", gids=None):
+        if gids is None:
+            gids = await self._resolve_report_groups("drama_group_ids")
         if not gids: return 0
         apid = self._resolve_report_platform()
         logger.info(f"[暮黎资源] 短剧日报推送目标平台: {apid} | 目标群: {gids}")
@@ -9070,7 +9814,7 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[暮黎资源] 短剧日报本次成功推送 {sent}/{len(gids)} 个群")
         return sent
 
-    async def _drama_build_and_send(self, items: list, ts: str):
+    async def _drama_build_and_send(self, items: list, ts: str, gids=None):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         html = build_drama_html(items, date_label)
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "MuliHeavy.ttf")
@@ -9110,7 +9854,7 @@ class MuliyResourcesPlugin(Star):
                              for i, it in enumerate(items, 1)))
         if not img_bytes:
             logger.warning("[短剧日报] 图片渲染失败，将改用文字版推送")
-        return await self._drama_send_report(img_bytes, ts, text)
+        return await self._drama_send_report(img_bytes, ts, text, gids=gids)
 
     async def _drama_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -9120,16 +9864,17 @@ class MuliyResourcesPlugin(Star):
             if self._drama_last_run_date == ts:
                 logger.info(f"[暮黎资源] 短剧日报今日({ts})已运行过，跳过")
                 return
+            config = self._get_config()
+            if not (config.get("drama_report_enabled", True) if isinstance(config, dict) else True):
+                logger.warning("[暮黎资源] 短剧日报已触发，但 drama_report_enabled 关闭，跳过")
+                self._mark_report_ran("drama", ts)
+                return
+            gs_list = await self._resolve_report_groups("drama_group_ids")
+            if not gs_list:
+                logger.warning("[暮黎资源] 短剧日报未能获取目标群（留空=全部群），等待兜底重试")
+                return
             self._mark_report_ran("drama", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 短剧日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
-        config = self._get_config()
-        if not (config.get("drama_report_enabled", True) if isinstance(config, dict) else True):
-            logger.warning("[暮黎资源] 短剧日报已触发，但 drama_report_enabled 关闭，跳过")
-            return
-        gs_list, fb = self._resolve_group_ids("drama_group_ids")
-        if not gs_list:
-            logger.warning("[暮黎资源] 短剧日报已触发，但未配置 drama_group_ids，跳过发送")
-            return
         try:
             mx = int(config.get("drama_report_max", 12) or 12)
         except (TypeError, ValueError):
@@ -9157,7 +9902,7 @@ class MuliyResourcesPlugin(Star):
                 self._sw_cleanup_reports()
         except Exception as e:
             logger.warning(f"[短剧日报] 缓存 zip 失败: {e}")
-        sent = await self._drama_build_and_send(items, ts)
+        sent = await self._drama_build_and_send(items, ts, gids=gs_list)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
             self._mark_report_ran("drama", ts)
@@ -9175,13 +9920,13 @@ class MuliyResourcesPlugin(Star):
             if self._last_run_date == ts:
                 logger.info(f"[暮黎资源] 软件日报今日({ts})已运行过，跳过")
                 return
+            config = self._get_config()
+            gids = await self._resolve_report_groups("group_ids")
+            if not gids:
+                logger.warning("[暮黎资源] 软件日报未能获取目标群（留空=全部群），等待兜底重试")
+                return
             self._mark_report_ran("sw", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 软件日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
-        config = self._get_config()
-        gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
-        if not gids:
-            logger.warning("[暮黎资源] 软件日报已触发，但未配置 group_ids，跳过发送")
-            return
         mx = 24  # max_softwares 配置已移除，固定默认 24
         result = await asyncio.to_thread(sync_scrape, mx)
         if not result["success"]:
@@ -9200,7 +9945,7 @@ class MuliyResourcesPlugin(Star):
                 + "\n".join(f"{i}. {s.get('name','')} - {(s.get('desc','') or '')[:40]}"
                             for i, s in enumerate(sws, 1)))
         # 仅发送图片/文字，不再向群发送自包含 zip 文件
-        sent = await self._sw_send_report(img_bytes, None, text)
+        sent = await self._sw_send_report(img_bytes, None, text, gids=gids)
         # 缓存 zip 仅供面板本地回看（不会发送给用户/群）
         if zp:
             try:
@@ -9548,9 +10293,9 @@ class MuliyResourcesPlugin(Star):
                                           total=len(eps), label="选集列表",
                                           force=True)
 
-    async def _sw_send_report(self, img_bytes, zp, text: str = ""):
-        config = self._get_config()
-        gids = self._parse_multi(config.get("group_ids", []) if isinstance(config, dict) else [])
+    async def _sw_send_report(self, img_bytes, zp, text: str = "", gids=None):
+        if gids is None:
+            gids = await self._resolve_report_groups("group_ids")
         if not gids: return 0
         ts = datetime.date.today().strftime("%Y%m%d")
         apid = self._resolve_report_platform()
@@ -9643,10 +10388,10 @@ class MuliyResourcesPlugin(Star):
     def _game_cached_path(self, ds: str) -> str:
         return os.path.join(self._reports_dir, f"game_report_{ds}.zip") if self._reports_dir else ""
 
-    async def _game_send_report(self, img_bytes, ts, text: str = ""):
+    async def _game_send_report(self, img_bytes, ts, text: str = "", gids=None):
         logger.info(f"[游戏日报] 进入发送阶段：图片={'有 %dKB' % (len(img_bytes)//1024) if img_bytes else '无'} | 文字版={'有 %d字' % len(text) if text else '无'}")
-        config = self._get_config()
-        gids, _fb = self._resolve_group_ids("game_group_ids")
+        if gids is None:
+            gids = await self._resolve_report_groups("game_group_ids")
         logger.info(f"[游戏日报] 解析到的目标群: {gids}")
         if not gids: return 0
         apid = self._resolve_report_platform()
@@ -9660,7 +10405,7 @@ class MuliyResourcesPlugin(Star):
         logger.info(f"[暮黎资源] 游戏日报本次成功推送 {sent}/{len(gids)} 个群")
         return sent
 
-    async def _game_build_and_send(self, games: list, ts: str):
+    async def _game_build_and_send(self, games: list, ts: str, gids=None):
         date_label = datetime.date.today().strftime("%Y年%m月%d日")
         src_label = "switch618" if self._game_source() == "switch618" else "XDGAME"
         html = build_cartoon_html(games, date_label, source_label=src_label)
@@ -9711,7 +10456,7 @@ class MuliyResourcesPlugin(Star):
             logger.warning("[游戏日报] 图片渲染失败，将改用文字版推送")
         else:
             logger.info(f"[游戏日报] 准备发送，最终图片体积 {len(img_bytes)//1024}KB")
-        return await self._game_send_report(img_bytes, ts, text)
+        return await self._game_send_report(img_bytes, ts, text, gids=gids)
 
     async def _game_daily_job(self):
         ts = datetime.date.today().strftime("%Y%m%d")
@@ -9721,16 +10466,17 @@ class MuliyResourcesPlugin(Star):
             if self._game_last_run_date == ts:
                 logger.info(f"[暮黎资源] 游戏日报今日({ts})已运行过，跳过")
                 return
+            config = self._get_config()
+            if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
+                logger.warning("[暮黎资源] 游戏日报已触发，但 game_report_enabled 关闭，跳过")
+                self._mark_report_ran("game", ts)
+                return
+            gs_list = await self._resolve_report_groups("game_group_ids")
+            if not gs_list:
+                logger.warning("[暮黎资源] 游戏日报未能获取目标群（留空=全部群），等待兜底重试")
+                return
             self._mark_report_ran("game", ts)  # 先占位，防止并发重入（并持久化）
         logger.info(f"[暮黎资源] ⏰ 游戏日报定时触发 @ {datetime.datetime.now()} (Asia/Shanghai)")
-        config = self._get_config()
-        if not (config.get("game_report_enabled", True) if isinstance(config, dict) else True):
-            logger.warning("[暮黎资源] 游戏日报已触发，但 game_report_enabled 关闭，跳过")
-            return
-        gs_list, fb = self._resolve_group_ids("game_group_ids")
-        if not gs_list:
-            logger.warning("[暮黎资源] 游戏日报已触发，但未配置 game_group_ids，跳过发送")
-            return
         mx = int(config.get("game_report_max", 24) or 24)
         logger.info(f"[游戏日报] 本次抓取：数据源={self._game_source()} | 上限={mx} 款 | 目标群={gs_list}")
         if self._game_source() == "switch618":
@@ -9747,7 +10493,7 @@ class MuliyResourcesPlugin(Star):
         if not games:
             logger.info("[游戏日报] 今日暂无更新，标记今日已完成")
             self._mark_report_ran("game", ts); return
-        sent = await self._game_build_and_send(games, ts)
+        sent = await self._game_build_and_send(games, ts, gids=gs_list)
         # 仅当成功推送到至少一个群才标记今日完成；否则留给兜底守护重试
         if sent > 0:
             self._mark_report_ran("game", ts)

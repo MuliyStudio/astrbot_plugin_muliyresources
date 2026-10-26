@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.16.3" alt="版本"></a>
+  <a href="https://github.com/MuliyStudio/astrbot_plugin_muliyresources/releases"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/version.svg?v=1.17.5" alt="版本"></a>
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/astrbot.svg" alt="AstrBot 版本">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/platform.svg" alt="支持平台">
   <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/badges/novel.svg" alt="so-novel">
@@ -120,6 +120,18 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 > **想省事的话**：什么都不用装、什么都不用配，装好插件就能搜影视/游戏/软件、能收日报、能发语音。
 
+### 🖥️ 可视化配置页（推荐）
+
+插件装好后，在 WebUI 打开 **插件 → 已安装 → 暮黎资源聚合**，进入插件详情页，在「插件页面」中打开 **暮黎资源聚合控制台**（需要 AstrBot 支持插件页面，建议使用最新版）。它把原本很长的配置页整理成了一个独立界面：
+
+- 左侧按功能分组，顶部搜索框可直接搜 Cookie、群号、日报等配置项；
+- 开关、数字、下拉、标签、多行清单都有对应控件，所有配置项常显，不再折叠；
+- 修改后统一保存，只提交改动过的字段；改日报时间/开关会自动重新注册定时任务；
+- 日报推送群留空 = 自动发送到机器人所在全部群；
+- 支持亮色/暗色主题和手机窄屏。
+
+> 原来的「插件配置」入口仍然保留，作为兜底；日常配置建议使用「暮黎资源聚合控制台」。
+
 ---
 
 ## 🚀 快速上手（小白使用手册）
@@ -162,7 +174,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | 游戏自动登录刷新 Cookie | `game` → `xdgame_username` + `xdgame_password` |
 | 小说搜索下载 | 部署 so-novel + `novel` → `sonovel_base_url` |
 | 网易云 VIP 歌曲 | `music` → `wyy_cookie`（黑胶会员 `MUSIC_U`） |
-| 日报推到群聊 | 各自分组填 `xxx_group_ids`（软件/游戏/影视/短剧独立） |
+| 日报推到群聊 | 各自分组填 `xxx_group_ids`（软件/游戏/影视/短剧独立）；留空 = 自动推送到机器人所在全部群 |
 | 入群审核（QQ 图形验证码） | `verify` → 开启 `join_verify_enabled` + 填 `join_verify_group_ids`（机器人需为群管理员） |
 
 ### 常用命令速查
@@ -210,7 +222,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 在 AstrBot WebUI → 插件设置 →「暮黎资源聚合」中，按分组填写。**大部分留空即可用默认功能。**
 
 > 配置页已按使用频率重排：图片渲染 → 游戏 / 软件 / 影视 → 短剧 / 小说 → 音乐 / VIP / 审核 / 积分。
-> 账号凭据、日报时间、超时等高级项默认收进每组的「**更多配置**」，展开才显示；关掉某个总开关（日报、积分、入群审核）时，相关项会自动隐藏。
+> 所有配置项常显，不再折叠；关掉某个总开关（日报、积分、入群审核）时，相关项会显示「未生效」提示，但仍可编辑。
 
 ### 🎮 游戏（game）
 
@@ -222,7 +234,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `max_search_results` | `32` | 游戏搜索最大结果数 |
 | `game_report_enabled` | `true` | 游戏日报开关 |
 | `game_schedule_hour` / `minute` | `23:00` | 游戏日报定时（独立） |
-| `game_group_ids` | `[]` | 游戏日报推送群号 |
+| `game_group_ids` | `[]` | 游戏日报推送群号；留空 = 全部群 |
 | `game_report_max` | `24` | 游戏日报每期上限 |
 
 ### 🎬 影视（movie）
@@ -235,7 +247,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `muliy_cookie` | `""` | **片库主站（备用源）Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。与账号密码二选一，两者都填时 Cookie 优先。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW） |
 | `muliy_release_url` | `""` | 片库系发布页（默认挂了.com，留空即可） |
 | `muliy_cache_ttl` | `3600` | 片库主站登录态缓存秒数 |
-| `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（mv电影·tv剧集·ac动漫；日报 pdy0 优先、片库备用） |
+| `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（群号留空 = 全部群；mv电影·tv剧集·ac动漫；日报 pdy0 优先、片库备用） |
 
 ### 🎵 网易云（music）
 
@@ -281,7 +293,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `drama_search_limit` | `20` | 单次搜索结果上限 |
 | `drama_report_enabled` | `true` | 短剧日报开关 |
 | `drama_schedule_hour` / `drama_schedule_minute` | `21:00` | 短剧日报定时（独立） |
-| `drama_group_ids` | `[]` | 短剧日报推送群号 |
+| `drama_group_ids` | `[]` | 短剧日报推送群号；留空 = 全部群 |
 | `drama_report_max` | `12` | 短剧日报每期上限 |
 | `drama_timeout` | `15` | 请求超时（秒） |
 

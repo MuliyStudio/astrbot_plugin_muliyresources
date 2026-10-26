@@ -1,0 +1,14 @@
+{
+  "views": {
+    "config": {
+      "title": "Muliy Resources Console",
+      "description": "All settings for movies, games, software, short dramas, novels, points and join verification in one place."
+    }
+  },
+  "pages": {
+    "config": {
+      "title": "Muliy Resources Console",
+      "description": "All settings for movies, games, software, short dramas, novels, points and join verification in one place."
+    }
+  }
+}

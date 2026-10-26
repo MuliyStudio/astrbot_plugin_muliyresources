@@ -19,7 +19,7 @@ INCLUDE_FILES = {
     "README.md", "LICENSE", "CHANGELOG.md", "SO-NOVEL部署指南.md",
     "logo.png",
 }
-INCLUDE_DIRS = ("core", "assets")
+INCLUDE_DIRS = ("core", "assets", "pages", ".astrbot-plugin")
 EXCLUDE_DIRS = {"__pycache__", "preview", "screenshots", "badges", "tools",
                 "qr_debug_logs", ".git", ".github", "dist"}
 EXCLUDE_SUFFIX = {".pyc", ".pyo", ".log"}
@@ -50,7 +50,9 @@ def iter_files():
             continue
         for fn in filenames:
             rel = f"{rel_dir}/{fn}" if rel_dir else fn
-            if fn in EXCLUDE_NAMES or rel in EXCLUDE_REL:
+            if rel_dir == "" and fn in EXCLUDE_NAMES:
+                continue
+            if rel in EXCLUDE_REL or fn == ".DS_Store":
                 continue
             if os.path.splitext(fn)[1].lower() in EXCLUDE_SUFFIX:
                 continue
@@ -79,7 +81,9 @@ def main():
     for s, r in tops:
         print(f"  {s / 1024:8.0f} KB  {r}")
     required = {"main.py", "metadata.yaml", "core/brand.py",
-                "assets/logo_mark_128.png", "assets/fonts/MuliHeavy.woff2"}
+                "assets/logo_mark_128.png", "assets/fonts/MuliHeavy.woff2",
+                "pages/config/index.html", "pages/config/app.js",
+                "pages/config/style.css"}
     missing = required - {r for r, _ in files}
     print("缺失必需文件：", "无" if not missing else missing)
 

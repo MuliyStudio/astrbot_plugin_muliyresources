@@ -1,7 +1,7 @@
 {
   "list_card": {
     "description": "长列表图片卡片",
-    "hint": "搜索结果条目多时自动出图；关闭后全部回到纯文本。高级项已收起。",
+    "hint": "搜索结果条目多时自动出图；关闭后全部回到纯文本。",
     "type": "object",
     "default": {},
     "items": {
@@ -136,7 +136,7 @@
   },
   "game": {
     "description": "游戏资源",
-    "hint": "游戏搜索源、结果上限、账号凭据与游戏日报；凭据/日报时间在「更多配置」里。",
+    "hint": "游戏搜索源、结果上限、账号凭据与游戏日报；日报群号留空则推送到全部群。",
     "type": "object",
     "default": {},
     "items": {
@@ -186,7 +186,7 @@
         "type": "bool",
         "description": "游戏日报总开关",
         "default": true,
-        "hint": "开启后按本组时间每天自动推送游戏日报到「游戏日报推送群」；时间与群号仅在本组填写，不要填到其它分组。"
+        "hint": "开启后按本组时间每天自动推送游戏日报到「游戏日报推送群」；群号留空=全部群。时间与群号仅在本组填写，不要填到其它分组。"
       },
       "game_report_max": {
         "type": "int",
@@ -226,12 +226,12 @@
       },
       "game_group_ids": {
         "type": "list",
-        "description": "游戏日报推送群 ID",
+        "description": "游戏日报推送群 ID（留空=全部群）",
         "default": [],
         "items": {
           "type": "string"
         },
-        "hint": "填入群号，可多个；留空则不推送。",
+        "hint": "填入群号，可多个；留空则自动发送到机器人所在的所有群（需要协议端支持群列表，或机器人已在该群收到过消息）。",
         "condition": {
           "game_report_enabled": true
         },
@@ -241,7 +241,7 @@
   },
   "software": {
     "description": "软件资源",
-    "hint": "软件日报的推送时间与目标群。",
+    "hint": "软件日报的推送时间与目标群；群号留空则推送到全部群。",
     "type": "object",
     "default": {},
     "items": {
@@ -263,19 +263,19 @@
       },
       "group_ids": {
         "type": "list",
-        "description": "软件日报推送群 ID",
+        "description": "软件日报推送群 ID（留空=全部群）",
         "default": [],
         "items": {
           "type": "string"
         },
-        "hint": "填入群号，可多个；留空则不推送。",
+        "hint": "填入群号，可多个；留空则自动发送到机器人所在的所有群（需要协议端支持群列表，或机器人已在该群收到过消息）。",
         "collapsed": true
       }
     }
   },
   "movie": {
     "description": "影视资源",
-    "hint": "影视搜索源（pdy0 默认 / 片库主站备用）、验证码识别与影视日报；高级项在「更多配置」里。",
+    "hint": "影视搜索源（pdy0 默认 / 片库主站备用）、验证码识别、账号凭据与影视日报；日报群号留空则推送到全部群。",
     "type": "object",
     "default": {},
     "items": {
@@ -332,7 +332,7 @@
         "type": "bool",
         "description": "影视日报总开关",
         "default": true,
-        "hint": "开启后按本组时间每天推送影视日报（pdy0 优先，片库主站备用）。"
+        "hint": "开启后按本组时间每天推送影视日报（pdy0 优先，片库主站备用）；群号留空=全部群。"
       },
       "movie_report_max": {
         "type": "int",
@@ -389,12 +389,12 @@
       },
       "movie_group_ids": {
         "type": "list",
-        "description": "影视日报推送群 ID",
+        "description": "影视日报推送群 ID（留空=全部群）",
         "default": [],
         "items": {
           "type": "string"
         },
-        "hint": "填入群号，可多个；留空则不推送。",
+        "hint": "填入群号，可多个；留空则自动发送到机器人所在的所有群（需要协议端支持群列表，或机器人已在该群收到过消息）。",
         "condition": {
           "movie_report_enabled": true
         },
@@ -404,7 +404,7 @@
   },
   "shortdrama": {
     "description": "短剧搜索与日报",
-    "hint": "短剧搜索与短剧日报；日报时间/群在「更多配置」里。",
+    "hint": "短剧搜索与短剧日报；日报时间、推送群都在本组，群号留空则推送到全部群。",
     "type": "object",
     "default": {},
     "items": {
@@ -435,7 +435,7 @@
         "type": "bool",
         "description": "短剧日报总开关",
         "default": true,
-        "hint": "开启后按本组时间每天推送短剧日报到「短剧日报推送群」。"
+        "hint": "开启后按本组时间每天推送短剧日报到「短剧日报推送群」；群号留空=全部群。"
       },
       "drama_report_max": {
         "type": "int",
@@ -475,12 +475,12 @@
       },
       "drama_group_ids": {
         "type": "list",
-        "description": "短剧日报推送群 ID",
+        "description": "短剧日报推送群 ID（留空=全部群）",
         "default": [],
         "items": {
           "type": "string"
         },
-        "hint": "填入群号，可多个；留空则不推送。",
+        "hint": "填入群号，可多个；留空则自动发送到机器人所在的所有群（需要协议端支持群列表，或机器人已在该群收到过消息）。",
         "condition": {
           "drama_report_enabled": true
         },
@@ -490,7 +490,7 @@
   },
   "novel": {
     "description": "小说搜索与下载",
-    "hint": "so-novel 服务地址与下载格式；令牌、超时在「更多配置」里。",
+    "hint": "so-novel 服务地址、令牌、下载格式与超时。",
     "type": "object",
     "default": {},
     "items": {
@@ -549,7 +549,7 @@
   },
   "music": {
     "description": "网易云音乐",
-    "hint": "网易云语音名片；自建接口、Cookie、代理在「更多配置」里。",
+    "hint": "网易云语音名片；解析后端、音质、Cookie、代理都在本组。",
     "type": "object",
     "default": {},
     "items": {
@@ -637,7 +637,7 @@
   },
   "verify": {
     "description": "入群审核（QQ）",
-    "hint": "QQ 新成员图形验证码审核；超时/机会/撤回等在「更多配置」里。",
+    "hint": "QQ 新成员图形验证码审核；超时、机会、撤回与失败处理都在本组。",
     "type": "object",
     "default": {},
     "items": {
@@ -717,7 +717,7 @@
   },
   "points": {
     "description": "签到与积分",
-    "hint": "签到与积分系统；初始积分、连续加成、推荐清单、资源消耗在「更多配置」里。",
+    "hint": "签到与积分系统；初始积分、连续加成、推荐清单、资源消耗都在本组。",
     "type": "object",
     "default": {},
     "items": {
