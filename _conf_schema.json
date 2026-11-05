@@ -26,7 +26,7 @@
   },
   "minigame": {
     "description": "群聊小游戏",
-    "hint": "猜数字（最多 6 人，范围随人数扩大）+ 封面猜猜（单人）；只在群聊里通过 /小游戏 启动，不主动推送。",
+    "hint": "猜数字（最多 6 人，范围随人数扩大）+ 封面猜猜（单人）+ 谁是卧底（4-6 人，私聊发词）；只在群聊里通过 /小游戏 启动，不主动推送。谁是卧底需要机器人能私聊群成员。",
     "type": "object",
     "default": {},
     "items": {
@@ -110,6 +110,91 @@
         "min": 4,
         "max": 40,
         "hint": "越大越糊；默认 12。",
+        "collapsed": true
+      },
+      "minigame_uc_enabled": {
+        "type": "bool",
+        "description": "启用「谁是卧底」",
+        "default": true,
+        "hint": "重要：该玩法需要用私聊给每位玩家发词和收票。请先确认机器人已开启群聊私聊权限（QQ/微信需允许机器人主动私聊，部分平台还要求玩家先加好友），否则玩家会收不到自己的词。"
+      },
+      "minigame_uc_join_timeout": {
+        "type": "int",
+        "description": "谁是卧底报名时长（秒）",
+        "default": 90,
+        "min": 30,
+        "max": 180,
+        "hint": "房主可回复 2 立即开始；人数不足会在超时后取消。"
+      },
+      "minigame_uc_min_players": {
+        "type": "int",
+        "description": "谁是卧底最少人数",
+        "default": 4,
+        "min": 3,
+        "max": 6,
+        "hint": "少于该人数无法开局。"
+      },
+      "minigame_uc_max_players": {
+        "type": "int",
+        "description": "谁是卧底最多人数",
+        "default": 6,
+        "min": 4,
+        "max": 12,
+        "hint": "人数越多，一局时间越长；6 人约 8 分钟。"
+      },
+      "minigame_uc_turn_timeout": {
+        "type": "int",
+        "description": "每人描述限时（秒）",
+        "default": 40,
+        "min": 15,
+        "max": 90,
+        "hint": "超时按弃权处理，自动轮到下一位。"
+      },
+      "minigame_uc_vote_timeout": {
+        "type": "int",
+        "description": "每轮投票限时（秒）",
+        "default": 30,
+        "min": 15,
+        "max": 90,
+        "hint": "超时未投票视为弃权，截止后统一公布票型。"
+      },
+      "minigame_uc_desc_max": {
+        "type": "int",
+        "description": "描述字数上限",
+        "default": 20,
+        "min": 6,
+        "max": 50,
+        "hint": "一句话描述，不能直接说出自己的词。",
+        "collapsed": true
+      },
+      "minigame_uc_spies": {
+        "type": "int",
+        "description": "卧底人数",
+        "default": 1,
+        "min": 1,
+        "max": 2,
+        "hint": "默认 1 个卧底（暗卧底，不告诉卧底身份）。",
+        "collapsed": true
+      },
+      "minigame_uc_private_vote": {
+        "type": "bool",
+        "description": "私聊投票",
+        "default": true,
+        "hint": "开启后玩家私聊机器人回复编号投票，群里只公布票数；关闭则改为群内回复编号。",
+        "collapsed": true
+      },
+      "minigame_uc_reveal_role": {
+        "type": "bool",
+        "description": "出局时公布身份",
+        "default": false,
+        "hint": "关闭时只在最终结算揭晓身份，悬念更足。",
+        "collapsed": true
+      },
+      "minigame_uc_word_level": {
+        "type": "string",
+        "description": "词对难度",
+        "default": "mixed",
+        "hint": "mixed=混合；easy=日常（秒懂）；normal=进阶；hard=地狱（容易撞车）。",
         "collapsed": true
       }
     }
@@ -306,6 +391,24 @@
         "max": 86400,
         "hint": "默认 3600 秒，到期自动重登。",
         "collapsed": true
+      },
+      "pan_expiry_hint": {
+        "type": "bool",
+        "description": "网盘资源过期概率标签",
+        "default": true,
+        "hint": "开启后按资源发布时间、网盘类型和历史失效反馈估算过期概率，列表中显示 🟢较新 / 🟡一般 / 🟠偏高 / 🔴极高，并把高风险资源置底（编号随之变化）。关闭后列表恢复原顺序。"
+      },
+      "pan_link_check": {
+        "type": "bool",
+        "description": "选中网盘时校验链接是否失效",
+        "default": true,
+        "hint": "开启后用户选中某条网盘时，会先请求一次分享页确认真实状态；确认过期会自动提示并推荐其他资源，同时记录该链接，后续列表直接置底。网络失败或风控时按原流程继续发送，不影响正常使用。"
+      },
+      "pan_link_scan": {
+        "type": "bool",
+        "description": "选网盘类型时遍历检测全部链接",
+        "default": true,
+        "hint": "开启后用户选定网盘分类时，会并发检测该分类下全部链接（最多 60 个、8 并发），自动过滤已失效资源并记录；检测约需数秒，结果缓存 10 分钟。关闭则只保留概率标签与选中时校验。"
       },
       "muliy_username": {
         "type": "string",

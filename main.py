@@ -11,7 +11,7 @@ core/software.py   — 软件日报&搜索相关函数
 core/movie.py      — 旧 a123tv 影视搜索函数（已停用，仅保留兼容）
 """
 
-import asyncio, base64, concurrent.futures, datetime, io, json, os, random, re, sys, tempfile, time, traceback, zipfile, zoneinfo
+import asyncio, base64, concurrent.futures, copy, datetime, io, json, os, random, re, sys, tempfile, time, traceback, zipfile, zoneinfo
 from html import escape
 from typing import Optional
 
@@ -88,6 +88,9 @@ try:
         minigame_result_card_html, minigame_lobby_html,
         minigame_bomb_wait_html, minigame_cover_pick_html,
         minigame_cover_question_html, movie_detail_card_html,
+        minigame_uc_join_html, minigame_uc_round_html,
+        minigame_uc_vote_html, minigame_uc_tally_html,
+        minigame_uc_result_html,
         game_detail_card_html, software_detail_card_html,
         render_list_card, prewarm as prewarm_list_card,
     )
@@ -98,6 +101,9 @@ except ImportError:  # 缺 playwright 时也要能正常加载插件（列表自
     minigame_result_card_html = minigame_lobby_html = None
     minigame_bomb_wait_html = minigame_cover_pick_html = None
     minigame_cover_question_html = movie_detail_card_html = None
+    minigame_uc_join_html = minigame_uc_round_html = None
+    minigame_uc_vote_html = minigame_uc_tally_html = None
+    minigame_uc_result_html = None
     game_detail_card_html = software_detail_card_html = None
     render_list_card = prewarm_list_card = None
 from .core.episode_utils import (
@@ -108,6 +114,9 @@ from .core.minigame import (
     BombGame, COVER_KINDS, MiniGameStore, cleanup_cover_cache,
     fetch_cover_bytes, fetch_pool, normalize_choice, pick_question,
     pillow_available, read_pool_cache, save_pool_cache,
+)
+from .core.undercover import (
+    ROLE_CIVIL, ROLE_SPY, UndercoverGame, load_pairs, pair_key, pick_pair,
 )
 from .core.movie import (
     search_movies, get_movie_detail, get_random_movie,
@@ -125,6 +134,9 @@ from .core.muliy_site import (
     play_url as muliy_play_url, format_movie_list_new, format_resource_type,
     format_play_nodes, format_pan_list, format_pan_types, group_panlist_by_type,
     extract_pwd, build_merged_text,
+)
+from .core.pan_health import (
+    PanReportStore, annotate_panlist, check_pan_link, check_many,
 )
 
 from .core.netease import (
@@ -239,6 +251,7 @@ _CONF_GROUPS = {
     "software": ["schedule_hour", "schedule_minute", "group_ids"],
     "movie": [
         "movie_source", "pdy_auto_captcha", "muliy_cache_ttl", "muliy_release_url",
+        "pan_expiry_hint", "pan_link_check", "pan_link_scan",
         "movie_report_enabled", "movie_report_max",
         "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids", "movie_sections",
         "muliy_username", "muliy_password", "muliy_cookie",
@@ -271,6 +284,12 @@ _CONF_GROUPS = {
         "minigame_bomb_turn_timeout",
         "minigame_cover_rounds", "minigame_cover_timeout",
         "minigame_cover_pool_ttl", "minigame_cover_pixel",
+        "minigame_uc_enabled", "minigame_uc_join_timeout",
+        "minigame_uc_min_players", "minigame_uc_max_players",
+        "minigame_uc_turn_timeout", "minigame_uc_vote_timeout",
+        "minigame_uc_desc_max", "minigame_uc_spies",
+        "minigame_uc_private_vote", "minigame_uc_reveal_role",
+        "minigame_uc_word_level",
     ],
     "points": [
         "points_enabled", "points_initial", "checkin_points",
@@ -297,6 +316,114 @@ _VIEW_GROUP_ICONS = {
     "shortdrama": "tv", "novel": "book", "music": "music",
     "vip_video": "play", "points": "star", "verify": "verified",
     "minigame": "casino", "list_card": "image", "browser": "globe",
+}
+# 组内二级分类：同一组字段太多时按功能分块展示（未列出的字段作为「全局设置」放在框外）。
+# 只影响可视化页面，不改变 _conf_schema.json 的结构。
+_VIEW_SECTIONS = {
+    "game": [
+        {"key": "accounts", "title": "账号与 Cookie", "icon": "server",
+         "hint": "xdgame 自动登录与两个搜索源的登录态",
+         "keys": ["xdgame_username", "xdgame_password", "cookie",
+                  "switch618_cookie"]},
+        {"key": "daily", "title": "游戏日报", "icon": "spark",
+         "hint": "定时推送、每期数量与推送群",
+         "keys": ["game_report_enabled", "game_report_max",
+                  "game_schedule_hour", "game_schedule_minute",
+                  "game_group_ids"]},
+    ],
+    "software": [
+        {"key": "daily", "title": "软件日报", "icon": "spark",
+         "hint": "定时推送时间与推送群",
+         "keys": ["schedule_hour", "schedule_minute", "group_ids"]},
+    ],
+    "movie": [
+        {"key": "search", "title": "搜索与网盘", "icon": "search",
+         "hint": "搜索源、验证码与网盘链接检测",
+         "keys": ["movie_source", "pdy_auto_captcha", "pan_expiry_hint",
+                  "pan_link_check", "pan_link_scan"]},
+        {"key": "backup", "title": "片库主站（备用源）", "icon": "server",
+         "hint": "备用源地址、登录态缓存与账号",
+         "keys": ["muliy_release_url", "muliy_cache_ttl", "muliy_username",
+                  "muliy_password", "muliy_cookie"]},
+        {"key": "daily", "title": "影视日报", "icon": "spark",
+         "hint": "板块、数量、推送时间与推送群",
+         "keys": ["movie_report_enabled", "movie_report_max", "movie_sections",
+                  "movie_schedule_hour", "movie_schedule_minute",
+                  "movie_group_ids"]},
+    ],
+    "shortdrama": [
+        {"key": "search", "title": "短剧搜索", "icon": "search",
+         "hint": "搜索开关、结果上限与请求超时",
+         "keys": ["drama_enabled", "drama_search_limit", "drama_timeout"]},
+        {"key": "daily", "title": "短剧日报", "icon": "spark",
+         "hint": "定时推送、每期数量与推送群",
+         "keys": ["drama_report_enabled", "drama_report_max",
+                  "drama_schedule_hour", "drama_schedule_minute",
+                  "drama_group_ids"]},
+    ],
+    "novel": [
+        {"key": "conn", "title": "连接设置", "icon": "server",
+         "hint": "so-novel 服务地址与访问令牌",
+         "keys": ["sonovel_base_url", "sonovel_token"]},
+        {"key": "search", "title": "搜索与下载", "icon": "search",
+         "hint": "默认格式、搜索上限与超时",
+         "keys": ["sonovel_format", "sonovel_search_limit", "sonovel_timeout",
+                  "sonovel_download_timeout"]},
+    ],
+    "music": [
+        {"key": "parse", "title": "解析方式", "icon": "music",
+         "hint": "语音名片开关、后端模式与自建接口",
+         "keys": ["wyy_auto_parse", "wyy_backend", "wyy_custom_url"]},
+        {"key": "audio", "title": "音质与时长", "icon": "bolt",
+         "hint": "解析音质、语音格式与最大发送时长",
+         "keys": ["wyy_music_type", "wyy_audio_format", "wyy_clip_seconds"]},
+        {"key": "account", "title": "账号与网络", "icon": "server",
+         "hint": "黑胶会员 Cookie 与请求代理",
+         "keys": ["wyy_cookie", "wyy_proxy"]},
+    ],
+    "points": [
+        {"key": "checkin", "title": "签到", "icon": "verified",
+         "hint": "初始积分、每日签到与连续加成",
+         "keys": ["points_initial", "checkin_points", "checkin_streak_bonus",
+                  "checkin_streak_max"]},
+        {"key": "card", "title": "签到卡片", "icon": "image",
+         "hint": "卡片开关、左下模块与推荐清单",
+         "keys": ["checkin_card_enabled", "checkin_info_module",
+                  "checkin_weather_city", "checkin_recommend_dynamic",
+                  "checkin_recommend_games", "checkin_recommend_software",
+                  "checkin_recommend_movies"]},
+        {"key": "cost", "title": "资源扣费", "icon": "bolt",
+         "hint": "按资源类型设置获取时消耗的积分",
+         "keys": ["points_cost_game", "points_cost_software",
+                  "points_cost_movie", "points_cost_drama",
+                  "points_cost_novel"]},
+    ],
+    "verify": [
+        {"key": "rules", "title": "验证规则", "icon": "verified",
+         "hint": "限时、答题次数与失败处理",
+         "keys": ["join_verify_timeout", "join_verify_max_attempts",
+                  "join_verify_recall", "join_verify_kick"]},
+        {"key": "welcome", "title": "通过后的欢迎语", "icon": "spark",
+         "hint": "验证通过时发送的文案",
+         "keys": ["join_verify_welcome_text"]},
+    ],
+    "minigame": [
+        {"key": "guess", "title": "猜数字", "icon": "casino",
+         "hint": "组队等待与每回合限时",
+         "keys": ["minigame_bomb_timeout", "minigame_bomb_turn_timeout"]},
+        {"key": "cover", "title": "封面猜猜", "icon": "image",
+         "hint": "题数、限时、题库缓存与马赛克强度",
+         "keys": ["minigame_cover_rounds", "minigame_cover_timeout",
+                  "minigame_cover_pool_ttl", "minigame_cover_pixel"]},
+        {"key": "undercover", "title": "谁是卧底", "icon": "eye",
+         "hint": "报名、人数、描述、投票与词库难度",
+         "keys": ["minigame_uc_enabled", "minigame_uc_join_timeout",
+                  "minigame_uc_min_players", "minigame_uc_max_players",
+                  "minigame_uc_turn_timeout", "minigame_uc_vote_timeout",
+                  "minigame_uc_desc_max", "minigame_uc_spies",
+                  "minigame_uc_private_vote", "minigame_uc_reveal_role",
+                  "minigame_uc_word_level"]},
+    ],
 }
 # string 字段的推荐值（页面渲染为下拉框）；list 字段为多选。
 _VIEW_FIELD_OPTIONS = {
@@ -396,6 +523,10 @@ class MuliyResourcesPlugin(Star):
         self._drama_sessions = SearchSessionManager()  # 短剧会话 (wangpant8)
         self._muliy_client: MuliySiteClient | None = None  # 片库主站客户端（懒加载）
         self._pdy_client: PdySiteClient | None = None      # pdy0 客户端（懒加载）
+        # 网盘资源过期反馈（实际点到失效链接后记录，列表评分/置底用）
+        self._pan_reports: Optional[PanReportStore] = None
+        # 断点续选：{用户key: {引用消息文本签名: {ts, manager, state}}}
+        self._breakpoints: dict = {}
         # pdy0 搜索验证码：等待用户手动输入 {key: {...}}；全局同时只保留一个
         self._pdy_pending: dict = {}
         self._pdy_ocr = None
@@ -453,6 +584,10 @@ class MuliyResourcesPlugin(Star):
         self._minigame_store: Optional[MiniGameStore] = None
         self._minigame_pools: dict = {}      # {kind: (pool, ts)}
         self._minigame_pool_lock = None
+        # 谁是卧底：词库懒加载、最近用过的词对、私聊投票会话绑定
+        self._uc_pairs: Optional[list] = None
+        self._uc_recent: list = []
+        self._uc_vote_pending: dict = {}     # {(platform_id, uid): {...}}
         # 游戏 Cookie 自动登录：避免每次重装都手动 /game_cookie_refresh
         self._g_auto_login_next: float = 0.0
         self._g_auto_login_busy: bool = False
@@ -851,6 +986,114 @@ class MuliyResourcesPlugin(Star):
 
     # ==================== LLM 请求拦截（强制工具调用） ====================
 
+    # 会话内的快捷回复（选择/翻页/取消）：由系统规则直接处理，不该再触发 search_*
+    _FOLLOWUP_CMD_RE = re.compile(
+        r"^(?:0|取消(?:搜索)?|不要了?|算了|结束|退出|下一页|上一页|末页|首页|最新|"
+        r"跳\s*\d+|\d{1,3}|第[一二三四五六七八九十两0-9]+[个部集条页])$")
+
+    # 明显的「非搜索」语义：提问、教程、配置、评价、维护、闲聊等。
+    # 命中后不注入搜索引导——这些句子常含"电影/游戏/小说/资源/下载"等词，
+    # 一旦注入，模型很容易把聊天误判成搜索并调用工具。
+    _NON_SEARCH_WORDS = (
+        "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
+        "介绍", "宣传", "公告", "海报", "banner", "logo", "文案", "宣传语",
+        "配图", "插图", "表格", "代码",
+        "教程", "怎么", "如何", "为什么", "为啥", "什么原因", "是不是", "能不能",
+        "可不可以", "有没有办法", "怎么办", "好用吗", "值得", "推荐吗",
+        "报错", "错误", "失败", "无法", "用不了", "不能用", "没反应", "不生效",
+        "太慢", "很慢", "卡住", "超时", "重启", "更新日志", "版本", "作者",
+        "插件", "api", "API", "token", "模型", "提示词", "部署", "安装", "卸载",
+        "配置", "设置", "文档", "修复", "权限", "收费", "价格",
+        "影评", "剧情", "结局", "演员", "导演", "好看", "不好看", "讲什么",
+        "什么意思", "解析", "评分", "玩会儿", "一会儿", "无聊", "陪我玩",
+        "看起来", "看完", "看过", "看着",
+    )
+
+    # 明确的搜索语义：动词+内容 / 类型+下载链接 / 有没有XX / 网盘资源 / 推荐个XX
+    _SEARCH_INTENT_RES = (
+        re.compile(r"(?:帮我|给我|我要|我想|想|要|求|麻烦|请)?\s*"
+                   r"(?:找|搜|搜索|查一?下|下载|观看|想看|要看|来一?[部个本款]|追剧|追番)"
+                   r"\s*[^\s，。,.!?！？]{1,}"),
+        re.compile(r"(?:电影|电视剧|影视|综艺|动漫|动画|番剧|短剧|小说|游戏|软件|"
+                   r"app|应用|资源|网盘)[^\s，。,.!?！？]{0,6}"
+                   r"(?:下载|链接|资源|推荐|在哪|有没有|分享|合集)"),
+        re.compile(r"(?:推荐|安利)[^\s，。,.!?！？]{0,3}"
+                   r"(?:电影|电视剧|影视|综艺|动漫|动画|番剧|短剧|小说|游戏|软件|资源)"),
+        re.compile(r"(?:有没有|有木有|求一?[个部下本款]?|来个|来点|给我来)"
+                   r"\s*[^\s，。,.!?！？]{1,}"),
+        re.compile(r"(?:百度|夸克|阿里|uc|115|迅雷|天翼|123)[^\s]{0,4}(?:网盘|资源|链接)"),
+        re.compile(r"(?:看剧|看片|看番|追剧|追番)"),
+    )
+
+    def _active_search_session(self, event: AstrMessageEvent) -> str:
+        """返回当前未过期的搜索会话类型（没有则空串）。"""
+        for name, mgr in (
+            ("movie_new", self._movie_sessions_new),
+            ("movie", self._movie_sessions),
+            ("game", self._sessions),
+            ("software", self._search_sessions),
+            ("novel", self._novel_sessions),
+            ("drama", self._drama_sessions),
+        ):
+            try:
+                if mgr.get(event):
+                    return name
+            except Exception:  # noqa: BLE001
+                continue
+        return ""
+
+    def _is_non_search_request(self, text: str) -> bool:
+        return any(k in (text or "") for k in self._NON_SEARCH_WORDS)
+
+    def _looks_like_search_intent(self, text: str) -> bool:
+        """判断消息是否是「明确要求搜索资源」，而不是聊天/提问/评价。"""
+        t = (text or "").strip()
+        if not t or len(t) > 40:
+            return False
+        if self._FOLLOWUP_CMD_RE.match(t):
+            return False
+        if self._is_non_search_request(t):
+            return False
+        return any(rx.search(t) for rx in self._SEARCH_INTENT_RES)
+
+    # 清洗后剩下的无意义词：命中说明原句没有真正的资源名（如"我想玩会儿游戏"）
+    _BAD_SEARCH_KEYWORDS = {
+        "", "会儿", "一会", "一下", "什么", "啥", "点", "个", "款", "部", "本",
+        "游戏", "软件", "app", "资源", "推荐", "安利", "下载", "搜索", "找", "搜",
+        "这个", "那个", "这些", "那些", "东西", "玩意儿",
+    }
+
+    def _valid_search_keyword(self, kw: str) -> bool:
+        k = (kw or "").strip()
+        if len(k) < 2:
+            return False
+        if k.lower() in self._BAD_SEARCH_KEYWORDS:
+            return False
+        return bool(re.search(r"[\u4e00-\u9fa5A-Za-z0-9]", k))
+
+    def _inject_temp_instruction(self, req, instruction: str) -> None:
+        """把指令作为「临时用户内容块」追加，不改写 system_prompt。
+
+        这样不会破坏上游模型的上下文缓存命中率，也不写入会话历史。
+        """
+        # 上架规范：严禁直接改写 system_prompt（会破坏上游模型上下文缓存命中率）。
+        try:
+            from astrbot.core.agent.message import TextPart
+            _part = TextPart(text=instruction)
+            for _mark in ("mark_as_temp", "make_as_temp"):
+                _fn = getattr(_part, _mark, None)
+                if callable(_fn):
+                    _part = _fn()
+                    break
+        except Exception:  # noqa: BLE001
+            _part = {"type": "text", "text": instruction, "_no_save": True}
+        _parts = getattr(req, "extra_user_content_parts", None)
+        if isinstance(_parts, list):
+            _parts.append(_part)
+        else:
+            # 极旧版本无该字段：退化为在用户 prompt 末尾追加（同样不改写 system_prompt）
+            req.prompt = f"{req.prompt or ''}\n\n{instruction}"
+
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req):
         """当用户消息包含资源搜索意图时，向 system prompt 注入工具调用规则。
@@ -891,12 +1134,27 @@ class MuliyResourcesPlugin(Star):
             except Exception as e:
                 logger.warning(f"[暮黎资源·积分] 积分查询快捷处理失败: {e}")
 
-        _non_search_intent = (
-            "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
-            "介绍", "宣传", "公告", "海报", "banner", "logo",
-            "文案", "宣传语", "配图", "插图",
-        )
-        if any(k in raw_text for k in _non_search_intent):
+        # ★会话指令前置处理（关键）：部分 AstrBot 版本里 LLM 请求早于
+        #   on_any_message，用户回复序号/翻页时模型会先回一句，插件再回一遍。
+        #   这里在 LLM 请求前先跑一次会话处理器；处理完成会 stop_event，
+        #   本次 LLM 请求直接取消，因此不会再出现 LLM 的“多嘴”回复。
+        try:
+            if self._active_search_session(event):
+                await self._dispatch_any_message(event)
+                if event.is_stopped():
+                    # 双保险：显式关闭默认 LLM 请求（部分版本 stop_event 不会取消已排队的请求）
+                    try:
+                        event.should_call_llm(False)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    logger.debug("[暮黎资源] 会话指令已在 LLM 前处理，跳过本次 LLM")
+                    return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源] LLM 前会话预处理失败: {e}")
+
+        # ★非搜索意图短路：提问、教程、配置、评价、维护类消息即使含"小说/游戏/影视"
+        #   等词也绝不应触发任何资源搜索逻辑（否则"插件怎么配置"会被误判为搜索）。
+        if self._is_non_search_request(raw_text):
             return
 
         # ★新站影视会话兜底拦截：LLM 可能偷懒不调工具，在 LLM 前直接处理
@@ -906,7 +1164,9 @@ class MuliyResourcesPlugin(Star):
             is_cmd = (raw_text in ("0", "取消")
                       or re.match(r'^[1-9]\d*$', raw_text)
                       or raw_text in ("下一页", "上一页", "末页", "首页", "最新")
-                      or raw_text.startswith("跳"))
+                      or raw_text.startswith("跳")
+                      or re.search(r"(网盘|在线|播放|线路|节点|夸克|百度|迅雷|阿里|天翼|115|uc)",
+                                   raw_text, re.I))
             if is_cmd:
                 try:
                     logger.info(f"[暮黎资源] 新站会话兜底拦截 stage={ses_mn.get('stage')} text={raw_text}")
@@ -929,7 +1189,7 @@ class MuliyResourcesPlugin(Star):
             _mn = re.sub(r'^(一下|一部|个|部|下)\s*', '', _mn)  # 去量词
             _mn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _mn).strip()
             # 排除"玩游戏/找软件"等非影视意图 + 太短的无意义词
-            if _mn and len(_mn) >= 2 and not re.search(r'(游戏|软件|app|APP|工具)', _mn):
+            if self._valid_search_keyword(_mn) and not re.search(r'(游戏|软件|app|APP|工具)', _mn):
                 try:
                     logger.info(f"[暮黎资源] 影视意图拦截: '{raw_text}' → search_movie('{_mn}')")
                     _ret = await self.llm_search_movie(event, _mn)
@@ -958,8 +1218,9 @@ class MuliyResourcesPlugin(Star):
             _dn = re.sub(r'^(我想看|我要看|想看|要看|帮我找|帮我搜|帮我看|搜|找|看|追|要|想|帮我|能不能|可以|麻烦|请)\s*', '', raw_text)
             _dn = re.sub(r'^(一下|一部|个|部|下)\s*', '', _dn)  # 去量词
             _dn = re.sub(r'短剧\s*', '', _dn)  # 去"短剧"统称
+            _dn = re.sub(r'^(推荐|安利)\s*', '', _dn)
             _dn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _dn).strip()
-            if _dn:
+            if self._valid_search_keyword(_dn):
                 try:
                     logger.info(f"[暮黎资源] 短剧意图拦截: '{raw_text}' → search_drama('{_dn}')")
                     _ret = await self.llm_search_drama(event, _dn)
@@ -986,8 +1247,9 @@ class MuliyResourcesPlugin(Star):
             _nn = re.sub(r'^(我想看|我要看|想看|要看|帮我找|帮我搜|帮我看|找|搜|看|读|听|我|要|想|帮我|能不能|可以|麻烦|请)\s*', '', raw_text)
             _nn = re.sub(r'^(一下|一本|本|部|下|个)\s*', '', _nn)  # 去量词
             _nn = re.sub(r'小说\s*', '', _nn)  # 去"小说"统称
+            _nn = re.sub(r'^(推荐|安利)\s*', '', _nn)
             _nn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _nn).strip()
-            if _nn:
+            if self._valid_search_keyword(_nn):
                 try:
                     logger.info(f"[暮黎资源] 小说意图拦截: '{raw_text}' → search_novel('{_nn}')")
                     _ret = await self.llm_search_novel(event, _nn)
@@ -1020,8 +1282,9 @@ class MuliyResourcesPlugin(Star):
             _gn = re.sub(r'^(我想玩|我要玩|想玩|要玩|帮我找|帮我搜|帮我下|帮我|找|搜|下|下载|要|想|请|玩)\s*', '', raw_text)
             _gn = re.sub(r'^(一下|一个|个|款|部|下|种)\s*', '', _gn)  # 去量词
             _gn = re.sub(r'游戏\s*', '', _gn)  # 去"游戏"统称
+            _gn = re.sub(r'^(推荐|安利)\s*', '', _gn)  # 去"推荐/安利"
             _gn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _gn).strip()
-            if _gn:
+            if self._valid_search_keyword(_gn):
                 try:
                     logger.info(f"[暮黎资源] 游戏意图拦截: '{raw_text}' → search_game('{_gn}')")
                     _ret = await self.llm_search_game(event, _gn)
@@ -1053,8 +1316,9 @@ class MuliyResourcesPlugin(Star):
             _sn = re.sub(r'^(帮我找|帮我搜|帮我下|帮我|找|搜|下|下载|装|用|要|想|请)\s*', '', raw_text)
             _sn = re.sub(r'^(一下|一个|个|款|部|下|种)\s*', '', _sn)  # 去量词
             _sn = re.sub(r'(软件|app|APP)\s*', '', _sn)  # 去"软件/app"统称
+            _sn = re.sub(r'^(推荐|安利)\s*', '', _sn)  # 去"推荐/安利"
             _sn = re.sub(r'[的啊呢吧呀哦！。.,，]+$', '', _sn).strip()
-            if _sn:
+            if self._valid_search_keyword(_sn):
                 try:
                     logger.info(f"[暮黎资源] 软件意图拦截: '{raw_text}' → search_software('{_sn}')")
                     _ret = await self.llm_search_software(event, _sn)
@@ -1068,87 +1332,240 @@ class MuliyResourcesPlugin(Star):
                     event.stop_event()
                     return
 
-        text = event.message_str.strip().lower()
-        # 资源搜索关键词 + 翻页/取消关键词（任一匹配就注入）
-        resource_kw = (
-            "找", "搜索", "下载", "资源", "游戏", "软件",
-            "影视", "电影", "电视剧", "综艺", "动漫", "追剧", "看片",
-            "短剧", "搜短剧", "看短剧", "追短剧",
-            "想看", "观看", "看剧", "看一", "看个", "看部", "看番", "追番",
-            "找小说", "搜小说", "看小说", "读小说", "听小说",
-            "wps", "office", "微信", "qq", "钉钉",
-            "有没有", "给个", "给我", "想要",
-            "下一页", "上一页", "跳转", "跳到", "翻页",
-            "取消", "算", "不要",
-            "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-            "第一个", "第二个", "第三个", "第四个", "第五个",
-            "百度", "天翼", "夸克", "阿里", "迅雷", "123", "uc", "磁力",
-        )
-        if not any(k in text for k in resource_kw):
+        text = raw_text.lower()
+
+        # ① 会话内的快捷回复（数字/翻页/取消）：由 on_any_message / 会话兜底直接处理，
+        #    这里只给一句「不要重复搜索」的轻量提示，避免模型看到"2"就再调 search_*。
+        if self._active_search_session(event) and self._FOLLOWUP_CMD_RE.match(raw_text):
+            self._inject_temp_instruction(req, (
+                "【暮黎资源·会话进行中】用户正在操作已有的搜索结果列表。"
+                "数字、上一页/下一页、取消等回复由系统直接处理，"
+                "不要再调用 search_* 重新搜索，也不要编造列表或链接。"
+                "只有用户明确说出新的资源名称并要求搜索时才调用工具。"))
+            logger.debug(f"[暮黎资源] LLM请求拦截，注入会话续接指令 text={raw_text}")
             return
 
-        # 负向意图：明显的非搜索类请求（生成封面/图片、写介绍、宣传、公告等）。
-        # 这类消息常含"小说/游戏/影视/搜索/下载"等词，会被上方 resource_kw 误命中；
-        # 若仍注入资源搜索引导，LLM 可能把"介绍里提到的'小说'"误判为小说搜索而误调工具。
-        _non_search_intent = (
-            "封面", "生成", "画一张", "画个", "画图", "做一张", "做图",
-            "介绍", "宣传", "公告", "海报", "banner", "logo",
-            "文案", "宣传语", "配图", "插图",
-        )
-        if any(k in text for k in _non_search_intent):
+        # ② 非搜索语义（提问/教程/配置/评价/维护/闲聊）已在前置短路处理；
+        #    长句也按聊天处理，不注入搜索引导。
+        if len(raw_text) > 40:
+            return
+
+        # ③ 只有「明确要求搜索资源」才注入工具调用规则。
+        #    旧实现用宽泛关键词（"找/资源/有没有/1/2/3"）命中，导致正常聊天
+        #    也会被注入引导、模型频繁误调工具；这里改为结构化意图判断。
+        if not self._looks_like_search_intent(raw_text):
             return
 
         instruction = """【暮黎资源】你是资源搜索助手。
-- 用户要找资源时，先清洗出纯关键词（去掉“帮我找/搜/下载”等前缀），再按资源类型选择对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 短剧 search_drama / 小说 search_novel。类型不确定时按最可能的一个调用，不要做综合搜索。
-- 搜索结果出来后，只需提醒用户：回复“序号”选择、说“下一页/上一页”翻页、选网盘回复“网盘名或序号”；这些由系统直接处理，严禁编造列表或链接。
+- 仅当用户在当前消息中明确要求「搜索/下载/观看某个资源」时，才调用对应工具：游戏 search_game / 软件 search_software / 影视 search_movie / 短剧 search_drama / 小说 search_novel。
+- 调用前先把关键词清洗干净（去掉“帮我找/搜/下载”等前缀和量词）；类型不确定时选最可能的一个，不要做综合搜索。
+- 用户只是在聊天、提问、评价、讨论剧情，或询问插件怎么用/怎么配置/为什么失败时，不要调用任何搜索工具。
+- 已有搜索结果会话时，数字、翻页、取消由系统直接处理，不要重复调用 search_*，也不要编造列表或链接。
 - 搜索资源会消耗积分（后台可配置），积分不足时系统会提示先发送 /签到；签到、积分查询、排行榜由系统直接回复，不要编造余额。
 - 严禁使用 markdown 表格（QQ 会乱码）。"""
-        # 上架规范：严禁直接改写 system_prompt（会破坏上游模型上下文缓存命中率）。
-        # 改为把指令作为「临时用户内容块」追加到用户消息之后——只在本次请求对模型可见、
-        # 不写入会话历史（_no_save），从而不影响历史上下文与缓存。
-        try:
-            from astrbot.core.agent.message import TextPart
-            _part = TextPart(text=instruction)
-            for _mark in ("mark_as_temp", "make_as_temp"):
-                _fn = getattr(_part, _mark, None)
-                if callable(_fn):
-                    _part = _fn()
-                    break
-        except Exception:
-            _part = {"type": "text", "text": instruction, "_no_save": True}
-        _parts = getattr(req, "extra_user_content_parts", None)
-        if isinstance(_parts, list):
-            _parts.append(_part)
-        else:
-            # 极旧版本无该字段：退化为在用户 prompt 末尾追加（同样不改写 system_prompt）
-            req.prompt = f"{req.prompt or ''}\n\n{instruction}"
+        self._inject_temp_instruction(req, instruction)
         logger.debug(f"[暮黎资源] LLM请求拦截，注入工具调用指令 text_len={len(text)}")
 
     # ==================== LLM 响应拦截：禁用 LLM 中间总结 ====================
 
-    @filter.on_decorating_result()
-    async def _strip_llm_chitchat_after_tool(self, event: AstrMessageEvent):
-        """当 LLM 完成工具调用后，如果插件已经直接发了消息（event.send），
-        清空 LLM 后续的"多嘴总结"文本，避免重复发送。
+    @staticmethod
+    def _mark_llm_suppress(event: AstrMessageEvent) -> None:
+        """标记「本条消息已由插件直接回复」，用于清空同一消息的 LLM 输出。
 
-        触发条件：当前 session 上有 _llm_handled 标记
-        - search_software / search_game / search_movie / search_novel：插件直接 send 了格式化页面
-        - select_* / 翻页 / 选网盘：由 on_any_message 纯规则处理，插件直接 send 详情/网盘列表
-        → 清空 LLM 的二次总结
+        用 event 级标记而不是 session 标记：像发送最终链接这种步骤会清掉
+        session，若只依赖 session 上的 _llm_handled，LLM 的二次回复就漏出来了。
         """
         try:
+            setter = getattr(event, "set_extra", None)
+            if callable(setter):
+                setter("_muliy_llm_suppress", True)
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            setattr(event, "_muliy_llm_suppress", True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _consume_llm_suppress(event: AstrMessageEvent) -> bool:
+        """读取并清除本消息的「插件已回复」标记。"""
+        try:
+            getter = getattr(event, "get_extra", None)
+            if callable(getter) and getter("_muliy_llm_suppress"):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if getattr(event, "_muliy_llm_suppress", False):
+                setattr(event, "_muliy_llm_suppress", False)
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    # ==================== 断点续选（引用消息恢复） ====================
+
+    _BP_TTL = 1800  # 断点缓存 30 分钟
+
+    @staticmethod
+    def _bp_user_key(event: AstrMessageEvent) -> str:
+        return (f"{event.get_platform_id()}:{event.get_group_id()}:"
+                f"{event.get_sender_id()}")
+
+    @staticmethod
+    def _bp_sig(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+    @staticmethod
+    def _quoted_reply_info(event: AstrMessageEvent):
+        """取出「引用回复」的原文/发送者/消息ID。
+
+        返回 (文本, 发送者ID, 消息ID)；不是引用返回三个空串。
+        """
+        def _from_comp(comp):
+            txt = (getattr(comp, "message_str", None)
+                   or getattr(comp, "text", None) or "")
+            if not txt:
+                parts = []
+                for c in (getattr(comp, "chain", None) or []):
+                    t = getattr(c, "text", None)
+                    if t:
+                        parts.append(str(t))
+                txt = "".join(parts)
+            sender = getattr(comp, "sender_id", "")
+            mid = getattr(comp, "id", "")
+            return (str(txt or "").strip(), str(sender or ""),
+                    str(mid if mid is not None else ""))
+
+        try:
+            for comp in (event.get_messages() or []):
+                if type(comp).__name__.lower() == "reply":
+                    return _from_comp(comp)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            obj = getattr(getattr(event, "message_obj", None), "reply", None)
+            if obj is not None:
+                return _from_comp(obj)
+        except Exception:  # noqa: BLE001
+            pass
+        return "", "", ""
+
+    def _register_breakpoint(self, event: AstrMessageEvent, manager: str,
+                             state: dict | None, texts: list,
+                             mid: str = "") -> None:
+        """把「这条列表消息」和当时的会话状态绑定，供引用回复时恢复。"""
+        if not state:
+            return
+        sigs = [self._bp_sig(t) for t in (texts or [])]
+        sigs = [s for s in sigs if s]
+        if mid:
+            sigs.append(f"id:{mid}")
+        if not sigs:
+            return
+        now = time.time()
+        key = self._bp_user_key(event)
+        bucket = self._breakpoints.setdefault(key, {})
+        for k in [k for k, v in bucket.items()
+                  if now - float(v.get("ts", 0)) > self._BP_TTL]:
+            bucket.pop(k, None)
+        try:
+            snap = copy.deepcopy(state)
+        except Exception:  # noqa: BLE001
+            snap = dict(state)
+        snap.pop("_llm_handled", None)
+        rec = {"ts": now, "manager": manager, "state": snap}
+        for s in sigs:
+            bucket[s] = rec
+        # 每个用户最多保留 30 条，避免长期占用内存
+        if len(bucket) > 30:
+            for k, _ in sorted(bucket.items(),
+                               key=lambda kv: float(kv[1].get("ts", 0)))[:len(bucket) - 30]:
+                bucket.pop(k, None)
+
+    def _resume_from_quote(self, event: AstrMessageEvent) -> Optional[dict]:
+        """仅当用户「引用回复机器人的列表消息」时恢复断点；直接发序号不恢复。"""
+        text, sender, mid = self._quoted_reply_info(event)
+        if not text and not mid:
+            return None
+        self_id = str(event.get_self_id() or "")
+        if sender and self_id and sender != self_id:
+            return None
+        key = self._bp_user_key(event)
+        bucket = self._breakpoints.get(key) or {}
+        now = time.time()
+        for k in [k for k, v in bucket.items()
+                  if now - float(v.get("ts", 0)) > self._BP_TTL]:
+            bucket.pop(k, None)
+        rec = bucket.get(f"id:{mid}") if mid else None
+        if not rec and text:
+            rec = bucket.get(self._bp_sig(text))
+        if not rec and text:
+            # 文本列表被引用时带上了提示行：用「包含」匹配兜底
+            target = self._bp_sig(text)
+            for sig, cand in bucket.items():
+                if len(sig) >= 8 and not sig.startswith("id:") and sig in target:
+                    rec = cand
+                    break
+        if not rec:
+            return None
+        mgr = {
+            "movie": self._movie_sessions_new,
+            "movie_old": self._movie_sessions,
+            "game": self._sessions,
+            "software": self._search_sessions,
+            "novel": self._novel_sessions,
+            "drama": self._drama_sessions,
+        }.get(rec.get("manager"))
+        if mgr is None:
+            return None
+        try:
+            state = copy.deepcopy(rec["state"])
+        except Exception:  # noqa: BLE001
+            state = dict(rec["state"])
+        state["_updated"] = now
+        mgr.set(event, state)
+        logger.info(f"[断点] 引用「{text[:24]}」恢复会话 "
+                    f"(manager={rec.get('manager')} stage={state.get('stage')})")
+        return state
+
+    def _mark_breakpoints_charged(self, event: AstrMessageEvent) -> None:
+        """资源已扣费后，把该用户现有断点都标记为已扣费，避免引用恢复后重复扣。"""
+        bucket = self._breakpoints.get(self._bp_user_key(event)) or {}
+        for rec in bucket.values():
+            st = rec.get("state")
+            if isinstance(st, dict):
+                st["_charged"] = True
+
+    @filter.on_decorating_result()
+    async def _strip_llm_chitchat_after_tool(self, event: AstrMessageEvent):
+        """当插件已经直接回复过本条消息时，清空 LLM 的重复输出（多嘴总结）。
+
+        触发条件（满足任一）：
+        - 本条消息被 on_any_message / 工具流程标记了「插件已回复」
+        - 当前 session 上有 _llm_handled 标记（工具直接 send 了格式化页面）
+
+        用 event 级标记兜住「发送完链接就删除 session」的场景（小说/影视），
+        否则 LLM 会对同一句「1」再回复一遍。
+        """
+        try:
+            suppress = self._consume_llm_suppress(event)
             ses_sw = self._search_sessions.get(event)
             ses_g = self._sessions.get(event)
             ses_mv = self._movie_sessions.get(event)
             ses_mv_new = self._movie_sessions_new.get(event)
             ses_nv = self._novel_sessions.get(event)
-            target_ses = ses_sw or ses_g or ses_mv or ses_mv_new or ses_nv
-            if not target_ses or not target_ses.get("_llm_handled"):
+            ses_dr = self._drama_sessions.get(event)
+            target_ses = ses_sw or ses_g or ses_mv or ses_mv_new or ses_nv or ses_dr
+            if not suppress and (not target_ses or not target_ses.get("_llm_handled")):
                 return
-            target_ses["_llm_handled"] = False
+            if target_ses:
+                target_ses["_llm_handled"] = False
             result = event.get_result()
             if result is not None and result.chain:
-                logger.info(f"[LLM-STRIP] 清空 LLM 中间总结 (stage={target_ses.get('stage')})")
+                logger.info(f"[LLM-STRIP] 清空 LLM 重复输出 "
+                            f"(suppress={suppress} stage={(target_ses or {}).get('stage')})")
                 result.chain = []
             event.stop_event()
         except Exception as e:
@@ -1905,12 +2322,28 @@ class MuliyResourcesPlugin(Star):
                         "secret": self._view_secret_key(fkey),
                         "long_items": ftype == "list" and self._view_long_list(default),
                     })
+                present = {f["key"] for f in fields}
+                sections = []
+                for i, spec in enumerate(_VIEW_SECTIONS.get(gkey) or []):
+                    if not isinstance(spec, dict):
+                        continue
+                    keys = [k for k in (spec.get("keys") or []) if k in present]
+                    if not keys:
+                        continue
+                    sections.append({
+                        "key": str(spec.get("key") or f"sec{i}"),
+                        "title": str(spec.get("title") or ""),
+                        "hint": str(spec.get("hint") or ""),
+                        "icon": str(spec.get("icon") or _VIEW_GROUP_ICONS.get(gkey, "apps")),
+                        "keys": keys,
+                    })
                 groups.append({
                     "key": gkey,
                     "title": str(group.get("description") or gkey),
                     "hint": str(group.get("hint") or ""),
                     "icon": _VIEW_GROUP_ICONS.get(gkey, "apps"),
                     "fields": fields,
+                    "sections": sections,
                 })
             return {"status": "ok", "data": {"groups": groups, "meta": self._view_meta(groups, cfg)}}
         except Exception as e:  # noqa: BLE001
@@ -2092,6 +2525,8 @@ class MuliyResourcesPlugin(Star):
             return False, (f"【暮黎资源·积分】\n"
                            f"💰 获取{label}资源需要 {cost} 积分，你当前只有 {balance} 积分。\n"
                            f"📅 发送 /签到 领取每日积分后再试。")
+        # 已扣费：同步标记断点，引用旧列表换资源时不再重复扣
+        self._mark_breakpoints_charged(event)
         return True, (f"\n\n💰 本次获取资源消耗 {cost} 积分，剩余 {balance} 积分"
                       f"（发送 /签到 领取每日积分）")
 
@@ -2555,12 +2990,13 @@ class MuliyResourcesPlugin(Star):
             return
         await event.send(MessageChain([Plain(self._points_rank_text(limit))]))
 
-    # ==================== 群聊小游戏（猜数字 / 封面猜猜）====================
+    # ==================== 群聊小游戏（猜数字 / 封面猜猜 / 谁是卧底）====================
     # 设计：
     # - 会话按「平台:群号」保存，一个群同时只能开一局；
-    # - 只有明确的输入（1/2、数字、A-D、0/结束）才拦截，普通聊天继续走 LLM；
+    # - 只有明确的输入（1/2/3、数字、A-D、0/结束）才拦截，普通聊天继续走 LLM；
     # - 超时/结算用 asyncio.Task，结算后立即清理，避免后台任务堆积；
-    # - 积分奖励走 MiniGameStore 的每日额度，再写入 PointsStore。
+    # - 积分奖励走 MiniGameStore 的每日额度，再写入 PointsStore；
+    # - 谁是卧底额外约束：词和身份只走私聊，群消息与卡片永不含词。
 
     def _minigame_cfg(self) -> dict:
         c = self._get_config() or {}
@@ -2591,6 +3027,18 @@ class MuliyResourcesPlugin(Star):
             "cover_timeout": _i("minigame_cover_timeout", 25, 10, 120),
             "cover_pool_ttl": _i("minigame_cover_pool_ttl", 12, 1, 168),
             "cover_pixel": _i("minigame_cover_pixel", 12, 4, 40),
+            "uc_enabled": _b("minigame_uc_enabled", True),
+            "uc_join": _i("minigame_uc_join_timeout", 90, 30, 180),
+            "uc_min": _i("minigame_uc_min_players", 4, 3, 6),
+            "uc_max": _i("minigame_uc_max_players", 6, 4, 12),
+            "uc_turn": _i("minigame_uc_turn_timeout", 40, 15, 90),
+            "uc_vote": _i("minigame_uc_vote_timeout", 30, 15, 90),
+            "uc_desc_max": _i("minigame_uc_desc_max", 20, 6, 50),
+            "uc_spies": _i("minigame_uc_spies", 1, 1, 2),
+            "uc_private_vote": _b("minigame_uc_private_vote", True),
+            "uc_reveal_role": _b("minigame_uc_reveal_role", False),
+            "uc_level": (str(c.get("minigame_uc_word_level") or "mixed")
+                         .strip().lower()),
         }
 
     @staticmethod
@@ -2799,6 +3247,12 @@ class MuliyResourcesPlugin(Star):
                         "⌛ 选择题库超时，已关闭。发送 /小游戏 重新打开。")]))
             elif kind == "cover":
                 await self._minigame_cover_timeout(gkey, game)
+            elif kind == "uc_join":
+                await self._uc_join_timeout(gkey, game)
+            elif kind == "uc_turn":
+                await self._uc_turn_timeout(gkey, game, token)
+            elif kind == "uc_vote":
+                await self._uc_vote_timeout(gkey, game, token)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[小游戏] 超时结算失败 kind={kind}: {e}")
 
@@ -2857,6 +3311,14 @@ class MuliyResourcesPlugin(Star):
             await self._minigame_send_cover_pick(event, game)
             self._minigame_schedule(gkey, game, 90, "cover_pick")
             return
+        if start == "undercover":
+            if not cfg["uc_enabled"]:
+                self._minigame_sessions.pop(gkey, None)
+                await event.send(MessageChain([Plain(
+                    "【暮黎资源】谁是卧底未启用，请联系管理员在配置里开启。")]))
+                return
+            await self._uc_start(event, gkey, game)
+            return
         s = self._points_settings()
         if s.get("enabled") and cfg["reward"] > 0:
             cap = (f"每人每日上限 {cfg['daily_cap']} 积分"
@@ -2866,21 +3328,27 @@ class MuliyResourcesPlugin(Star):
             reward_txt = "本局不计积分"
         else:
             reward_txt = "积分未开启，本局只计胜负"
+        uc_on = bool(cfg["uc_enabled"])
         text = (
             "🎮 暮黎游戏厅\n"
             "============================\n\n"
             "1. 猜数字\n"
             "   1-100 猜一个数字，每次提示大了/小了，猜中直接获胜\n"
             "2. 封面猜猜\n"
-            "   选电影 / 电视剧 / 动漫，看马赛克封面四选一\n\n"
-            f"💰 {reward_txt}\n"
-            "💬 回复 1 / 2 开始，回复 0 关闭。\n"
+            "   选电影 / 电视剧 / 动漫，看马赛克封面四选一\n"
+            + ("3. 谁是卧底\n"
+               "   私聊发词，轮流描述，投票找出拿到不同词的人\n" if uc_on else "")
+            + f"\n💰 {reward_txt}\n"
+            + ("⚠️ 谁是卧底需要机器人能私聊群成员，请管理员确认已开启私聊权限。\n"
+               if uc_on else "")
+            + f"💬 回复 1 / 2{' / 3' if uc_on else ''} 开始，回复 0 关闭。\n"
             "⏱️ 90 秒内未选择自动关闭。"
         )
         html = ""
         if minigame_lobby_html:
             try:
-                html = minigame_lobby_html(reward_text=reward_txt, timeout=90)
+                html = minigame_lobby_html(reward_text=reward_txt, timeout=90,
+                                           undercover=uc_on)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[小游戏] 大厅卡片构建失败，回退文本: {e}")
         await self._send_list_card(event, html=html, text=text, total=1,
@@ -2916,6 +3384,13 @@ class MuliyResourcesPlugin(Star):
                 await event.send(MessageChain([Plain(
                     f"🛑 封面猜猜已结束，本题答案：《{title}》。")]))
             await self._minigame_cover_finish(event, gkey, game, early=True)
+            return
+        if str(stage or "").startswith("uc_"):
+            self._minigame_cancel_task(game)
+            self._minigame_sessions.pop(gkey, None)
+            self._uc_cleanup_pending(game)
+            await event.send(MessageChain([Plain(
+                "🕵️ 谁是卧底已结束，本局不计分。\n发送 /小游戏 3 重开一局。")]))
             return
         self._minigame_cancel_task(game)
         self._minigame_sessions.pop(gkey, None)
@@ -3565,6 +4040,860 @@ class MuliyResourcesPlugin(Star):
         await self._send_list_card(event, html=html, text=text, total=1,
                                    label="封面猜猜选题", force=True)
 
+    # ==================== 谁是卧底 ====================
+    # 信息可见性红线：任何群消息/卡片都不能出现「词」和「身份」，结算时才揭晓。
+    # 发词、投票走私聊；私聊失败时把失败提示和降级方式讲清楚。
+
+    UC_MAX_ROUNDS = 10
+
+    def _uc_word_pairs(self) -> list:
+        if self._uc_pairs is None:
+            extra = os.path.join(self._plugin_data_dir(), "undercover_words.json")
+            self._uc_pairs = load_pairs(extra)
+        return self._uc_pairs
+
+    def _uc_remember_pair(self, uc) -> None:
+        try:
+            self._uc_recent.append(pair_key(uc.pair))
+            self._uc_recent = self._uc_recent[-20:]
+        except Exception:
+            pass
+
+    async def _uc_dm(self, event: AstrMessageEvent, uid: str, text: str) -> bool:
+        """私聊发送单条文本；失败返回 False（由调用方决定降级）。"""
+        uid = str(uid or "").strip()
+        if not uid:
+            return False
+        pid = str(event.get_platform_id() or "")
+        try:
+            await self.context.send_message(
+                f"{pid}:FriendMessage:{uid}",
+                MessageChain([Plain(text)]))
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[卧底] 私聊发送失败 uid={uid}: {e}")
+            return False
+
+    def _uc_cleanup_pending(self, game: dict) -> None:
+        gid = (game or {}).get("id")
+        for k, v in list(self._uc_vote_pending.items()):
+            if (v or {}).get("gid") == gid:
+                self._uc_vote_pending.pop(k, None)
+
+    def _uc_join_rows(self, game: dict) -> list:
+        players = game.get("players") or {}
+        order = [k for k in (game.get("order") or []) if k in players]
+        return [{"n": i, "name": (players.get(k) or {}).get("name") or "玩家",
+                 "host": bool((players.get(k) or {}).get("host"))}
+                for i, k in enumerate(order, 1)]
+
+    async def _uc_start(self, event: AstrMessageEvent, gkey: str, game: dict) -> None:
+        """进入报名阶段（房主自动加入）。"""
+        cfg = self._minigame_cfg()
+        if not cfg["uc_enabled"]:
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain(
+                "【暮黎资源】谁是卧底未启用，请联系管理员在配置里开启。")]))
+            return
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        self._minigame_cancel_task(game)
+        key, uid, name = self._points_user(event)
+        name = name or uid or "房主"
+        wait = max(30, int(cfg["uc_join"]))
+        game.update({
+            "stage": "uc_join",
+            "host_key": key,
+            "host_name": name,
+            "players": {key: {"name": name, "uid": str(uid or ""), "host": True}},
+            "order": [key],
+            "uc_deadline": time.time() + wait,
+            "event": event,
+            "updated": time.time(),
+        })
+        await self._uc_send_join(event, game, wait)
+        self._minigame_schedule(gkey, game, wait, "uc_join")
+
+    async def _uc_send_join(self, event: AstrMessageEvent, game: dict,
+                            seconds: int) -> None:
+        cfg = self._minigame_cfg()
+        rows = self._uc_join_rows(game)
+        names = "、".join(r["name"] for r in rows) or "暂无"
+        timeout = max(30, int(cfg["uc_join"]))
+        html = ""
+        if minigame_uc_join_html:
+            try:
+                html = minigame_uc_join_html(
+                    host_name=game.get("host_name") or "房主",
+                    players=rows, seconds=seconds,
+                    min_players=int(cfg["uc_min"]),
+                    max_players=int(cfg["uc_max"]),
+                    timeout=timeout)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 报名卡构建失败，回退文本: {e}")
+        text = (f"🕵️ 谁是卧底 · 报名中\n"
+                f"============================\n\n"
+                f"房主：{game.get('host_name') or '房主'}\n"
+                f"已加入 {len(rows)}/{int(cfg['uc_max'])}：{names}\n\n"
+                f"群友回复 1 加入；房主回复 2 立即开始。\n"
+                f"至少 {int(cfg['uc_min'])} 人才能开局，回复 0 退出（房主=结束）。\n"
+                f"⚠️ 本游戏会私聊发词，请管理员确认机器人已开启群聊私聊权限。\n"
+                f"⏱️ {int(seconds)} 秒后自动开始/取消。")
+        await self._send_list_card(event, html=html, text=text,
+                                   total=max(1, len(rows)), label="卧底报名",
+                                   force=True)
+
+    async def _uc_join(self, event: AstrMessageEvent, gkey: str, game: dict) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "uc_join":
+            return
+        cfg = self._minigame_cfg()
+        key, uid, name = self._points_user(event)
+        name = name or uid or "玩家"
+        players = game.setdefault("players", {})
+        if key in players:
+            await event.send(MessageChain([Plain("🙋 你已经在名单里了，等房主开始吧。")]))
+            return
+        if len(players) >= int(cfg["uc_max"]):
+            await event.send(MessageChain([Plain(
+                f"😅 人数已满（{int(cfg['uc_max'])} 人），本局不能再加入了。")]))
+            return
+        players[key] = {"name": name, "uid": str(uid or ""), "host": False}
+        game.setdefault("order", []).append(key)
+        game["updated"] = time.time()
+        deadline = game.get("uc_deadline")
+        if not deadline:
+            deadline = time.time() + int(cfg["uc_join"])
+            game["uc_deadline"] = deadline
+        remaining = max(1, int(deadline - time.time()))
+        await self._uc_send_join(event, game, remaining)
+
+    async def _uc_leave(self, event: AstrMessageEvent, gkey: str, game: dict) -> None:
+        """报名阶段玩家主动退出；房主退出则顺延给最早加入的人。"""
+        if game.get("stage") != "uc_join":
+            return
+        key, uid, name = self._points_user(event)
+        players = game.get("players") or {}
+        if key not in players:
+            await event.send(MessageChain([Plain("🙋 你还没加入本局。")]))
+            return
+        players.pop(key, None)
+        order = [k for k in (game.get("order") or []) if k in players]
+        game["order"] = order
+        if key == game.get("host_key"):
+            if order:
+                nk = order[0]
+                players[nk]["host"] = True
+                game["host_key"] = nk
+                game["host_name"] = players[nk].get("name") or "房主"
+            else:
+                self._minigame_cancel_task(game)
+                self._minigame_sessions.pop(gkey, None)
+                await event.send(MessageChain([Plain("🕵️ 报名已清空，本局取消。")]))
+                return
+        await event.send(MessageChain([Plain(f"👋 {name or '玩家'} 退出了报名。")]))
+        cfg = self._minigame_cfg()
+        deadline = float(game.get("uc_deadline") or (time.time() + cfg["uc_join"]))
+        await self._uc_send_join(event, game,
+                                 max(1, int(deadline - time.time())))
+
+    async def _uc_resend_word(self, event: AstrMessageEvent, gkey: str,
+                              game: dict) -> None:
+        """发词阶段玩家回复「重发」：只补发自己的词。"""
+        if game.get("stage") != "uc_deal":
+            return
+        uc = game.get("uc")
+        key, _uid, name = self._points_user(event)
+        p = (uc.players.get(key) if uc else None)
+        if not p:
+            await event.send(MessageChain([Plain("🙋 你不在本局名单里。")]))
+            return
+        text = (f"🔍 谁是卧底\n"
+                f"你的词：{p.get('word') or '?'}\n\n"
+                f"轮流用一句话描述它，不能直接说出词本身。\n"
+                f"这条消息请勿转发到群里。")
+        ok = await self._uc_dm(event, p.get("uid"), text)
+        p["dm_ok"] = bool(ok) or bool(p.get("dm_ok"))
+        await event.send(MessageChain([Plain(
+            "✅ 已重新私聊发词，请查收。" if ok else
+            "❌ 还是发不出去，请先加机器人好友，或联系管理员开启私聊权限。")]))
+
+    async def _uc_join_timeout(self, gkey: str, game: dict) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "uc_join":
+            return
+        cfg = self._minigame_cfg()
+        players = game.get("players") or {}
+        ev = game.get("event")
+        if len(players) < int(cfg["uc_min"]):
+            self._minigame_sessions.pop(gkey, None)
+            if ev:
+                await ev.send(MessageChain([Plain(
+                    f"😅 人数不足（{len(players)}/{int(cfg['uc_min'])}），"
+                    f"本局已取消。发送 /小游戏 3 重新开。")]))
+            return
+        if ev:
+            await self._uc_begin(ev, gkey, game, auto=True)
+
+    async def _uc_begin(self, event: AstrMessageEvent, gkey: str, game: dict,
+                        auto: bool = False) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "uc_join":
+            return
+        cfg = self._minigame_cfg()
+        players = game.get("players") or {}
+        if len(players) < int(cfg["uc_min"]):
+            await event.send(MessageChain([Plain(
+                f"🙋 还差 {int(cfg['uc_min']) - len(players)} 人才能开局"
+                f"（当前 {len(players)} 人），继续回复 1 加入。")]))
+            return
+        self._minigame_cancel_task(game)
+        pair = pick_pair(self._uc_word_pairs(), recent=self._uc_recent,
+                         level=cfg["uc_level"])
+        if not pair:
+            self._minigame_sessions.pop(gkey, None)
+            await event.send(MessageChain([Plain(
+                "😕 词库为空，请管理员检查 core/undercover_words.py。")]))
+            return
+        uc = UndercoverGame(players, spy_count=int(cfg["uc_spies"]))
+        uc.deal(pair)
+        self._uc_remember_pair(uc)
+        game.update({
+            "stage": "uc_deal",
+            "uc": uc,
+            "host_key": game.get("host_key"),
+            "event": event,
+            "updated": time.time(),
+        })
+        if auto:
+            await event.send(MessageChain([Plain(
+                f"⏰ 报名时间到，{len(uc.alive_keys())} 人开局。")]))
+        await event.send(MessageChain([Plain(
+            "🕵️ 谁是卧底 · 发词中\n"
+            "============================\n\n"
+            "正在私聊给每位玩家发词，请留意私聊消息。\n"
+            "没收到请回复「重发」，仍失败请联系管理员开启私聊权限。")]))
+
+        failed = []
+        for i, k in enumerate(uc.order):
+            p = uc.player(k)
+            text = (f"🔍 谁是卧底\n"
+                    f"你的词：{p.get('word') or '?'}\n\n"
+                    f"轮流用一句话描述它，不能直接说出词本身。\n"
+                    f"这条消息请勿转发到群里。")
+            ok = await self._uc_dm(event, p.get("uid"), text)
+            if not ok:
+                await asyncio.sleep(0.35)
+                ok = await self._uc_dm(event, p.get("uid"), text)
+            p["dm_ok"] = bool(ok)
+            if not ok:
+                failed.append(k)
+            if i < len(uc.order) - 1:
+                await asyncio.sleep(0.18)
+
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+
+        if failed:
+            names = "、".join(f"@{uc.player(k).get('name') or '玩家'}"
+                              for k in failed)
+            await event.send(MessageChain([Plain(
+                f"⚠️ {names} 没有收到私聊词。\n"
+                "请在 12 秒内回复「重发」；仍失败会被移出本局。\n"
+                "（管理员请检查机器人是否开启群聊私聊权限）")]))
+            for _ in range(12):
+                await asyncio.sleep(1)
+                if self._minigame_sessions.get(gkey) is not game:
+                    return
+                if not [k for k in failed if not uc.player(k).get("dm_ok")]:
+                    break
+            failed = [k for k in failed if not uc.player(k).get("dm_ok")]
+
+        if failed:
+            names = "、".join(f"@{uc.player(k).get('name') or '玩家'}"
+                              for k in failed)
+            for k in failed:
+                uc.remove(k)
+            left = len(uc.alive_keys())
+            if left < int(cfg["uc_min"]):
+                self._minigame_sessions.pop(gkey, None)
+                await event.send(MessageChain([Plain(
+                    f"😕 私聊发词失败：{names} 没收到。\n"
+                    f"剩余 {left} 人不足 {int(cfg['uc_min'])} 人，本局取消。\n"
+                    "请管理员检查机器人是否开启了群聊私聊权限，玩家也可先加机器人好友。")]))
+                return
+            await event.send(MessageChain([Plain(
+                f"⚠️ {names} 仍未收到私聊，已移出本局（剩余 {left} 人）。\n"
+                "如果是权限问题，请管理员开启机器人私聊权限。")]))
+
+        await self._uc_launch_round(event, gkey, game)
+
+    async def _uc_launch_round(self, event: AstrMessageEvent, gkey: str,
+                               game: dict) -> None:
+        """开始新一轮（先发顺序卡，再 @ 当前发言人）。"""
+        uc = game.get("uc")
+        if not uc:
+            return
+        uc.start_round()
+        game.update({"stage": "uc_desc", "event": event,
+                     "updated": time.time(), "uc_tie": False})
+        if not uc.turn_key:
+            # 极端情况：全部出局/无人可发言
+            await self._uc_start_vote(event, gkey, game)
+            return
+        await self._uc_send_round_card(event, game)
+        await self._uc_ask_turn(event, gkey, game)
+
+    async def _uc_send_round_card(self, event: AstrMessageEvent, game: dict) -> None:
+        uc = game.get("uc")
+        if not uc:
+            return
+        cfg = self._minigame_cfg()
+        rows = uc.round_rows()
+        tie = bool(game.get("uc_tie"))
+        cur = uc.player(uc.turn_key)
+        html = ""
+        if minigame_uc_round_html:
+            try:
+                html = minigame_uc_round_html(
+                    round_no=uc.round_no, rows=rows,
+                    turn_name=cur.get("name") or "—",
+                    seconds=int(cfg["uc_turn"]),
+                    alive=len(uc.alive_keys()), tie=tie)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 发言卡构建失败，回退文本: {e}")
+        head = ("⚖️ 平票加时 · 补一句描述" if tie
+                else f"🗣️ 第 {uc.round_no} 轮描述")
+        lines = [head, "============================", ""]
+        order_txt = " → ".join(
+            f"{r['n']}.{r['name']}" for r in rows) or "—"
+        lines.append(f"顺序：{order_txt}")
+        lines.append(f"👉 轮到 {cur.get('name') or '—'}（{int(cfg['uc_turn'])} 秒，"
+                     f"{int(cfg['uc_desc_max'])} 字以内）")
+        await self._send_list_card(
+            event, html=html, text="\n".join(lines),
+            total=max(1, len(rows)), label="卧底发言", force=True)
+
+    async def _uc_ask_turn(self, event: AstrMessageEvent, gkey: str,
+                           game: dict, prefix: str = "") -> None:
+        uc = game.get("uc")
+        if not uc or self._minigame_sessions.get(gkey) is not game:
+            return
+        key = uc.turn_key
+        if not key:
+            return
+        cfg = self._minigame_cfg()
+        cur = uc.player(key)
+        timeout = max(15, int(cfg["uc_turn"]))
+        token = time.time_ns()
+        game["turn_token"] = token
+        game["updated"] = time.time()
+        chain = [Plain((prefix + "\n👉 ") if prefix else "👉 ")]
+        chain.append(self._minigame_at(cur.get("uid") or "",
+                                       cur.get("name") or "玩家"))
+        chain.append(Plain(f" 轮到你了（{timeout} 秒，"
+                           f"{int(cfg['uc_desc_max'])} 字以内）。"))
+        fallback = (((prefix + "\n") if prefix else "")
+                    + f"👉 {cur.get('name') or '玩家'} 轮到你了"
+                    f"（{timeout} 秒，{int(cfg['uc_desc_max'])} 字以内）。")
+        await self._minigame_send_at(event, chain, fallback)
+        self._minigame_schedule(gkey, game, timeout, "uc_turn", token)
+
+    def _uc_turn_header(self, game: dict) -> str:
+        uc = game.get("uc")
+        if not uc:
+            return ""
+        return ("⚖️ 平票加时" if game.get("uc_tie")
+                else f"🗣️ 第 {int(uc.round_no)} 轮")
+
+    async def _uc_after_turn(self, event: AstrMessageEvent, gkey: str,
+                             game: dict, prefix: str = "") -> None:
+        uc = game.get("uc")
+        if not uc:
+            return
+        nxt = uc.next_turn()
+        if nxt:
+            await self._uc_ask_turn(event, gkey, game, prefix=prefix)
+            return
+        # 本轮描述结束
+        if prefix:
+            await event.send(MessageChain([Plain(prefix)]))
+        rows = uc.round_rows()
+        cfg = self._minigame_cfg()
+        html = ""
+        if minigame_uc_round_html:
+            try:
+                html = minigame_uc_round_html(
+                    round_no=uc.round_no, rows=rows,
+                    seconds=int(cfg["uc_turn"]),
+                    alive=len(uc.alive_keys()),
+                    tie=bool(game.get("uc_tie")), summary=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 汇总卡构建失败，回退文本: {e}")
+        lines = [f"{self._uc_turn_header(game)} · 发言汇总", ""]
+        for r in rows:
+            lines.append(f"{r['n']}. {r['name']}："
+                         + (r.get("desc") or ("弃权" if r.get("miss") else "未发言")))
+        lines += ["", "开始投票，留意下一条投票卡。"]
+        await self._send_list_card(event, html=html, text="\n".join(lines),
+                                   total=max(1, len(rows)), label="卧底汇总",
+                                   force=True)
+        await self._uc_start_vote(event, gkey, game)
+
+    async def _uc_start_vote(self, event: AstrMessageEvent, gkey: str,
+                             game: dict) -> None:
+        uc = game.get("uc")
+        if not uc or self._minigame_sessions.get(gkey) is not game:
+            return
+        cfg = self._minigame_cfg()
+        uc.votes = {}
+        self._uc_cleanup_pending(game)
+        cands = uc.vote_candidates()
+        if not cands:
+            return
+        tie = bool(uc.tie_keys)
+        token = time.time_ns()
+        game.update({
+            "stage": "uc_vote",
+            "vote_token": token,
+            "uc_vote_cands": cands,
+            "uc_vote_numbers": {k: i for i, k in enumerate(cands, 1)},
+            "uc_tie": tie,
+            "event": event,
+            "updated": time.time(),
+        })
+        rows = [{"n": i, "name": uc.player(k).get("name") or "玩家"}
+                for i, k in enumerate(cands, 1)]
+        html = ""
+        if minigame_uc_vote_html:
+            try:
+                html = minigame_uc_vote_html(
+                    round_no=uc.round_no, candidates=rows,
+                    seconds=int(cfg["uc_vote"]),
+                    alive=len(uc.alive_keys()), tie=tie)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 投票卡构建失败，回退文本: {e}")
+        lines = [("⚖️ 平票重投" if tie else f"🗳️ 第 {uc.round_no} 轮投票"),
+                 "============================", ""]
+        for r in rows:
+            lines.append(f"{r['n']}. {r['name']}")
+        lines.append("")
+        lines.append("私聊机器人回复编号投票；回复「弃权」跳过。")
+        lines.append(f"⏱️ {int(cfg['uc_vote'])} 秒后统一公布票型。")
+        await self._send_list_card(event, html=html, text="\n".join(lines),
+                                   total=max(1, len(rows)), label="卧底投票",
+                                   force=True)
+
+        vote_text = (f"🗳️ 第 {int(uc.round_no)} 轮投票（{int(cfg['uc_vote'])} 秒）\n"
+                     + "\n".join(f"{r['n']}. {r['name']}" for r in rows)
+                     + "\n\n直接回复编号投票；回复「弃权」跳过。")
+        pid = str(event.get_platform_id() or "")
+        failed = []
+        for k in uc.alive_keys():
+            p = uc.player(k)
+            if not p.get("can_vote", True):
+                continue
+            if cfg["uc_private_vote"]:
+                ok = await self._uc_dm(event, p.get("uid"), vote_text)
+                p["dm_ok"] = bool(ok)
+                if not ok:
+                    failed.append(p.get("name") or "玩家")
+                else:
+                    self._uc_vote_pending[(pid, str(p.get("uid") or ""))] = {
+                        "gkey": gkey, "gid": game.get("id"),
+                        "token": token,
+                    }
+                await asyncio.sleep(0.15)
+            else:
+                p["dm_ok"] = False
+        if failed:
+            await event.send(MessageChain([Plain(
+                "⚠️ " + "、".join(f"@{n}" for n in failed)
+                + " 私聊发送失败，可直接在群里回复编号投票。")]))
+        self._minigame_schedule(gkey, game, max(15, int(cfg["uc_vote"])),
+                                "uc_vote", token)
+
+    def _uc_parse_vote(self, game: dict, text: str) -> str:
+        """把编号/弃权解析成目标 key；非法返回空串。"""
+        cmd = (text or "").strip()
+        if not cmd:
+            return ""
+        if cmd in ("弃权", "不投", "跳过", "abstain"):
+            return "__abstain__"
+        numbers = game.get("uc_vote_numbers") or {}
+        m = re.fullmatch(r"\d{1,2}", cmd)
+        if not m:
+            return ""
+        n = int(cmd)
+        for k, i in numbers.items():
+            if int(i) == n:
+                return str(k)
+        return ""
+
+    async def _uc_handle_vote(self, event: AstrMessageEvent, gkey: str,
+                              game: dict, text: str, via_dm: bool = False) -> bool:
+        if game.get("stage") != "uc_vote":
+            return False
+        uc = game.get("uc")
+        if not uc:
+            return False
+        key, uid, name = self._points_user(event)
+        p = uc.players.get(key)
+        if not p:
+            return False
+        if not p.get("alive"):
+            if via_dm:
+                await event.send(MessageChain([Plain("😵 你已出局，本局不能再投票。")]))
+                return True
+            return False
+        if not p.get("can_vote", True):
+            if via_dm:
+                await event.send(MessageChain([Plain(
+                    "🙈 你连续弃权，本轮没有投票权。")]))
+                return True
+            return False
+        target = self._uc_parse_vote(game, text)
+        if not target:
+            if via_dm:
+                await event.send(MessageChain([Plain(
+                    "请回复编号；也可以回复「弃权」。")]))
+                return True
+            return False
+        if target == "__abstain__":
+            uc.votes[key] = ""
+            if via_dm:
+                await event.send(MessageChain([Plain("✅ 已弃权。")]))
+        else:
+            ok, err = uc.record_vote(key, target)
+            if not ok:
+                if via_dm:
+                    await event.send(MessageChain([Plain(f"⚠️ {err}")]))
+                return bool(via_dm)
+            if via_dm:
+                await event.send(MessageChain([Plain("✅ 已记录。")]))
+        if uc.all_voted():
+            self._minigame_cancel_task(game)
+            # 私聊投票时 event 是私聊，票型必须回到群里发
+            await self._uc_tally(game.get("event") or event, gkey, game)
+        return True
+
+    async def _uc_vote_timeout(self, gkey: str, game: dict, token=None) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") != "uc_vote":
+            return
+        if token is not None and game.get("vote_token") != token:
+            return
+        ev = game.get("event")
+        if ev:
+            await self._uc_tally(ev, gkey, game)
+
+    async def _uc_tally(self, event: AstrMessageEvent, gkey: str, game: dict) -> None:
+        uc = game.get("uc")
+        if not uc or self._minigame_sessions.get(gkey) is not game:
+            return
+        res = uc.tally()
+        counts, top, maxn = res["counts"], res["top"], res["max"]
+        abstain = res["abstain"]
+        cfg = self._minigame_cfg()
+
+        def _nm(k: str) -> str:
+            return uc.player(k).get("name") or "玩家"
+
+        tie = len(top) > 1
+        will_tie_desc = tie and int(uc.tie_times or 0) < 1
+        eliminated = "" if (tie or maxn <= 0) else top[0]
+        role_txt = ""
+        if eliminated and cfg["uc_reveal_role"]:
+            role_txt = "，身份：" + (
+                "卧底" if uc.player(eliminated).get("role") == ROLE_SPY else "平民")
+
+        if maxn <= 0:
+            note = ("连续两轮全员弃权，将随机淘汰一人。"
+                    if int(uc.abstain_rounds or 0) >= 1 else "本轮全员弃权，无人出局。")
+        elif tie:
+            note = (("平票：" + "、".join(_nm(k) for k in top) + "，各补一句后重投。")
+                    if will_tie_desc else "再次平票，本轮无人出局。")
+        else:
+            note = (f"{_nm(eliminated)} 出局"
+                    f"（{int(counts.get(eliminated, 0) or 0)} 票{role_txt}）。")
+
+        parts = [f"{_nm(k)} {v} 票" for k, v in sorted(
+            counts.items(), key=lambda kv: -kv[1]) if v > 0]
+        if abstain:
+            parts.append(f"弃权 {len(abstain)} 票")
+        rows = []
+        for k in sorted(counts, key=lambda x: -counts.get(x, 0)):
+            state = ""
+            if maxn > 0:
+                if tie and k in top:
+                    state = "tie"
+                elif not tie and k == eliminated:
+                    state = "out"
+            rows.append({"name": _nm(k), "votes": int(counts.get(k, 0) or 0),
+                         "state": state})
+        html = ""
+        if minigame_uc_tally_html:
+            try:
+                html = minigame_uc_tally_html(
+                    round_no=uc.round_no, rows=rows, eliminated=_nm(eliminated),
+                    tie=tie, abstain=len(abstain),
+                    alive=len(uc.alive_keys()), note=note)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 票型卡构建失败，回退文本: {e}")
+        head = ("⚖️ 平票重投 · 票型" if game.get("uc_tie")
+                else f"📊 第 {uc.round_no} 轮票型")
+        text = (head + "\n" + (" · ".join(parts) if parts else "本轮没有有效票")
+                + "\n" + note)
+        await self._send_list_card(event, html=html, text=text,
+                                   total=max(1, len(rows)), label="卧底票型",
+                                   force=True)
+
+        if maxn > 0:
+            uc.abstain_rounds = 0
+
+        # 全员弃权
+        if maxn <= 0:
+            uc.abstain_rounds = int(getattr(uc, "abstain_rounds", 0)) + 1
+            if uc.abstain_rounds >= 2:
+                alive = uc.alive_keys()
+                if not alive:
+                    await self._uc_finish(event, gkey, game, ROLE_SPY, "全员弃权")
+                    return
+                out = random.choice(alive)
+                uc.eliminate(out)
+                uc.abstain_rounds = 0
+                await event.send(MessageChain([Plain(
+                    f"🎲 连续两轮全员弃权，随机淘汰 {_nm(out)}。")]))
+                await self._uc_after_elimination(event, gkey, game)
+                return
+            await self._uc_next_round(event, gkey, game)
+            return
+
+        # 平票
+        if tie:
+            if will_tie_desc:
+                uc.tie_times = int(uc.tie_times or 0) + 1
+                game.update({"stage": "uc_tie_desc", "uc_tie": True,
+                             "event": event, "updated": time.time()})
+                uc.start_tie(top)
+                await self._uc_send_round_card(event, game)
+                await self._uc_ask_turn(event, gkey, game)
+            else:
+                await self._uc_next_round(event, gkey, game)
+            return
+
+        votes = int(counts.get(eliminated, 0) or 0)
+        uc.eliminate(eliminated, votes)
+        await self._uc_after_elimination(event, gkey, game)
+
+    async def _uc_after_elimination(self, event: AstrMessageEvent, gkey: str,
+                                    game: dict) -> None:
+        uc = game.get("uc")
+        if not uc:
+            return
+        winner = uc.winner()
+        if winner:
+            await self._uc_finish(event, gkey, game, winner,
+                                  reason="卧底全部出局" if winner == ROLE_CIVIL
+                                  else "卧底存活到最后")
+            return
+        if int(uc.round_no) >= self.UC_MAX_ROUNDS:
+            await self._uc_finish(event, gkey, game, ROLE_SPY, "回合数用尽")
+            return
+        await self._uc_next_round(event, gkey, game)
+
+    async def _uc_next_round(self, event: AstrMessageEvent, gkey: str,
+                             game: dict) -> None:
+        uc = game.get("uc")
+        if not uc or self._minigame_sessions.get(gkey) is not game:
+            return
+        uc.start_round()
+        game.update({"stage": "uc_desc", "uc_tie": False,
+                     "event": event, "updated": time.time()})
+        if not uc.turn_key:
+            await self._uc_start_vote(event, gkey, game)
+            return
+        await self._uc_send_round_card(event, game)
+        await self._uc_ask_turn(event, gkey, game)
+
+    async def _uc_turn_timeout(self, gkey: str, game: dict, token=None) -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        if game.get("stage") not in ("uc_desc", "uc_tie_desc"):
+            return
+        if token is not None and game.get("turn_token") != token:
+            return
+        uc = game.get("uc")
+        if not uc:
+            return
+        key = uc.turn_key
+        if not key:
+            return
+        uc.mark_miss(key)
+        ev = game.get("event")
+        if not ev:
+            self._minigame_sessions.pop(gkey, None)
+            return
+        p = uc.player(key)
+        await ev.send(MessageChain([Plain(
+            f"⏭️ {p.get('name') or '玩家'} 超时未描述，记弃权。")]))
+        await self._uc_after_turn(ev, gkey, game)
+
+    async def _uc_submit_desc(self, event: AstrMessageEvent, gkey: str,
+                              game: dict, text: str) -> bool:
+        uc = game.get("uc")
+        if not uc:
+            return False
+        key, uid, name = self._points_user(event)
+        if key != uc.turn_key:
+            return False
+        cfg = self._minigame_cfg()
+        p = uc.player(key)
+        desc = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not desc:
+            return True
+        if len(desc) > int(cfg["uc_desc_max"]):
+            await event.send(MessageChain([Plain(
+                f"✂️ 太长了，控制在 {int(cfg['uc_desc_max'])} 字以内再发一次。")]))
+            return True
+        word = str(p.get("word") or "")
+        if word and word in desc:
+            p["violations"] = int(p.get("violations", 0) or 0) + 1
+            if p["violations"] >= 2:
+                uc.mark_miss(key)
+                await event.send(MessageChain([Plain(
+                    "🚫 又直接说出了自己的词，本轮记弃权。")]))
+                await self._uc_after_turn(event, gkey, game)
+                return True
+            await event.send(MessageChain([Plain(
+                "🚫 不能直接说出自己的词，换一句（再犯本轮弃权）。")]))
+            return True
+        uc.note_desc(key, desc)
+        self._minigame_cancel_task(game)
+        await self._uc_after_turn(
+            event, gkey, game,
+            prefix=f"✅ {p.get('name') or '玩家'}：{desc}")
+        return True
+
+    async def _uc_finish(self, event: AstrMessageEvent, gkey: str, game: dict,
+                         winner: str, reason: str = "") -> None:
+        if self._minigame_sessions.get(gkey) is not game:
+            return
+        uc = game.get("uc")
+        if not uc:
+            return
+        self._minigame_cancel_task(game)
+        self._minigame_sessions.pop(gkey, None)
+        self._uc_cleanup_pending(game)
+        cfg = self._minigame_cfg()
+        win_side = ROLE_CIVIL if winner == ROLE_CIVIL else ROLE_SPY
+        title = "平民胜利" if win_side == ROLE_CIVIL else "卧底胜利"
+        rows, text_lines, awarded_total = [], [], 0
+        for i, k in enumerate(uc.order, 1):
+            p = uc.player(k)
+            if not p:
+                continue
+            removed = bool(p.get("removed"))
+            is_win = (not removed) and p.get("role") == win_side
+            points = 0
+            note = ""
+            if is_win:
+                points = int(cfg["reward"]) * (2 if p.get("alive") else 1)
+                if p.get("role") == ROLE_SPY:
+                    points += int(cfg["reward"])
+                got, note = self._minigame_award(k, p.get("name") or "", points)
+                awarded_total += got
+                points = got
+            if not removed:
+                try:
+                    self._minigame_db().uc_record(
+                        k, p.get("name") or "", p.get("role") or "",
+                        is_win, rounds=int(uc.round_no),
+                        desc_count=len(p.get("descs") or {}),
+                        votes_received=int(p.get("votes_received", 0) or 0))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[卧底] 战绩写入失败: {e}")
+            role_txt = "卧底" if p.get("role") == ROLE_SPY else "平民"
+            state_txt = "未参与" if removed else ("存活" if p.get("alive") else "出局")
+            chip = (f'<span class="chip chip-win">+{points} 积分</span>'
+                    if is_win and points > 0 else
+                    ('<span class="chip chip-gold">奖励已达上限</span>'
+                     if is_win and note else
+                     f'<span class="chip chip-loss">{role_txt}</span>'))
+            rows.append({
+                "n": i, "title": p.get("name") or "玩家",
+                "right": chip,
+                "meta": (f"{role_txt} · {state_txt}"
+                         f" · 被投 {int(p.get('votes_received', 0) or 0)} 次"
+                         + (f" · +{points} 积分" if points else "")),
+            })
+            text_lines.append(
+                f"{i}. {p.get('name') or '玩家'} {role_txt} {state_txt}"
+                + (f" +{points} 积分" if points else "")
+                + (note or ""))
+
+        played = len([k for k in uc.order if not uc.player(k).get("removed")])
+        sub = f"{int(uc.round_no)} 轮 · {played} 人"
+        if reason:
+            sub += f" · {reason}"
+        foot = ['<div><span class="k">再来</span>发送 <b>/小游戏 3</b> 开新局</div>']
+        if cfg["daily_cap"] > 0:
+            foot.append(f'<div class="dim"><span class="k">奖励</span>'
+                        f'每日游戏奖励上限 {int(cfg["daily_cap"])} 积分</div>')
+        head = [
+            f"🕵️ 谁是卧底 · {title}",
+            "============================",
+            f"平民词：{uc.words.get('civil') or '?'}    "
+            f"卧底词：{uc.words.get('spy') or '?'}",
+        ]
+        if reason:
+            head.append(f"结算原因：{reason}")
+        text = "\n".join(head + [""] + text_lines
+                         + (["", f"💰 本局共发出 {awarded_total} 积分"] if awarded_total else [])
+                         + ["", "发送 /小游戏 3 再来一局。"])
+        html = ""
+        if minigame_uc_result_html:
+            try:
+                html = minigame_uc_result_html(
+                    title=f"谁是卧底 · {title}",
+                    subtitle=sub,
+                    civil_word=uc.words.get("civil") or "?",
+                    spy_word=uc.words.get("spy") or "?",
+                    rows=rows, foot_lines=foot, page_ind="本局结算")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[卧底] 结算卡构建失败，回退文本: {e}")
+        await self._send_list_card(event, html=html, text=text,
+                                   total=max(1, len(rows)), label="卧底结算",
+                                   force=True)
+
+    async def _handle_uc_private(self, event: AstrMessageEvent, text: str) -> bool:
+        """私聊投票入口；返回 True 表示已消费。"""
+        if event.get_group_id():
+            return False
+        pid = str(event.get_platform_id() or "")
+        uid = str(event.get_sender_id() or "")
+        info = self._uc_vote_pending.get((pid, uid))
+        if not info:
+            return False
+        gkey = info.get("gkey") or ""
+        game = self._minigame_sessions.get(gkey)
+        if (not game or game.get("id") != info.get("gid")
+                or game.get("stage") != "uc_vote"):
+            self._uc_vote_pending.pop((pid, uid), None)
+            return False
+        if game.get("vote_token") != info.get("token"):
+            self._uc_vote_pending.pop((pid, uid), None)
+            return False
+        try:
+            await self._uc_handle_vote(event, gkey, game, text, via_dm=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[卧底] 私聊投票处理失败: {e}")
+        return True
+
     async def _handle_minigame_message(self, event: AstrMessageEvent,
                                        text: str) -> bool:
         """处理游戏内输入；返回 True 表示已消费，False 交回普通聊天。"""
@@ -3574,18 +4903,29 @@ class MuliyResourcesPlugin(Star):
         game = self._minigame_sessions.get(gkey)
         if not game:
             return False
-        # 用户正在搜索/选集时优先走原来的会话
-        if self._minigame_has_user_session(event):
+        stage = game.get("stage")
+        # 用户正在搜索/选集时优先走原来的会话；
+        # 卧底游戏除外，否则轮流描述会被其它会话卡住
+        if not str(stage or "").startswith("uc_") and \
+                self._minigame_has_user_session(event):
             return False
         if time.time() - float(game.get("updated") or 0) > 900:
             self._minigame_cancel_task(game)
             self._minigame_sessions.pop(gkey, None)
             return False
         cmd = (text or "").strip()
-        stage = game.get("stage")
         game["event"] = event
         game["updated"] = time.time()
         if cmd in ("0", "结束", "不玩了", "退出", "关闭"):
+            if str(stage or "").startswith("uc_"):
+                key, _uid, _name = self._points_user(event)
+                if stage == "uc_join" and key != game.get("host_key"):
+                    await self._uc_leave(event, gkey, game)
+                    return True
+                if key != game.get("host_key"):
+                    await event.send(MessageChain([Plain(
+                        "🙋 只有房主能结束本局，想退出请等本局结束。")]))
+                    return True
             await self._minigame_end(event, gkey, game, reason="手动结束")
             return True
         try:
@@ -3602,6 +4942,13 @@ class MuliyResourcesPlugin(Star):
                                  "updated": time.time()})
                     await self._minigame_send_cover_pick(event, game)
                     self._minigame_schedule(gkey, game, 90, "cover_pick")
+                    return True
+                if cmd in ("3", "谁是卧底", "卧底"):
+                    if not self._minigame_cfg()["uc_enabled"]:
+                        await event.send(MessageChain([Plain(
+                            "🕵️ 谁是卧底未启用，请联系管理员开启。")]))
+                        return True
+                    await self._uc_start(event, gkey, game)
                     return True
                 return False
             if stage == "bomb_wait":
@@ -3638,6 +4985,41 @@ class MuliyResourcesPlugin(Star):
             if stage == "cover":
                 if normalize_choice(cmd):
                     await self._minigame_cover_answer(event, gkey, game, cmd)
+                    return True
+                return False
+            if stage == "uc_join":
+                if cmd == "1":
+                    await self._uc_join(event, gkey, game)
+                    return True
+                if cmd == "2":
+                    key, _uid, _name = self._points_user(event)
+                    if key != game.get("host_key"):
+                        await event.send(MessageChain([Plain(
+                            "🙋 只有房主可以立即开始。")]))
+                    else:
+                        await self._uc_begin(event, gkey, game)
+                    return True
+                return False
+            if stage == "uc_deal":
+                if cmd in ("重发", "重发词", "重新发", "没收到"):
+                    await self._uc_resend_word(event, gkey, game)
+                    return True
+                return False
+            if stage in ("uc_desc", "uc_tie_desc"):
+                return await self._uc_submit_desc(event, gkey, game, cmd)
+            if stage == "uc_vote":
+                cfg = self._minigame_cfg()
+                uc = game.get("uc")
+                key, _uid, _name = self._points_user(event)
+                p = (uc.players.get(key) if uc else None) or {}
+                if not p.get("alive"):
+                    return False
+                if not cfg["uc_private_vote"] or not p.get("dm_ok", True):
+                    return await self._uc_handle_vote(event, gkey, game, cmd)
+                if re.fullmatch(r"\d{1,2}", cmd or ""):
+                    await event.send(MessageChain([Plain(
+                        "🗳️ 本局是私聊投票，请到私聊里回复编号"
+                        "（私聊发不出去可直接在群里回复）。")]))
                     return True
                 return False
         except Exception as e:  # noqa: BLE001
@@ -4136,8 +5518,7 @@ class MuliyResourcesPlugin(Star):
                 card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT, note=_charge_txt)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
-        await self._send_list_card(event, html=card, text=final_txt,
-                                   total=t, label="小说列表")
+        await self._send_novel_list(event, ses_now, card, final_txt, t)
         logger.info(f"[暮黎资源] search_novel('{novel_name}') → {len(results)}条 → 直接 send")
         return f"[已发送给用户] {len(results)} 个小说结果，当前第 1/{pt} 页。用户的下一步操作（选序号/翻页）由 on_any_message 直接处理。"
 
@@ -4149,20 +5530,51 @@ class MuliyResourcesPlugin(Star):
         tag = "【暮黎资源】"
         ses = self._movie_sessions_new.get(event)
         if not ses:
-            return f"{tag} 会话已失效，请重新搜索影视。"
+            await event.send(MessageChain([Plain(
+                f"{tag} 会话已失效，请重新搜索影视。")]))
+            return f"{tag} 会话已失效，已提示用户重新搜索。"
         stage = ses.get("stage")
         text = selection.strip()
         source = ses.get("source") or self._movie_source()
         client = self._get_movie_client(source)
         if not client:
             self._movie_sessions_new.delete(event)
-            return f"{tag} 片库主站未配置，请在插件配置填写账号密码或 Cookie。"
+            await event.send(MessageChain([Plain(
+                f"{tag} 片库主站未配置，请在插件配置填写账号密码或 Cookie。")]))
+            return f"{tag} 片库主站未配置，已提示用户。"
 
         num0 = self._parse_natural_number(text)
         if num0 == 0 or text in ("取消", "不要", "不要了", "算了", "取消搜索"):
             self._movie_sessions_new.delete(event)
             await event.send(MessageChain([Plain(f"{tag} 已取消。")]))
             return f"{tag} 用户取消。"
+
+        # 本条消息由插件直接回复：标记忽略 LLM 的重复输出（工具流程同样适用）
+        self._mark_llm_suppress(event)
+
+        # ===== 断点导航：回复「网盘 / 在线播放」可回到对应列表，无需重新搜索 =====
+        _nav = text.strip()
+        if (not re.fullmatch(r"\d{1,3}", _nav)
+                and _nav not in ("下一页", "上一页")
+                and not _nav.startswith("跳")):
+            if re.search(r"(网盘|夸克|百度|迅雷|阿里|天翼|115|uc)", _nav, re.I):
+                _pl = ses.get("resources", {}).get("panlist", [])
+                if _pl:
+                    _tc = group_panlist_by_type(_pl)
+                    self._movie_sessions_new.update(
+                        event, stage="select_pan_type", pan_type_counts=_tc,
+                        page=0, _llm_handled=True)
+                    await self._send_movie_pan_types(event, ses, tag)
+                    return f"{tag} 已重新发送网盘分类列表。"
+            if re.search(r"(在线|播放|线路|节点)", _nav):
+                _nodes = ses.get("resources", {}).get("playlist", [])
+                if _nodes:
+                    self._movie_sessions_new.update(
+                        event, stage="select_play_node", page=0, _llm_handled=True)
+                    await self._send_movie_nodes(event, ses, tag)
+                    return f"{tag} 已重新发送播放节点列表。"
+
+        # 链接已发送后会话已结束；只有引用列表消息才会恢复断点
 
         # ===== 阶段1：选择影视 =====
         if stage == "select_movie_new":
@@ -4200,6 +5612,10 @@ class MuliyResourcesPlugin(Star):
                 await event.send(MessageChain([Plain(f"❌ 获取详情失败：{str(e)[:200]}")]))
                 return f"{tag} 获取详情失败。"
             n_play = len(resources.get("playlist", [])); n_pan = len(resources.get("panlist", []))
+            # 网盘资源打过期概率标签并按风险排序（高风险置底），写入会话后
+            # 展示与后续选择共用同一顺序，避免序号错位
+            if n_pan:
+                resources["panlist"] = self._annotate_pan_resources(resources["panlist"])
             if n_play == 0 and n_pan == 0:
                 self._movie_sessions_new.delete(event)
                 await event.send(MessageChain([Plain(f"{tag} 「{sel['title']}」暂无任何资源。")]))
@@ -4234,7 +5650,7 @@ class MuliyResourcesPlugin(Star):
                     await event.send(MessageChain([Plain(f"{tag} 该影视暂无在线播放节点。")]))
                     return f"{tag} 无在线播放节点。"
                 self._movie_sessions_new.update(event, stage="select_play_node", page=0, _llm_handled=True)
-                await event.send(MessageChain([Plain(tag + "\n" + format_play_nodes(playlist))]))
+                await self._send_movie_nodes(event, ses, tag)
                 return f"{tag} 已发送播放节点列表。等待用户选节点。"
             elif num == 2:
                 panlist = resources.get("panlist", [])
@@ -4246,7 +5662,7 @@ class MuliyResourcesPlugin(Star):
                 self._movie_sessions_new.update(event, stage="select_pan_type",
                                                 pan_type_counts=type_counts,
                                                 page=0, _llm_handled=True)
-                await event.send(MessageChain([Plain(tag + "\n" + format_pan_types(type_counts))]))
+                await self._send_movie_pan_types(event, ses, tag)
                 return f"{tag} 已发送网盘分类列表（{len(type_counts)}种）。等待用户选分类。"
             else:
                 await event.send(MessageChain([Plain(f"{tag} 请回复 1（在线播放）或 2（网盘资源）。回复0取消。")]))
@@ -4271,6 +5687,11 @@ class MuliyResourcesPlugin(Star):
                                             selected_pan_type=sel_type,
                                             page=0, _llm_handled=True)
             panlist = ses.get("resources", {}).get("panlist", [])
+            # 遍历检测：并发校验该分类下全部链接，过滤已失效资源
+            if self._pan_scan_enabled():
+                sel_type, panlist = await self._scan_pan_type(event, ses, sel_type, tag)
+                if not sel_type:
+                    return f"{tag} 网盘链接遍历检测完成，该分类暂无可直接使用的资源。"
             await self._send_pan_list_card(
                 event, ses.get("detail", {}), panlist, 0, sel_type, prefix=tag + "\n")
             return f"{tag} 已发送「{sel_type}」网盘资源列表。等待用户选网盘。"
@@ -4305,9 +5726,15 @@ class MuliyResourcesPlugin(Star):
                     await event.send(MessageChain([Plain(f"{tag} ❌ 获取播放直链失败，请稍后重试或换一个播放节点。")]))
                     self._movie_sessions_new.delete(event)
                     return f"{tag} 播放直链获取失败。"
-                await self._send_movie_merged(event, detail, link, "在线播放(直链)")
+                sent, _charged = await self._send_movie_merged(
+                    event, detail, link, "在线播放(直链)", send_card=False,
+                    charge=not ses.get("_charged"))
+                # 会话结束；要换节点请引用「播放节点」那条消息
                 self._movie_sessions_new.delete(event)
-                return f"{tag} 已发送「{detail.get('name', '')}」在线播放合并转发。"
+                if sent:
+                    return (f"{tag} 已发送「{detail.get('name', '')}」在线播放。"
+                            f"如需换节点，引用播放节点列表再回复序号。")
+                return f"{tag} 发送播放链接失败（积分不足或链接异常）。"
 
         # ===== 阶段3a-2：选集（剧集 / 综艺，支持翻页）=====
         if stage == "select_episode_new":
@@ -4369,9 +5796,15 @@ class MuliyResourcesPlugin(Star):
                 await event.send(MessageChain([Plain(f"{tag} ❌ 获取播放直链失败，请稍后重试或换一个播放节点。")]))
                 self._movie_sessions_new.delete(event)
                 return f"{tag} 播放直链获取失败。"
-            await self._send_movie_merged(event, detail, link, f"在线播放({shown} · 直链)")
+            sent, _charged = await self._send_movie_merged(
+                event, detail, link, f"在线播放({shown} · 直链)", send_card=False,
+                charge=not ses.get("_charged"))
+            # 会话结束；要换集请引用「选集」那条消息
             self._movie_sessions_new.delete(event)
-            return f"{tag} 已发送「{detail.get('name', '')}」{shown}在线播放合并转发。"
+            if sent:
+                return (f"{tag} 已发送「{detail.get('name', '')}」{shown}在线播放。"
+                        f"如需换集，引用选集列表再回复集数。")
+            return f"{tag} 发送播放链接失败（积分不足或链接异常）。"
 
         # ===== 阶段3b：选择网盘 =====
         if stage == "select_pan":
@@ -4405,12 +5838,26 @@ class MuliyResourcesPlugin(Star):
             detail = ses.get("detail", {})
             pwd = extract_pwd(link)
             pwd_hint = f"（提取码：{pwd}）" if pwd else ""
-            await event.send(MessageChain([Plain(f"📁 已选择：{pan.get('type', '')} - {pan.get('name', '')[:30]}{pwd_hint}\n⏳ 正在生成资源卡片...")]))
-            await self._send_movie_merged(event, detail, link, "网盘下载")
+            risk = self._pan_risk_text(pan)
+            await event.send(MessageChain([Plain(
+                f"📁 已选择：{pan.get('type', '')} - {pan.get('name', '')[:30]}{pwd_hint}\n"
+                f"⏳ 正在校验链接有效性..." + (f"\n{risk}" if risk else ""))]))
+            status = await self._check_selected_pan(pan)
+            if status == "dead":
+                await self._handle_dead_pan(event, ses, pan, link)
+                return f"{tag} 该网盘资源已确认失效，已记录并重新推荐其他资源。"
+            sent, _charged = await self._send_movie_merged(
+                event, detail, link, "网盘下载", send_card=False,
+                charge=not ses.get("_charged"))
+            # 会话结束；要换网盘请引用「网盘资源」那条消息（直接发序号不续接）
             self._movie_sessions_new.delete(event)
-            return f"{tag} 已发送「{detail.get('name', '')}」网盘合并转发。"
+            if sent:
+                return (f"{tag} 已发送「{detail.get('name', '')}」网盘链接。"
+                        f"若链接失效，引用网盘列表回复其他序号即可换资源。")
+            return f"{tag} 发送网盘链接失败（积分不足）。"
 
-        return f"{tag} 未知会话状态，请重新搜索。"
+        await event.send(MessageChain([Plain(f"{tag} 当前会话状态异常，请重新搜索影视。")]))
+        return f"{tag} 未知会话状态，已提示用户重新搜索。"
 
     # ——— 消息发送：合并转发 / Markdown 排版 / 文本+图片 三级降级 ———
     # AstrBot 文档：Node/Nodes 合并转发「大多数平台都不支持，当前适配情况：OneBot v11」。
@@ -4646,7 +6093,16 @@ class MuliyResourcesPlugin(Star):
                     f"{GAME_PAN_ICONS.get(lk['pan'], '📥')} {lk['pan']}{extra}\n")
         txt += (f"\n请回复数字或网盘名选择网盘（1-{len(links)}），"
                 f"选好后发送下载链接；回复 0 取消。")
-        await event.send(MessageChain([Plain(txt)]))
+        hint = f"💡 引用本条消息可换网盘 · {name}"
+        await event.send(MessageChain([Plain(txt + "\n" + hint)]))
+        ses = self._sessions.get(event)
+        if ses:
+            try:
+                snap = copy.deepcopy(ses)
+            except Exception:  # noqa: BLE001
+                snap = dict(ses)
+            snap["stage"] = "select_link"
+            self._register_breakpoint(event, "game", snap, [hint, txt])
 
     async def _send_software_link_menu(self, event: AstrMessageEvent, detail: dict,
                                        selected: dict, links: list) -> None:
@@ -4659,15 +6115,27 @@ class MuliyResourcesPlugin(Star):
                     f"{SW_DISK_ICONS.get(lk['pan'], '📥')} {lk['pan']}\n")
         txt += (f"\n请回复数字或网盘名选择网盘（1-{len(links)}），"
                 f"选好后发送下载链接；回复 0 取消。")
-        await event.send(MessageChain([Plain(txt)]))
+        hint = f"💡 引用本条消息可换网盘 · {name}"
+        await event.send(MessageChain([Plain(txt + "\n" + hint)]))
+        ses2 = self._search_sessions.get(event)
+        if ses2:
+            try:
+                snap = copy.deepcopy(ses2)
+            except Exception:  # noqa: BLE001
+                snap = dict(ses2)
+            snap["stage"] = "select_link"
+            self._register_breakpoint(event, "software", snap, [hint, txt])
 
     async def _send_download_link(self, event: AstrMessageEvent, title: str,
                                   pan: str, url: str, *, code: str = "",
                                   password: str = "", source_name: str = "暮黎资源",
-                                  kind: str = "") -> bool:
-        """网盘选好后只发链接（群聊优先合并转发，私聊普通文本）。"""
+                                  kind: str = "", charge: bool = True) -> bool:
+        """网盘选好后只发链接（群聊优先合并转发，私聊普通文本）。
+
+        charge=False 用于「断点续选」：同一会话已经扣过费，换网盘不再重复扣。
+        """
         note = ""
-        if kind:
+        if kind and charge:
             ok, note = self._points_final_charge(event, kind, title)
             if not ok:
                 await event.send(MessageChain([Plain(note)]))
@@ -4795,20 +6263,28 @@ class MuliyResourcesPlugin(Star):
 
     async def _send_movie_merged(self, event: AstrMessageEvent, detail: dict,
                                  link: str, link_label: str,
-                                 referer: str = ""):
-        """影视结果：先发 HTML 详情卡，再单独发播放/下载链接。
+                                 referer: str = "", *, charge: bool = True,
+                                 send_card: bool = True) -> tuple:
+        """影视结果：默认先发 HTML 详情卡，再单独发播放/下载链接。
 
-        详情卡包含封面、简介、导演/主演、年份/类型/地区、剧照（有则显示）。
-        链接不写进图里；QQ 群用合并聊天记录发送，其他平台发文本。
+        send_card=False 时只发链接——选择影视时已经发过详情卡，
+        选播放节点 / 网盘后再发一次会造成同一张详情卡重复出现。
+
+        返回 (是否已发送, 本次是否执行了扣费)，供「断点续选」判断要不要重复扣费。
         """
         if not link:
-            return
+            return False, False
         text = build_merged_text(detail, link, link_label)
         name = (detail or {}).get("name") or "影视"
-        ok, note = self._points_final_charge(event, "movie", name)
-        if not ok:
-            await event.send(MessageChain([Plain(note)]))
-            return
+        note = ""
+        if charge:
+            ok, note = self._points_final_charge(event, "movie", name)
+            if not ok:
+                await event.send(MessageChain([Plain(note)]))
+                return False, False
+        if not send_card:
+            await self._send_movie_links(event, detail, link, link_label, note=note)
+            return True, bool(charge)
         cover = detail.get("cover", "")
         shots = [u for u in (detail.get("screenshots") or [])
                  if u and u != cover]
@@ -4833,11 +6309,12 @@ class MuliyResourcesPlugin(Star):
                 logger.warning(f"[详情卡] 影视详情卡构建/发送失败，回退旧样式: {e}")
         if card_sent:
             await self._send_movie_links(event, detail, link, link_label, note=note)
-            return
+            return True, bool(charge)
         imgs = ([cover] if cover else []) + [u for u in shots[:3] if u]
         await self._send_resource_result(event, text=text + note,
                                          images=imgs,
                                          referer=referer, source_name="暮黎影视")
+        return True, bool(charge)
 
     async def _get_play_link(self, client, node_i: str, ep: int) -> str:
         """健壮获取播放直链：先取，失败则强制刷新登录再取一次。
@@ -5163,12 +6640,14 @@ class MuliyResourcesPlugin(Star):
             sg = ses["results"][ses["selected_index"]]
             gn = detail.get("name") or sg["title"]
             logger.info(f"[暮黎资源] 发送资源 '{gn}' → {rlink.get('pan','?')}")
-            await self._send_download_link(
+            sent = await self._send_download_link(
                 event, gn, rlink.get("pan", "下载链接"), rlink.get("real_url", ""),
                 code=rlink.get("code", ""), password=rlink.get("password", ""),
-                source_name="暮黎游戏", kind="game")
+                source_name="暮黎游戏", kind="game",
+                charge=not ses.get("_charged"))
+            self._mark_llm_suppress(event)
             self._sessions.delete(event)
-            return f"{tag} 已发送「{gn}」的下载链接。"
+            return f"{tag} 已发送「{gn}」的下载链接。换网盘需引用网盘列表消息。"
 
         ses2 = self._search_sessions.get(event)
         if ses2 and ses2.get("stage") == "select_link":
@@ -5184,11 +6663,13 @@ class MuliyResourcesPlugin(Star):
             sr = ses2["results"][ses2["selected_index"]]
             sn = detail.get("name") or sr["title"]
             logger.info(f"[暮黎资源] 发送软件 '{sn}' → {sl['pan']}")
-            await self._send_download_link(
+            sent = await self._send_download_link(
                 event, sn, sl.get("pan", "下载链接"), sl.get("url", ""),
-                source_name="暮黎软件", kind="software")
+                source_name="暮黎软件", kind="software",
+                charge=not ses2.get("_charged"))
+            self._mark_llm_suppress(event)
             self._search_sessions.delete(event)
-            return f"{tag} 已发送「{sn}」的下载链接。"
+            return f"{tag} 已发送「{sn}」的下载链接。换网盘需引用网盘列表消息。"
 
         logger.warning(f"[暮黎资源] select_download_link('{selection}') → 无活跃会话")
         return f"{tag} 当前没有活跃的下载选择会话。请先搜索并选择资源，或回复0取消。"
@@ -5507,7 +6988,7 @@ class MuliyResourcesPlugin(Star):
 
     @filter.command("小游戏")
     async def cmd_minigame(self, event: AstrMessageEvent):
-        """打开群游戏大厅：猜数字 / 封面猜猜。支持 /小游戏 1、/小游戏 2 直接开始。"""
+        """打开群游戏大厅：猜数字 / 封面猜猜 / 谁是卧底。支持 /小游戏 1、/小游戏 2、/小游戏 3 直接开始。"""
         raw = (event.message_str or "").strip()
         arg = re.sub(r"^/?\s*小游戏\s*", "", raw).strip()
         start = ""
@@ -5515,6 +6996,8 @@ class MuliyResourcesPlugin(Star):
             start = "guess"
         elif arg in ("2", "封面猜猜", "封面", "猜封面"):
             start = "cover"
+        elif arg in ("3", "谁是卧底", "卧底"):
+            start = "undercover"
         try:
             await self._minigame_open_lobby(event, start=start)
         except Exception as e:  # noqa: BLE001
@@ -5538,6 +7021,12 @@ class MuliyResourcesPlugin(Star):
             if key != game["cover_owner_key"]:
                 yield event.plain_result(
                     "【暮黎资源】封面猜猜是单人游戏，只有发起者可以结束。")
+                return
+        if str(game.get("stage") or "").startswith("uc_"):
+            key, _uid, _name = self._points_user(event)
+            if key != game.get("host_key"):
+                yield event.plain_result(
+                    "【暮黎资源】谁是卧底只有房主可以结束。")
                 return
         try:
             await self._minigame_end(event, gkey, game, reason="手动结束")
@@ -5860,8 +7349,8 @@ class MuliyResourcesPlugin(Star):
                 card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT, note=_charge_txt)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
-        await self._send_list_card(event, html=card, text=text,
-                                   total=len(results), label="小说列表")
+        await self._send_novel_list(event, self._novel_sessions.get(event), card,
+                                    text, len(results))
 
     @filter.command("novel_status")
     async def cmd_novel_status(self, event: AstrMessageEvent):
@@ -8510,6 +9999,15 @@ class MuliyResourcesPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=999999)
     async def on_any_message(self, event: AstrMessageEvent):
+        """会话内硬指令处理（事件监听入口）。
+
+        实际逻辑放在 `_dispatch_any_message`：on_llm_request 可能会在 LLM
+        请求前提前调用同一次处理（不同 AstrBot 版本里 LLM 与事件处理顺序不同），
+        用同一个方法可以保证「用户回复序号」不会既被插件处理、又被 LLM 回一遍。
+        """
+        await self._dispatch_any_message(event)
+
+    async def _dispatch_any_message(self, event: AstrMessageEvent):
         """会话内硬指令处理：有 session → 用 event.set_result() 注入已格式化文本 →
         走完整 ResultDecorateStage + RespondStage 发送。
         无 session → 正常退出，让 LLM 处理搜索意图。
@@ -8524,6 +10022,23 @@ class MuliyResourcesPlugin(Star):
             return
         if not text:
             return
+
+        # 同一条消息只处理一次：on_llm_request 可能提前调用本方法做拦截
+        try:
+            if event.get_extra("_muliy_any_ran"):
+                return
+            event.set_extra("_muliy_any_ran", True)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # ── 谁是卧底私聊投票（优先于其它会话处理） ──
+        try:
+            if await self._handle_uc_private(event, text):
+                event.stop_event()
+                self._mark_llm_suppress(event)
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[卧底] 私聊入口处理失败: {e}")
 
         # ── pdy0 搜索验证码回复（必须在会话清理之前消费） ──
         try:
@@ -8542,11 +10057,20 @@ class MuliyResourcesPlugin(Star):
         session_text = re.sub(r"\[CQ:at,[^\]]+\]", "", text)
         session_text = re.sub(r"^@\S+\s*", "", session_text).strip()
 
+        # ── 断点续选：仅当本条消息「引用」了机器人的列表消息时才恢复会话 ──
+        #    直接发序号不会恢复（会话结束后就是新对话，方便用户去做别的事）
+        try:
+            if session_text and self._resume_from_quote(event):
+                logger.debug("[断点] 已从引用消息恢复会话")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[断点] 引用恢复失败: {e}")
+
         # ── 群聊小游戏：只消费明确的游戏输入，普通聊天继续走原流程 ──
         if session_text and not text.startswith("/"):
             try:
                 if await self._handle_minigame_message(event, session_text):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     return
             except Exception as e:  # noqa: BLE001
                 logger.error(f"[小游戏] 兜底处理失败: {e}")
@@ -8569,6 +10093,7 @@ class MuliyResourcesPlugin(Star):
             )
             if valid:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 try:
                     await self._handle_movie_new_selection(event, session_text)
                 except Exception as e:
@@ -8611,6 +10136,7 @@ class MuliyResourcesPlugin(Star):
             # ── 1. 取消（所有阶段通用） ──
             if text in cancel_kw:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 self._sessions.delete(event)
                 event.set_result(event.plain_result("已取消搜索。"))
                 return
@@ -8620,6 +10146,7 @@ class MuliyResourcesPlugin(Star):
                 # 翻页/跳转 → ★插件自己发格式化页面（保证响应）
                 if text in page_kw or text.startswith("跳"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     ps = ses.get("page_size", 8); t = len(ses["results"])
                     cur = ses.get("page", 0)
                     if text in page_kw:
@@ -8637,6 +10164,7 @@ class MuliyResourcesPlugin(Star):
                 # 数字/自然语言选择 → 插件处理（调详情 + 列网盘）
                 if text in num_kw or text.startswith("第") or text.startswith("选") or text.startswith("最后"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     num = self._parse_natural_number(text)
                     if num == -2: num = len(ses["results"]) - (ses.get("page", 0) * ses.get("page_size", 8))
                     r = ses["results"]; pg = ses.get("page", 0); ps = ses.get("page_size", 8)
@@ -8668,6 +10196,7 @@ class MuliyResourcesPlugin(Star):
             # ── 3. select_link 阶段 ──
             if stage == "select_link":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 detail = ses.get("game_detail", {})
                 links = detail.get("download_links", [])
                 num = self._parse_selection(text, links)
@@ -8685,10 +10214,12 @@ class MuliyResourcesPlugin(Star):
                 sg = ses["results"][ses["selected_index"]]
                 gn = detail.get("name") or sg["title"]
                 logger.info(f"[执行] 游戏 {gn} url={rlink.get('real_url', '')[:40]}")
-                await self._send_download_link(
+                sent = await self._send_download_link(
                     event, gn, rlink.get("pan", "下载链接"), rlink.get("real_url", ""),
                     code=rlink.get("code", ""), password=rlink.get("password", ""),
-                    source_name="暮黎游戏", kind="game")
+                    source_name="暮黎游戏", kind="game",
+                    charge=not ses.get("_charged"))
+                # 会话结束；换网盘需引用网盘列表消息
                 self._sessions.delete(event)
                 return
 
@@ -8702,6 +10233,7 @@ class MuliyResourcesPlugin(Star):
             # ── 1. 取消（所有阶段通用） ──
             if text in cancel_kw:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 self._search_sessions.delete(event)
                 event.set_result(event.plain_result("已取消搜索。"))
                 return
@@ -8713,6 +10245,7 @@ class MuliyResourcesPlugin(Star):
                 # 这样既保证响应速度，又不会出现 LLM 二次输出的混乱
                 if text in page_kw or text.startswith("跳"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     ps = ses2.get("page_size", 8); t = len(ses2["results"])
                     cur = ses2.get("page", 0)
                     if text in page_kw:
@@ -8730,6 +10263,7 @@ class MuliyResourcesPlugin(Star):
                 # 数字/自然语言选择 → 让插件处理（调详情 + 列网盘），保持原来逻辑
                 if text in num_kw or text.startswith("第") or text.startswith("选") or text.startswith("最后"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     num = self._parse_natural_number(text)
                     if num == -2: num = len(ses2["results"]) - (ses2.get("page", 0) * ses2.get("page_size", 8))
                     r = ses2["results"]; pg = ses2.get("page", 0); ps = ses2.get("page_size", 8)
@@ -8757,6 +10291,7 @@ class MuliyResourcesPlugin(Star):
             # ── 3. select_link 阶段 ──
             if stage == "select_link":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 detail = ses2.get("detail", {})
                 links = detail.get("download_links", [])
                 num = self._parse_selection(text, links)
@@ -8770,9 +10305,11 @@ class MuliyResourcesPlugin(Star):
                 sr = ses2["results"][ses2["selected_index"]]
                 sn = detail.get("name") or sr["title"]
                 logger.info(f"[执行] 软件 {sn} url={(sl.get('url') or '')[:50]}")
-                await self._send_download_link(
+                sent = await self._send_download_link(
                     event, sn, sl.get("pan", "下载链接"), sl.get("url", ""),
-                    source_name="暮黎软件", kind="software")
+                    source_name="暮黎软件", kind="software",
+                    charge=not ses2.get("_charged"))
+                # 会话结束；换网盘需引用网盘列表消息
                 self._search_sessions.delete(event)
                 return
 
@@ -8786,6 +10323,7 @@ class MuliyResourcesPlugin(Star):
             # 取消
             if text in cancel_kw:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 self._movie_sessions.delete(event)
                 event.set_result(event.plain_result("已取消搜索。"))
                 return
@@ -8795,6 +10333,7 @@ class MuliyResourcesPlugin(Star):
             #   这里直接拦截处理，与 select_episode / select_source / 新站影视一致）
             if stage == "select_movie":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 r = ses3.get("results", [])
                 p = ses3.get("page", 0)
                 ps = ses3.get("page_size", 8)
@@ -8856,6 +10395,7 @@ class MuliyResourcesPlugin(Star):
             # 选集数
             if stage == "select_episode":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 detail = ses3.get("detail", {})
                 eps = detail.get("episodes", [])
                 m2 = re.search(r"\d+", text)
@@ -8873,6 +10413,7 @@ class MuliyResourcesPlugin(Star):
             # 选线路（支持翻页）
             if stage == "select_source":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 detail = ses3.get("detail", {})
                 srcs = detail.get("sources", [])
                 sel = ses3.get("selected", {})
@@ -8965,6 +10506,7 @@ class MuliyResourcesPlugin(Star):
             # ── 取消（所有阶段通用） ──
             if text in cancel_kw:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 self._drama_sessions.delete(event)
                 event.set_result(event.plain_result("已取消搜索。"))
                 return
@@ -8973,6 +10515,7 @@ class MuliyResourcesPlugin(Star):
                 # 翻页 / 跳转
                 if text in page_kw or text.startswith("跳"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     ps = dses.get("page_size", 8); t = len(dses["results"])
                     cur = dses.get("page", 0)
                     if text in page_kw:
@@ -8989,6 +10532,7 @@ class MuliyResourcesPlugin(Star):
                 # 数字/自然语言选择 → 取详情 + 返回网盘链接
                 if text in num_kw or text.startswith("第") or text.startswith("选") or text.startswith("最后"):
                     event.stop_event()
+                    self._mark_llm_suppress(event)
                     num = self._parse_natural_number(text)
                     if num == -2:
                         num = len(dses["results"]) - (dses.get("page", 0) * dses.get("page_size", 8))
@@ -9007,8 +10551,8 @@ class MuliyResourcesPlugin(Star):
                         self._drama_sessions.delete(event)
                         await event.send(MessageChain([Plain(f"❌ 获取资源失败：{str(e)[:100]}")]))
                         return
-                    self._drama_sessions.delete(event)
                     if not det.get("success"):
+                        self._drama_sessions.delete(event)
                         await event.send(MessageChain([Plain(
                             f"😕 {det.get('error', '未获取到资源链接')}，换一部试试？")]))
                         return
@@ -9027,6 +10571,8 @@ class MuliyResourcesPlugin(Star):
                     ]
                     await event.send(MessageChain([Plain("\n".join(lines) + note)]))
                     logger.info(f"[执行] 短剧 {title} → {det.get('link','')}")
+                    # 会话结束；换一部请引用短剧列表消息
+                    self._drama_sessions.delete(event)
                     return
 
         # ══════════════════════════════════════════════
@@ -9038,12 +10584,14 @@ class MuliyResourcesPlugin(Star):
             # 取消（任意阶段通用）
             if text in cancel_kw:
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 self._novel_sessions.delete(event)
                 event.set_result(event.plain_result("已取消小说下载。"))
                 return
             # 翻页（仅 select_novel 阶段）
             if stage == "select_novel" and (text in page_kw or text.startswith("跳")):
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 r = nses["results"]; ps = nses.get("page_size", 8)
                 t = len(r); cur = nses.get("page", 0)
                 if text in page_kw:
@@ -9054,6 +10602,7 @@ class MuliyResourcesPlugin(Star):
                         pt = (t + ps - 1) // ps
                         nses["page"] = max(0, min(pt - 1, int(m.group()) - 1))
                 nses["_updated"] = time.time()
+                nses["_llm_handled"] = True
                 ses_now = self._novel_sessions.get(event)
                 card = ""
                 if novel_card_html:
@@ -9061,13 +10610,14 @@ class MuliyResourcesPlugin(Star):
                         card = novel_card_html(ses_now, timeout=SESSION_TIMEOUT)
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"[列表卡片] 小说卡片构建失败，回退文本: {e}")
-                await self._send_list_card(
-                    event, html=card, text=self._format_novel_page(ses_now),
-                    total=len(r), label="小说列表")
+                await self._send_novel_list(
+                    event, self._novel_sessions.get(event), card,
+                    self._format_novel_page(ses_now), len(r))
                 return
             # 选书
             if stage == "select_novel":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 r = nses["results"]; p = nses.get("page", 0); ps = nses.get("page_size", 8)
                 t = len(r); st = p * ps; ed = min(st + ps, t); pc = ed - st
                 number = self._parse_natural_number(text)
@@ -9080,7 +10630,8 @@ class MuliyResourcesPlugin(Star):
                 ai = st + number - 1
                 sel = r[ai]
                 self._novel_sessions.set(event, {
-                    **nses, "stage": "select_format", "selected": sel, "_updated": time.time(),
+                    **nses, "stage": "select_format", "selected": sel,
+                    "_updated": time.time(), "_llm_handled": True,
                 })
                 fmt_menu = (
                     f"📚 已选择：《{sel.get('book_name') or '未知'}》／{sel.get('author') or '佚名'}\n"
@@ -9096,6 +10647,7 @@ class MuliyResourcesPlugin(Star):
             # 选格式 → 触发下载（默认格式支持多选：回复「下载/确认」生成全部默认格式）
             if stage == "select_format":
                 event.stop_event()
+                self._mark_llm_suppress(event)
                 sel = nses.get("selected", {})
                 base, token, limit, def_fmts, timeout, dl_timeout = self._novel_cfg()
                 low = text.strip().lower()
@@ -9189,6 +10741,7 @@ class MuliyResourcesPlugin(Star):
                     lines.append("💡 全部格式失败：PDF 多为 so-novel 缺中文字体（见上方提示），"
                                  "其余可换一个书源或改用 TXT 重试。")
                 await event.send(MessageChain([Plain("\n".join(lines) + point_note)]))
+                # 会话结束；换一本请引用小说列表消息
                 self._novel_sessions.delete(event)
                 return
 
@@ -10150,8 +11703,12 @@ class MuliyResourcesPlugin(Star):
         return bool(enabled), max(1, threshold)
 
     async def _send_card_image(self, event: AstrMessageEvent, img_bytes: bytes,
-                               name: str = "") -> bool:
-        """把卡片图片以「图片」形式发到当前会话，失败返回 False。"""
+                               name: str = "", want_mid: bool = False) -> bool:
+        """把卡片图片发到当前会话，失败返回 False。
+
+        want_mid=True 时优先走 OneBot 原生发送并记录 message_id，供「引用本条
+        消息」时精确识别断点；拿不到 message_id 会回退普通 event.send。
+        """
         if not img_bytes:
             return False
         if len(img_bytes) > 3 * 1024 * 1024 and hasattr(self, "_compress_game_image"):
@@ -10159,6 +11716,18 @@ class MuliyResourcesPlugin(Star):
                 img_bytes = await asyncio.to_thread(self._compress_game_image, img_bytes)
             except Exception:
                 pass
+        if want_mid:
+            mid = await self._send_image_raw(event, img_bytes)
+            if mid:
+                try:
+                    event.set_extra("_muliy_last_card_mid", str(mid))
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    event._has_send_oper = True
+                except Exception:  # noqa: BLE001
+                    pass
+                return True
         tmp = None
         try:
             fd, tmp = tempfile.mkstemp(suffix=_img_ext(img_bytes), prefix="listcard_")
@@ -10177,34 +11746,88 @@ class MuliyResourcesPlugin(Star):
                 except Exception:
                     pass
 
+    async def _send_image_raw(self, event: AstrMessageEvent,
+                              img_bytes: bytes) -> str:
+        """经 OneBot 原生发图并返回 message_id；非 aiocqhttp 平台返回空串。"""
+        bot = getattr(event, "bot", None)
+        if bot is None or not hasattr(bot, "call_action"):
+            return ""
+        try:
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            payload = [{"type": "image", "data": {"file": f"base64://{b64}"}}]
+            kw = {}
+            sid = str(event.get_self_id() or "")
+            if sid.isdigit():
+                kw["self_id"] = int(sid)
+            gid = event.get_group_id()
+            if gid:
+                ret = await bot.call_action(
+                    action="send_group_msg", group_id=int(gid),
+                    message=payload, **kw)
+            else:
+                ret = await bot.call_action(
+                    action="send_private_msg",
+                    user_id=int(event.get_sender_id()), message=payload, **kw)
+            if isinstance(ret, dict):
+                mid = ret.get("message_id")
+                if mid is None and isinstance(ret.get("data"), dict):
+                    mid = ret["data"].get("message_id")
+                if mid is not None:
+                    return str(mid)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[列表卡片] 原生发图未取到 message_id，回退 event.send: {e}")
+        return ""
+
     async def _send_list_card(self, event: AstrMessageEvent, *, html: str, text: str,
                               total: int, label: str = "列表",
-                              force: bool = False) -> bool:
+                              force: bool = False, hint: str = "") -> bool:
         """超长列表优先发图片卡片；未启用 / 条目不多 / 渲染失败时发文本。
 
         触发条件：条目数超过阈值，**或**文本已经很长（长标题 4~5 条就够刷屏）。
         force=True 时忽略条目数阈值（选集卡片即使只有 2 集也出图）。
+        hint 会渲染到底部（图片模式）或文本末尾（文本模式），用于引用断点。
         返回是否成功发了图片。无论走哪条路都只发一条消息。
         """
+        body = text + (f"\n{hint}" if hint else "")
         enabled, threshold = self._list_card_cfg()
         long_text = len(text) > 400   # 纯文本超过约 400 字，即使条目少也出图
         if (not enabled or not html or render_list_card is None
                 or (not force and total <= threshold and not long_text)):
-            await event.send(MessageChain([Plain(text)]))
+            await event.send(MessageChain([Plain(body)]))
             return False
         img = None
         try:
-            img = await asyncio.to_thread(render_list_card, html)
+            page_html = self._inject_card_hint(html, hint)
+            img = await asyncio.to_thread(render_list_card, page_html)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[列表卡片] {label} 渲染异常，回退文本: {e}")
         if not img:
-            await event.send(MessageChain([Plain(text)]))
+            await event.send(MessageChain([Plain(body)]))
             return False
-        if await self._send_card_image(event, img, f"暮黎_{label}.jpg"):
+        try:
+            event.set_extra("_muliy_last_card_mid", "")
+        except Exception:  # noqa: BLE001
+            pass
+        if await self._send_card_image(event, img, f"暮黎_{label}.jpg",
+                                       want_mid=True):
             logger.info(f"[列表卡片] {label} 已发图片（{total} 条，{len(img) // 1024}KB）")
             return True
-        await event.send(MessageChain([Plain(text)]))
+        await event.send(MessageChain([Plain(body)]))
         return False
+
+    @staticmethod
+    def _inject_card_hint(html: str, hint: str) -> str:
+        """把断点提示渲染进卡片底部，避免在聊天里多发一条文字。"""
+        hint = (hint or "").strip()
+        if not html or not hint:
+            return html
+        line = ('<div style="margin-top:12px;padding:0 18px;font-size:14px;'
+                'color:#9a9a9a;line-height:1.65">'
+                + escape(hint) + '</div>')
+        needle = "\n  </div>\n</div>\n</body></html>"
+        if needle in html:
+            return html.replace(needle, "\n" + line + needle, 1)
+        return html.replace("</body>", line + "</body>", 1)
 
     async def _send_search_page(self, event: AstrMessageEvent, kind: str, text: str,
                                 ses: dict | None = None, *,
@@ -10253,14 +11876,306 @@ class MuliyResourcesPlugin(Star):
             logger.warning(f"[列表卡片] {kind} 卡片构建失败，回退文本: {e}")
         label = {"game": "游戏列表", "software": "软件列表", "movie": "影视列表",
                  "movie_new": "影视列表", "drama": "短剧列表"}.get(kind, "列表")
+        kw = str(keyword or (ses or {}).get("keyword") or "").strip()
+        page_now = int(page or (ses or {}).get("page", 0) or 0)
+        hint = f"💡 引用本条消息可继续选择 · {kw or label} · 第{page_now + 1}页"
         await self._send_list_card(event, html=html, text=text, total=total,
-                                   label=label)
+                                   label=label, hint=hint)
+        # 断点：引用搜索结果列表可直接继续选序号（无需重新搜索）
+        mid = str(event.get_extra("_muliy_last_card_mid", "") or "")
+        mgr = {
+            "game": ("game", self._sessions),
+            "software": ("software", self._search_sessions),
+            "movie": ("movie_old", self._movie_sessions),
+            "movie_new": ("movie", self._movie_sessions_new),
+            "drama": ("drama", self._drama_sessions),
+        }.get(kind)
+        if mgr:
+            mgr_name, manager = mgr
+            state = manager.get(event)
+            if state:
+                try:
+                    snap = copy.deepcopy(state)
+                except Exception:  # noqa: BLE001
+                    snap = dict(state)
+                self._register_breakpoint(event, mgr_name, snap, [hint, text],
+                                          mid=mid)
+
+    # ——— 网盘资源过期判断（本地概率 + 选中时真实校验） ———
+
+    def _pan_expiry_hint_enabled(self) -> bool:
+        cfg = self._get_config()
+        return bool(cfg.get("pan_expiry_hint", True)) if isinstance(cfg, dict) else True
+
+    def _pan_link_check_enabled(self) -> bool:
+        cfg = self._get_config()
+        return bool(cfg.get("pan_link_check", True)) if isinstance(cfg, dict) else True
+
+    def _pan_reports_store(self) -> PanReportStore:
+        if self._pan_reports is None:
+            self._pan_reports = PanReportStore(
+                os.path.join(self._plugin_data_dir(), "pan_reports.json"))
+        return self._pan_reports
+
+    def _annotate_pan_resources(self, panlist, sort: bool = True,
+                                force: bool = False) -> list:
+        """给网盘资源列表打过期概率标签；关闭该功能时原样返回。
+
+        sort=True 会把「过期概率」低的排前面、高危置底。
+        注意：只有写入会话的列表才能排序，展示兜底必须 sort=False，
+        否则列表顺序会和用户回复的序号对不上。
+        force=True 强制重算（失效反馈更新后需要重新评分）。
+        """
+        if not panlist or not self._pan_expiry_hint_enabled():
+            return list(panlist or [])
+        try:
+            return annotate_panlist(panlist, self._pan_reports_store().items,
+                                    sort=sort, force=force)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源·网盘] 过期概率评估失败(已忽略): {e}")
+            return list(panlist or [])
+
+    @staticmethod
+    def _pan_risk_text(pan: dict) -> str:
+        h = pan.get("_health") if isinstance(pan.get("_health"), dict) else {}
+        if not h:
+            return ""
+        return f"{h.get('emoji', '')}{h.get('label', '')} · 过期概率约 {h.get('score', '?')}%"
+
+    async def _check_selected_pan(self, pan: dict) -> str:
+        """选中网盘时做一次真实链接校验，返回 ok / dead / unknown。"""
+        url = (pan or {}).get("url") or ""
+        if not url or not self._pan_link_check_enabled():
+            return "unknown"
+        try:
+            return await asyncio.to_thread(check_pan_link, url, pan.get("type", ""))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[暮黎资源·网盘] 链接校验异常(按未知处理): {e}")
+            return "unknown"
+
+    def _pan_scan_enabled(self) -> bool:
+        cfg = self._get_config()
+        return bool(cfg.get("pan_link_scan", True)) if isinstance(cfg, dict) else True
+
+    async def _scan_pan_links(self, pans, cap: int = 60):
+        """并发检测一批网盘链接，返回 (alive, dead, checked, unknown)。
+
+        - alive：正常 + 无法判断的条目（保持原对象，避免丢标签）；
+        - dead：确认失效的条目（带 🔴已失效 标签）；
+        - checked：拿到明确结果（ok/dead）的数量。
+        """
+        pans = list(pans or [])
+        targets = [p for p in pans
+                   if (p.get("url") or "").startswith(("http://", "https://"))][:cap]
+        if not targets:
+            return pans, [], 0, 0
+        try:
+            result = await asyncio.to_thread(check_many, targets, 8, 5, 25)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源·网盘] 批量检测失败(已忽略): {e}")
+            return pans, [], 0, 0
+
+        alive, dead = [], []
+        checked = unknown = 0
+        for p in pans:
+            u = p.get("url") or ""
+            st = result.get(u)
+            if st == "dead":
+                checked += 1
+                dead.append(p)
+            elif st == "unknown":
+                unknown += 1
+                alive.append(p)
+            else:
+                if st == "ok":
+                    checked += 1
+                alive.append(p)
+
+        dead_items = []
+        if dead:
+            rep = self._pan_reports_store()
+            try:
+                counts = rep.add_many([p.get("url") or "" for p in dead])
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[暮黎资源·网盘] 失效反馈保存失败(已忽略): {e}")
+                counts = {}
+            for p in dead:
+                u = p.get("url") or ""
+                q = dict(p)
+                q["_health"] = {
+                    "score": 100, "level": "high", "emoji": "🔴",
+                    "label": "已失效", "age_days": None, "lifetime": None,
+                    "reports": int(counts.get(u) or 1),
+                    "detail": "链接已确认失效",
+                }
+                q["_dead"] = True
+                dead_items.append(q)
+        return alive, dead_items, checked, unknown
+
+    async def _scan_pan_type(self, event: AstrMessageEvent, ses: dict,
+                             sel_type: str, tag: str) -> tuple:
+        """选定网盘分类后遍历检测该类全部链接，过滤失效项。
+
+        返回 (最终使用的网盘类型, 更新后的完整网盘列表)；
+        该类型全部失效时返回 ("", 列表) 并让用户重新选分类。
+        """
+        resources = dict(ses.get("resources") or {})
+        all_pan = list(resources.get("panlist") or [])
+        targets = [p for p in all_pan if p.get("type", "") == sel_type]
+        if not targets:
+            return sel_type, all_pan
+
+        await event.send(MessageChain([Plain(
+            f"{tag} ⏳ 正在检测「{sel_type}」的 {len(targets)} 个链接有效性，请稍候…")]))
+        alive, dead, checked, unknown = await self._scan_pan_links(targets)
+
+        others = [p for p in all_pan if p.get("type", "") != sel_type]
+        resources["panlist"] = self._annotate_pan_resources(alive + others)
+        if dead:
+            resources["pan_dead"] = list(resources.get("pan_dead") or []) + dead
+        ses["resources"] = resources
+
+        if dead:
+            tip = f"🧹 已检测 {checked} 个链接，过滤 {len(dead)} 个失效资源。"
+            if unknown:
+                tip += f"\n（另有 {unknown} 个暂时无法确认，已保留）"
+            await event.send(MessageChain([Plain(f"{tag} {tip}")]))
+        elif unknown:
+            await event.send(MessageChain([Plain(
+                f"{tag} ⚠️ {unknown} 个链接暂时无法确认有效性（已保留），可点开后自行判断。")]))
+
+        if alive:
+            self._movie_sessions_new.update(
+                event, resources=resources, stage="select_pan",
+                selected_pan_type=sel_type, page=0, _llm_handled=True)
+            return sel_type, resources["panlist"]
+
+        # 该类型全部失效：退回分类选择（按剩余资源重新统计）
+        remaining = group_panlist_by_type(resources["panlist"])
+        if remaining:
+            self._movie_sessions_new.update(
+                event, resources=resources, stage="select_pan_type",
+                pan_type_counts=remaining, page=0, _llm_handled=True)
+            await self._send_movie_pan_types(
+                event, ses, tag,
+                note=f"⚠️「{sel_type}」检测到的资源均已失效，请换一个网盘类型：\n")
+        else:
+            self._movie_sessions_new.delete(event)
+            await event.send(MessageChain([Plain(
+                f"{tag} ❌ 该影视的所有网盘资源均检测为失效（已记录），"
+                f"建议换个片源或稍后再试。")]))
+        return "", resources["panlist"]
+
+    async def _handle_dead_pan(self, event: AstrMessageEvent, ses: dict,
+                               pan: dict, link: str) -> None:
+        """确认网盘已失效：记录反馈 → 重新评分置底 → 推荐其他可用资源。"""
+        tag = "【暮黎资源】"
+        try:
+            self._pan_reports_store().add(link)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[暮黎资源·网盘] 失效反馈保存失败(已忽略): {e}")
+        try:
+            resources = dict(ses.get("resources") or {})
+            # 把刚确认失效的这条从列表移除，避免它继续占用序号
+            kept = [p for p in (resources.get("panlist") or [])
+                    if (p.get("url") or "") != link]
+            if len(kept) != len(resources.get("panlist") or []):
+                dead_item = dict(pan)
+                dead_item["_dead"] = True
+                dead_item["_health"] = {
+                    "score": 100, "level": "high", "emoji": "🔴",
+                    "label": "已失效", "age_days": None, "lifetime": None,
+                    "reports": self._pan_reports_store().count(link),
+                    "detail": "链接已确认失效",
+                }
+                resources["pan_dead"] = list(resources.get("pan_dead") or []) + [dead_item]
+            resources["panlist"] = self._annotate_pan_resources(kept, force=True)
+            ses["resources"] = resources
+            sel_type = ses.get("selected_pan_type", "") or ""
+            same_type = [p for p in resources["panlist"]
+                         if p.get("type", "") == sel_type] if sel_type else list(resources["panlist"])
+            alive = [p for p in same_type
+                     if (p.get("_health") or {}).get("level") != "high"]
+            if len(same_type) <= 1 or not alive:
+                # 该网盘类型已无可用资源：退回全部网盘类型重新推荐
+                sel_type = ""
+            self._movie_sessions_new.update(
+                event, resources=resources, page=0,
+                stage="select_pan", selected_pan_type=sel_type, _llm_handled=True)
+            await event.send(MessageChain([Plain(
+                f"{tag} ❌ 该网盘链接已失效（分享已过期或被取消）。\n"
+                f"💡 已记录并从列表移除，下面重新为你列出可用资源：")]))
+            await self._send_pan_list_card(
+                event, ses.get("detail", {}), resources["panlist"], 0, sel_type,
+                prefix=tag + "\n")
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[暮黎资源·网盘] 失效资源兜底处理失败: {e}")
+            await event.send(MessageChain([Plain(
+                f"{tag} 该网盘链接可能已失效，请回复「网盘资源」重新选择其他资源。")]))
+
+    async def _send_novel_list(self, event: AstrMessageEvent, ses: dict | None,
+                               card: str, text: str, total: int) -> None:
+        """小说列表：发送并绑定引用断点（引用后可继续选书，不用重新搜索）。"""
+        kw = str((ses or {}).get("keyword") or "小说").strip()
+        page = int((ses or {}).get("page", 0) or 0)
+        hint = f"💡 引用本条消息可继续选择 · {kw} · 小说列表 · 第{page + 1}页"
+        await self._send_list_card(event, html=card, text=text, total=total,
+                                   label="小说列表", hint=hint)
+        mid = str(event.get_extra("_muliy_last_card_mid", "") or "")
+        if ses:
+            try:
+                snap = copy.deepcopy(ses)
+            except Exception:  # noqa: BLE001
+                snap = dict(ses)
+            snap["stage"] = "select_novel"
+            snap["page"] = page
+            self._register_breakpoint(event, "novel", snap, [hint, text], mid=mid)
+
+    async def _send_movie_pan_types(self, event: AstrMessageEvent, ses: dict,
+                                    tag: str = "", note: str = "") -> None:
+        """发送网盘分类列表，并绑定引用断点。"""
+        panlist = (ses.get("resources") or {}).get("panlist") or []
+        tc = group_panlist_by_type(panlist)
+        text = format_pan_types(tc)
+        title = str((ses.get("detail") or {}).get("name") or "").strip() or "影视"
+        hint = f"💡 引用本条消息可换网盘类型 · {title}"
+        await event.send(MessageChain([Plain(
+            (tag or "") + "\n" + (note or "") + text + (f"\n{hint}" if hint else ""))]))
+        try:
+            snap = copy.deepcopy(ses)
+        except Exception:  # noqa: BLE001
+            snap = dict(ses)
+        snap["stage"] = "select_pan_type"
+        snap["pan_type_counts"] = tc
+        snap["page"] = 0
+        self._register_breakpoint(event, "movie", snap, [hint, text])
+
+    async def _send_movie_nodes(self, event: AstrMessageEvent, ses: dict,
+                                tag: str = "") -> None:
+        """发送播放节点列表，并绑定引用断点。"""
+        playlist = (ses.get("resources") or {}).get("playlist") or []
+        text = format_play_nodes(playlist)
+        title = str((ses.get("detail") or {}).get("name") or "").strip() or "影视"
+        hint = f"💡 引用本条消息可换播放节点 · {title}"
+        await event.send(MessageChain([Plain(
+            (tag or "") + ("\n" if tag else "") + text
+            + (f"\n{hint}" if hint else ""))]))
+        try:
+            snap = copy.deepcopy(ses)
+        except Exception:  # noqa: BLE001
+            snap = dict(ses)
+        snap["stage"] = "select_play_node"
+        snap["page"] = 0
+        self._register_breakpoint(event, "movie", snap, [hint, text])
 
     async def _send_pan_list_card(self, event: AstrMessageEvent, detail: dict,
                                   panlist: list, page: int = 0,
                                   type_filter: str = "", prefix: str = "") -> bool:
         """网盘资源列表：整页渲染成图片（分页口径与 format_pan_list 一致）。"""
         panlist = panlist or []
+        if panlist and not all(isinstance(p.get("_health"), dict) for p in panlist):
+            # 兜底：会话里的列表理论上已打过标；这里只补标签、不改顺序
+            panlist = self._annotate_pan_resources(panlist, sort=False)
         filtered = ([p for p in panlist if p.get("type", "") == type_filter]
                     if type_filter else panlist)
         text = prefix + format_pan_list(panlist, page, type_filter=type_filter)
@@ -10274,8 +12189,27 @@ class MuliyResourcesPlugin(Star):
                     timeout=120)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[列表卡片] 网盘卡片构建失败，回退文本: {e}")
-        return await self._send_list_card(event, html=html, text=text,
-                                          total=len(filtered), label="网盘列表")
+        title = str((detail or {}).get("name") or "").strip() or "影视"
+        pages = max(1, (len(filtered) + 11) // 12)
+        page_now = max(0, min(int(page or 0), pages - 1))
+        hint = (f"💡 引用本条消息可换资源 · {title} · "
+                f"{type_filter or '全部网盘'} · 第{page_now + 1}/{pages}页")
+        sent = await self._send_list_card(event, html=html, text=text,
+                                          total=len(filtered), label="网盘列表",
+                                          hint=hint)
+        # 断点：引用这条消息回复序号，可从当前网盘列表继续换资源
+        mid = str(event.get_extra("_muliy_last_card_mid", "") or "")
+        ses = self._movie_sessions_new.get(event)
+        if ses:
+            try:
+                snap = copy.deepcopy(ses)
+            except Exception:  # noqa: BLE001
+                snap = dict(ses)
+            snap["stage"] = "select_pan"
+            snap["page"] = page_now
+            snap["selected_pan_type"] = type_filter
+            self._register_breakpoint(event, "movie", snap, [hint, text], mid=mid)
+        return sent
 
     async def _send_episode_card(self, event: AstrMessageEvent, detail: dict,
                                  node: dict, page: int = 0,
@@ -10289,9 +12223,30 @@ class MuliyResourcesPlugin(Star):
                 html = episode_card_html(detail, node, page=page, timeout=120)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[列表卡片] 选集卡片构建失败，回退文本: {e}")
-        return await self._send_list_card(event, html=html, text=text,
+        title = str((detail or {}).get("name") or "").strip() or "影视"
+        node_t = str((node or {}).get("t") or "").strip()
+        size = episode_page_size(eps)
+        pages = episode_pages(len(eps), size)
+        page_now = normalize_ep_page(page, len(eps), size)
+        hint = (f"💡 引用本条消息可换集 · {title}"
+                + (f" · {node_t}" if node_t else "")
+                + f" · 第{page_now + 1}/{pages}页")
+        sent = await self._send_list_card(event, html=html, text=text,
                                           total=len(eps), label="选集列表",
-                                          force=True)
+                                          force=True, hint=hint)
+        # 断点：引用选集消息回复集数，可直接换一集
+        mid = str(event.get_extra("_muliy_last_card_mid", "") or "")
+        ses = self._movie_sessions_new.get(event)
+        if ses:
+            try:
+                snap = copy.deepcopy(ses)
+            except Exception:  # noqa: BLE001
+                snap = dict(ses)
+            snap["stage"] = "select_episode_new"
+            snap["ep_page"] = page_now
+            snap["selected_node"] = node
+            self._register_breakpoint(event, "movie", snap, [hint, text], mid=mid)
+        return sent
 
     async def _sw_send_report(self, img_bytes, zp, text: str = "", gids=None):
         if gids is None:

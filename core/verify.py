@@ -116,17 +116,34 @@ def render_captcha(expression: str, font_path: str = "",
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_rand_color(120, 215))
 
     # ── 题目文本：逐字符渲染成透明图层后随机旋转、抖动，再叠加 ──
+    # 关键：数字之间留固定间距、数字旋转角度收小，避免两个数字旋转后粘在一起
     text = f"{expression} = ?"
-    pad = 10
-    # 自适应字号：保证整串（含随机间距与旋转留白）不会超出画布被裁切
-    fit_w = width - 2 * pad - 8
+    pad = 14
+    gap_digit = 12
+    gap_other = 8
+
+    def _gap_for(ch: str, prev_digit: bool = False) -> float:
+        if ch == " ":
+            return gap_other * 1.6
+        if ch.isdigit() and prev_digit:
+            return gap_digit
+        return gap_other
+
+    # 自适应字号：把字符间距也算进去，避免放大后挤在一起或被裁切
+    fit_w = width - 2 * pad
     font = None
-    for size in range(int(height * 0.42), 15, -2):
+    for size in range(int(height * 0.40), 15, -2):
         f = _load_font(font_path, size)
         try:
-            tot = sum(draw.textlength(ch, font=f) for ch in text) * 1.14
+            widths_try = [draw.textlength(ch, font=f) for ch in text]
+            gaps_try = []
+            _pd = False
+            for ch in text:
+                gaps_try.append(_gap_for(ch, _pd))
+                _pd = ch.isdigit()
+            tot = sum(widths_try) + sum(gaps_try)
         except Exception:  # noqa: BLE001 —— 极旧 Pillow 无 textlength
-            tot = len(text) * size * 0.62
+            tot = len(text) * size * 0.62 + len(text) * gap_digit
         if tot <= fit_w:
             font = f
             break
@@ -136,28 +153,38 @@ def render_captcha(expression: str, font_path: str = "",
         widths = [draw.textlength(ch, font=font) for ch in text]
     except Exception:  # noqa: BLE001
         widths = [height * 0.26 for _ in text]
-    total = max(1.0, sum(widths))
-    x = max(4.0, (width - total) / 2)
+    x = max(float(pad), (width - sum(widths) - sum(
+        _gap_for(ch, text[i - 1].isdigit() if i else False)
+        for i, ch in enumerate(text))) / 2)
+    prev_digit = False
     for ch, adv in zip(text, widths):
         if ch == " ":
-            x += adv * random.uniform(0.8, 1.6)
+            x += gap_other * 1.6
+            prev_digit = False
             continue
+        is_digit = ch.isdigit()
+        gap = _gap_for(ch, prev_digit)
         cw, chh = int(adv) + pad * 2, height + pad * 2
-        layer = Image.new("RGBA", (max(cw, 8), chh), (0, 0, 0, 0))
+        layer = Image.new("RGBA", (max(cw, 10), chh), (0, 0, 0, 0))
         ld = ImageDraw.Draw(layer)
         color = (random.randint(0, 55), random.randint(0, 55), random.randint(60, 145), 255)
-        ld.text((pad, pad + random.randint(-4, 4)), ch, font=font, fill=color)
-        layer = layer.rotate(random.uniform(-26, 26),
-                             resample=Image.BICUBIC, expand=False)
-        img.paste(layer, (int(x) - pad, (height - chh) // 2 + random.randint(-5, 5)), layer)
-        x += adv * random.uniform(0.95, 1.18)
+        ld.text((pad, pad + int(height * 0.12) + random.randint(-3, 3)),
+                ch, font=font, fill=color)
+        angle = (random.uniform(-11, 11) if is_digit
+                 else random.uniform(-18, 18))
+        layer = layer.rotate(angle, resample=Image.BICUBIC, expand=False)
+        img.paste(layer, (int(x) - pad + random.randint(-1, 1),
+                          (height - chh) // 2 + random.randint(-3, 3)), layer)
+        x += adv + gap
+        prev_digit = is_digit
 
     # ── 前景干扰线：压在文字上方，进一步打断字符轮廓 ──
-    for _ in range(random.randint(2, 4)):
+    # 数量控制在 1-2 条、线宽 1，避免把数字糊住看不清
+    for _ in range(random.randint(1, 2)):
         draw.line(
             [(random.randint(0, width // 3), random.randint(0, height)),
              (random.randint(width * 2 // 3, width), random.randint(0, height))],
-            fill=_rand_color(100, 190), width=random.choice([1, 1, 2]),
+            fill=_rand_color(130, 200), width=1,
         )
 
     buf = BytesIO()

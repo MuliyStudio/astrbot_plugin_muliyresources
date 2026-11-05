@@ -162,6 +162,12 @@ body{
   font-size:14px;font-weight:500;white-space:nowrap}
 .chip-src{background:#f9f0d8;color:#7a6520}
 .chip-pan{flex:0 0 auto;margin-top:3px;background:#f5f5f5;color:#555;height:23px}
+/* 网盘过期概率标签：按风险等级配色 */
+.chip-health{flex:0 0 auto;margin-top:3px;height:23px;font-weight:600}
+.chip-health.fresh{background:#eef8ef;color:#1f7a3d}
+.chip-health.ok{background:#f8f6ec;color:#7a6a25}
+.chip-health.risky{background:#fdf1e7;color:#b25a12}
+.chip-health.high{background:#fdecec;color:#b3261e}
 
 /* ---- 选集宫格 ---- */
 .ep-grid{display:grid;gap:9px}
@@ -238,6 +244,50 @@ body{
   color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;
   font-size:14px}
 .mg-opt .t{font-size:15px;font-weight:600;line-height:1.45;word-break:break-word}
+
+/* ---- 谁是卧底 ---- */
+.mg-games.three{grid-template-columns:repeat(3,1fr)}
+.mg-icon-undercover{background:#f3e8ff;color:#7c3aed}
+.uc-words{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:4px 0 18px}
+.uc-word{background:#fafafa;border:1px solid #ededed;border-radius:14px;padding:14px 16px}
+.uc-word span{font-size:13px;color:#9a9a9a}
+.uc-word b{display:block;margin-top:6px;font-size:24px;font-weight:700;line-height:1.3}
+.uc-word.spy{background:#fffdf3;border-color:#f2e9cd}
+.uc-word.spy b{color:#7a6520}
+.uc-order{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.uc-step{display:inline-flex;align-items:center;gap:6px;background:#fafafa;
+  border:1px solid #ededed;border-radius:999px;padding:5px 11px;font-size:14px;
+  max-width:180px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.uc-step .no{font-size:12px;color:#9a9a9a}
+.uc-step.now{background:#1a1a1a;border-color:#1a1a1a;color:#fff}
+.uc-step.now .no{color:rgba(255,255,255,.6)}
+.uc-step.off{color:#c4c4c4;border-style:dashed;background:#fff}
+.uc-descs{display:flex;flex-direction:column;gap:8px}
+.uc-desc-row{display:flex;gap:10px;background:#fafafa;border:1px solid #ededed;
+  border-radius:10px;padding:9px 12px;font-size:14px;line-height:1.55}
+.uc-desc-row .nm{flex:0 0 92px;color:#8a8a8a;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.uc-desc-row .tx{flex:1;min-width:0;word-break:break-word;color:#2a2a2a}
+.uc-desc-row.miss .tx{color:#c4c4c4}
+.uc-desc-row.now{border-color:#f2e9cd;background:#fffdf3}
+.uc-empty{font-size:14px;color:#b4b4b4;padding:10px 2px}
+.uc-votes{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+.uc-vote-row{display:flex;align-items:center;gap:12px;background:#fafafa;
+  border:1px solid #ededed;border-radius:10px;padding:10px 12px;font-size:15px}
+.uc-vote-row .nm{flex:0 0 112px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:#2a2a2a}
+.uc-vote-row .bar{flex:1;height:8px;border-radius:999px;background:#efefef;overflow:hidden}
+.uc-vote-row .bar i{display:block;height:100%;border-radius:999px;background:#cfcfcf}
+.uc-vote-row b{flex:0 0 auto;min-width:46px;text-align:right;font-size:16px;
+  font-variant-numeric:tabular-nums}
+.uc-vote-row .tag{flex:0 0 auto;font-size:12px;padding:2px 7px;border-radius:999px;
+  background:#f1f1f2;color:#8a8a8a}
+.uc-vote-row.out{background:#fdecec;border-color:#f6d0ce}
+.uc-vote-row.out .bar i{background:#d9534f}
+.uc-vote-row.out .tag{background:#f8d7d5;color:#a12a25}
+.uc-vote-row.tie{background:#fffdf3;border-color:#f2e9cd}
+.uc-vote-row.tie .bar i{background:#e0a800}
+.uc-vote-row.tie .tag{background:#f9edc9;color:#8a6a1f}
 
 /* ---- 影视详情卡 ---- */
 .md-hero{display:flex;gap:22px;align-items:flex-start}
@@ -551,10 +601,20 @@ def pan_card_html(panlist: list, *, page: int = 0, page_size: int = 12,
         if p.get("time"):
             meta_bits.append(escape(_strip_emoji(str(p["time"]).strip())))
         meta = '<span class="dot">·</span>'.join(meta_bits) or '<span class="dim">资源直链</span>'
+        right = f'<span class="chip chip-pan">{escape(pan_type)}</span>'
+        health = p.get("_health") if isinstance(p.get("_health"), dict) else None
+        if health:
+            lv = health.get("level") if health.get("level") in (
+                "fresh", "ok", "risky", "high") else "ok"
+            score = health.get("score", "")
+            right += (f'<span class="chip chip-health {lv}" '
+                      f'title="过期概率约 {escape(str(score))}%">'
+                      f'{escape(str(health.get("emoji") or ""))}'
+                      f'{escape(str(health.get("label") or ""))}</span>')
         items.append({
             "n": i,
             "title": name,
-            "right": f'<span class="chip chip-pan">{escape(pan_type)}</span>',
+            "right": right,
             "meta": meta,
             "tile": True, "icon": "cloud",
         })
@@ -568,6 +628,9 @@ def pan_card_html(panlist: list, *, page: int = 0, page_size: int = 12,
                 f'<span class="dot">·</span>本页 {ed - st} 个')
 
     lines = [f'<div><span class="k">选择</span>回复数字 <b>1–{ed - st}</b>；回复 <b>0</b> 取消</div>']
+    if any(isinstance(p.get("_health"), dict) for p in panlist[st:ed]):
+        lines.append('<div><span class="k">过期概率</span>🟢较新 · 🟡一般 · 🟠偏高 · 🔴极高'
+                     '<span class="dim">（按发布时间与失效反馈估算，高风险已置底）</span></div>')
     if pages > 1:
         lines.append('<div><span class="k">翻页</span>「下一页」/「上一页」/「跳 3」'
                      f'<span class="dim"> · {timeout} 秒无操作自动结束</span></div>')
@@ -645,13 +708,28 @@ def episode_card_html(detail: dict, node: dict, *, page: int = 0,
     )
 
 
-def minigame_lobby_html(*, reward_text: str = "", timeout: int = 90) -> str:
-    """群游戏大厅：两张玩法卡片 + 编号入口。"""
+def minigame_lobby_html(*, reward_text: str = "", timeout: int = 90,
+                        undercover: bool = True) -> str:
+    """群游戏大厅：玩法卡片 + 编号入口。"""
     guess_icon = _svg("casino", 22, "currentColor")
     cover_icon = _svg("movie", 22, "currentColor")
+    uc_icon = _svg("users", 22, "currentColor")
     users = _svg("users", 13, "currentColor")
     clock = _svg("clock", 13, "currentColor")
-    body = f"""    <div class="mg-games">
+    uc_card = ""
+    if undercover:
+        uc_card = f"""
+      <div class="mg-game">
+        <div class="mg-game-top">
+          <span class="mg-icon mg-icon-undercover">{uc_icon}</span>
+          <span class="mg-badge">私聊发词</span>
+        </div>
+        <div class="mg-game-name">谁是卧底</div>
+        <div class="mg-game-desc">每人一个词，其中一个拿到不同的词；轮流描述，投票找出卧底。</div>
+        <div class="mg-game-meta">{users} 4-6 人<span class="dot">·</span>{clock} 约 8 分钟</div>
+        <div class="mg-game-key"><span class="mg-key">3</span> 开始报名</div>
+      </div>"""
+    body = f"""    <div class="mg-games{' three' if undercover else ''}">
       <div class="mg-game">
         <div class="mg-game-top">
           <span class="mg-icon mg-icon-number">{guess_icon}</span>
@@ -671,9 +749,13 @@ def minigame_lobby_html(*, reward_text: str = "", timeout: int = 90) -> str:
         <div class="mg-game-desc">选电影 / 电视剧 / 动漫，看马赛克封面猜片名，四选一作答。</div>
         <div class="mg-game-meta">{users} 1-10 人<span class="dot">·</span>{clock} 约 2 分钟</div>
         <div class="mg-game-key"><span class="mg-key">2</span> 选择题库</div>
-      </div>
+      </div>{uc_card}
     </div>"""
-    foot = ['<div><span class="k">选择</span>回复 <b>1</b> 猜数字 / <b>2</b> 封面猜猜；回复 <b>0</b> 关闭</div>']
+    foot = ['<div><span class="k">选择</span>回复 <b>1</b> 猜数字 / <b>2</b> 封面猜猜'
+            + (' / <b>3</b> 谁是卧底' if undercover else '') + '；回复 <b>0</b> 关闭</div>']
+    if undercover:
+        foot.append('<div class="dim"><span class="k">提示</span>'
+                    '谁是卧底需要机器人能私聊群成员（管理员请开启私聊权限）</div>')
     if reward_text:
         foot.append(f'<div><span class="k">奖励</span>{escape(reward_text)}</div>')
     foot.append(f'<div class="dim"><span class="k">超时</span>{timeout} 秒内未选择自动关闭</div>')
@@ -819,6 +901,209 @@ def minigame_result_card_html(*, title: str, subtitle: str = "",
         icon_html=_svg("gamepad", 15, "currentColor"),
         page_ind=page_ind,
         title=f'<span class="hl">{escape(_clip(title or "小游戏", 20))}</span>',
+        subtitle=escape(subtitle or ""),
+        body=body,
+        foot=_foot(foot_lines or []),
+    )
+
+
+def minigame_uc_join_html(*, host_name: str, players: list | None = None,
+                          seconds: int = 90, min_players: int = 4,
+                          max_players: int = 6, timeout: int = 90) -> str:
+    """谁是卧底组队卡：倒计时 + 已加入玩家 + 私聊要求提示。"""
+    players = players or []
+    cells = []
+    for i, p in enumerate(players[:max_players], 1):
+        name = escape(_clip(p.get("name") or "玩家", 10))
+        host = '<span class="host">房主</span>' if p.get("host") else ""
+        cells.append(f'<div class="mg-player"><span class="no">{i}</span>'
+                     f'<span class="nm">{name}</span>{host}</div>')
+    for i in range(len(players), max_players):
+        cells.append(f'<div class="mg-player empty"><span class="no">{i + 1}</span>'
+                     f'<span class="nm">等待加入…</span></div>')
+    body = f"""    <div class="mg-wait">
+      <div class="mg-timer"><b>{int(seconds)}</b><small>秒后开始</small></div>
+      <div class="mg-players">{"".join(cells)}</div>
+    </div>
+    <div class="mg-note">群友回复 <b>1</b> 加入；房主回复 <b>2</b> 立即开始。<br>
+      本游戏会<b>私聊发词</b>，收不到请先加机器人为好友；<br>
+      需要 {int(min_players)}–{int(max_players)} 人，人数不足将自动取消。</div>"""
+    return _page_shell(
+        kind="谁是卧底",
+        icon_html=_svg("users", 15, "currentColor"),
+        page_ind="报名中",
+        title='<span class="hl">谁是卧底 · 报名</span>',
+        subtitle=f"房主 {escape(_clip(host_name or '玩家', 12))} 已加入"
+                 f'<span class="dot">·</span>已加入 {len(players)}/{int(max_players)}',
+        body=body,
+        foot=_foot([
+            '<div><span class="k">加入</span>回复 <b>1</b></div>',
+            '<div><span class="k">开始</span>房主回复 <b>2</b> 立即开始</div>',
+            '<div class="dim"><span class="k">退出</span>回复 <b>0</b>（房主=结束整局）</div>',
+            f'<div class="dim"><span class="k">超时</span>{int(timeout)} 秒后自动开始/取消</div>',
+        ]),
+    )
+
+
+def minigame_uc_round_html(*, round_no: int, rows: list | None = None,
+                           turn_name: str = "", seconds: int = 40,
+                           alive: int = 0, tie: bool = False,
+                           summary: bool = False) -> str:
+    """谁是卧底发言卡：本轮顺序 + 已说出的描述。
+
+    summary=True 时用于本轮结束后的「发言汇总」，不再高亮当前发言人。
+    """
+    rows = rows or []
+    steps, descs = [], []
+    for r in rows:
+        name = escape(_clip(r.get("name") or "玩家", 8))
+        cls = "uc-step"
+        if r.get("now") and not summary:
+            cls += " now"
+        elif (r.get("desc") or r.get("miss")) and not summary:
+            cls += " off"
+        steps.append(f'<span class="{cls}"><span class="no">{int(r.get("n", 0))}</span>'
+                     f'{name}</span>')
+        if r.get("desc") or r.get("miss") or summary:
+            tx = escape(r.get("desc") or "弃权") if r.get("desc") else (
+                "弃权" if r.get("miss") else "未发言")
+            rcls = "uc-desc-row" + (" miss" if r.get("miss") or not r.get("desc") else "")
+            if r.get("now") and not summary:
+                rcls += " now"
+            descs.append(f'<div class="{rcls}">'
+                         f'<span class="nm">{name}</span>'
+                         f'<span class="tx">{tx}</span></div>')
+    if not descs:
+        descs.append('<div class="uc-empty">还没人发言，轮到的人直接回复一句话即可。</div>')
+    note = ("平票加时：只有平票的玩家补一句描述。"
+            if tie else "每人一句话，不能直接说出自己的词，也不要重复别人的说法。")
+    if summary:
+        note = "本轮发言已收集完毕，稍后开始投票。"
+    body = f"""    <div class="uc-order">{"".join(steps)}</div>
+    <div class="uc-descs">{"".join(descs)}</div>
+    <div class="mg-note">{note}<br>
+      {"" if summary else f'轮到 <b>{escape(_clip(turn_name or "—", 10))}</b>，限时 {int(seconds)} 秒。'}</div>"""
+    title = ('<span class="hl">平票加时 · 再补一句</span>' if tie
+             else (f'<span class="hl">第 {int(round_no)} 轮发言汇总</span>' if summary
+                   else f'<span class="hl">第 {int(round_no)} 轮描述</span>'))
+    foot = ([
+        '<div><span class="k">下一步</span>开始投票，留意群里的投票卡</div>',
+        '<div class="dim"><span class="k">提示</span>票型只公布票数，不公开谁投了谁</div>',
+    ] if summary else [
+        f'<div><span class="k">发言</span>轮到的玩家直接回复一句话（≤{int(seconds)} 秒）</div>',
+        '<div class="dim"><span class="k">提醒</span>没轮到的群友正常聊天即可，不会被记录</div>',
+    ])
+    return _page_shell(
+        kind="谁是卧底",
+        icon_html=_svg("quote", 15, "currentColor"),
+        page_ind=("平票加时" if tie else (f"第 {int(round_no)} 轮" if not summary
+                                         else "发言汇总")),
+        title=title,
+        subtitle=f"存活 {int(alive)} 人" + ("<span class=\"dot\">·</span>卧底还藏在里面"
+                                            if alive else ""),
+        body=body,
+        foot=_foot(foot),
+    )
+
+
+def minigame_uc_vote_html(*, round_no: int, candidates: list | None = None,
+                          seconds: int = 30, alive: int = 0,
+                          tie: bool = False) -> str:
+    """谁是卧底投票卡：只放编号和名字，不泄露任何词。"""
+    candidates = candidates or []
+    cells = []
+    for i, p in enumerate(candidates, 1):
+        name = escape(_clip(p.get("name") or "玩家", 10))
+        cells.append(f'<div class="mg-player"><span class="no">{i}</span>'
+                     f'<span class="nm">{name}</span></div>')
+    body = f"""    <div class="mg-players">{"".join(cells)}</div>
+    <div class="mg-note">私聊机器人回复<b>编号</b>投票；回复「弃权」跳过。<br>
+      票数在截止后统一公布，<b>不会公开谁投了谁</b>。</div>"""
+    return _page_shell(
+        kind="谁是卧底",
+        icon_html=_svg("check", 15, "currentColor"),
+        page_ind=("平票重投" if tie else f"第 {int(round_no)} 轮投票"),
+        title=('<span class="hl">平票重投 · 选出一个人</span>' if tie
+               else f'<span class="hl">第 {int(round_no)} 轮投票</span>'),
+        subtitle=f"存活 {int(alive)} 人<span class=\"dot\">·</span>限时 {int(seconds)} 秒",
+        body=body,
+        foot=_foot([
+            '<div><span class="k">投票</span>私聊回复 <b>编号</b>，以最后一次为准</div>',
+            '<div class="dim"><span class="k">超时</span>未投票视为弃权</div>',
+        ]),
+    )
+
+
+def minigame_uc_tally_html(*, round_no: int, rows: list | None = None,
+                           eliminated: str = "", tie: bool = False,
+                           abstain: int = 0, alive: int = 0,
+                           note: str = "") -> str:
+    """谁是卧底票型卡：只公布票数，不公布投票人。"""
+    rows = rows or []
+    max_votes = max([int(r.get("votes", 0) or 0) for r in rows] + [1])
+    cells = []
+    for r in rows:
+        name = escape(_clip(r.get("name") or "玩家", 10))
+        votes = max(0, int(r.get("votes", 0) or 0))
+        state = r.get("state") or ""
+        cls = "uc-vote-row"
+        tag = ""
+        if state == "out":
+            cls += " out"
+            tag = '<span class="tag">出局</span>'
+        elif state == "tie":
+            cls += " tie"
+            tag = '<span class="tag">平票</span>'
+        width = max(2, int(round(votes * 100 / max_votes)))
+        cells.append(
+            f'<div class="{cls}"><span class="nm">{name}</span>'
+            f'<span class="bar"><i style="width:{width}%"></i></span>'
+            f'<b>{votes} 票</b>{tag}</div>')
+    if not rows:
+        cells.append('<div class="uc-empty">本轮没有有效票。</div>')
+    ab = (f'<div class="mg-note">弃权 <b>{int(abstain)}</b> 票</div>'
+          if abstain else "")
+    summary = note or (
+        "平票：稍后进入加时描述，然后重投一次。" if tie else
+        (f"{escape(_clip(eliminated, 10))} 票数最高，出局。" if eliminated else
+         "本轮无人出局。"))
+    body = f"""    <div class="uc-votes">{"".join(cells)}</div>
+    {ab}
+    <div class="mg-note">{escape(summary)}</div>"""
+    return _page_shell(
+        kind="谁是卧底",
+        icon_html=_svg("check", 15, "currentColor"),
+        page_ind=("平票" if tie else f"第 {int(round_no)} 轮票型"),
+        title=('<span class="hl">平票 · 进入加时</span>' if tie
+               else f'<span class="hl">第 {int(round_no)} 轮票型</span>'),
+        subtitle=f"存活 {int(alive)} 人",
+        body=body,
+        foot=_foot([
+            '<div class="dim"><span class="k">说明</span>只公布票数，不公开谁投了谁</div>',
+        ]),
+    )
+
+
+def minigame_uc_result_html(*, title: str, subtitle: str = "",
+                            civil_word: str = "", spy_word: str = "",
+                            rows: list | None = None,
+                            foot_lines: list | None = None,
+                            page_ind: str = "本局结算") -> str:
+    """谁是卧底结算卡：双方词 + 全员身份 + 积分。"""
+    rows = rows or []
+    if not rows:
+        rows = [{"n": "-", "title": "本局无人参与", "meta": ""}]
+    words = f"""    <div class="uc-words">
+      <div class="uc-word"><span>平民词</span><b>{escape(_clip(civil_word or "?", 12))}</b></div>
+      <div class="uc-word spy"><span>卧底词</span><b>{escape(_clip(spy_word or "?", 12))}</b></div>
+    </div>
+"""
+    body = words + '<ol class="rows">\n' + _rows(rows) + '\n    </ol>'
+    return _page_shell(
+        kind="谁是卧底",
+        icon_html=_svg("users", 15, "currentColor"),
+        page_ind=page_ind,
+        title=f'<span class="hl">{escape(_clip(title or "本局结束", 22))}</span>',
         subtitle=escape(subtitle or ""),
         body=body,
         foot=_foot(foot_lines or []),

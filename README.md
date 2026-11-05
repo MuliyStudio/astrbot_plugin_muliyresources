@@ -44,7 +44,7 @@
 | 🎞️ | **VIP 视频解析** | 爱奇艺 / 腾讯 / 优酷 / 芒果 VIP 链接自动解析成播放直链（发送前验证接口，失效自动换下一个） |
 | 🧠 | **LLM 自然语言** | 接入 LLM 后直接说「帮我找原神」「想看流浪地球」即可，无需记命令 |
 | 💰 | **签到与积分** | `/签到` 领取每日积分，并生成一张带 **Bing 每日壁纸 / Epic 喜加一 / 每日一言 / 资源推荐** 的签到卡片；搜索免费，拿到最终资源时按类型扣积分，积分跨群聊全局共享 |
-| 🎲 | **群聊小游戏** | `/小游戏` 打开暮黎游戏厅（HTML 大厅卡）：**猜数字**（最多 6 人，组队 30 秒/房主秒开，按加入顺序 @ 群友轮流猜；范围随人数自适应扩大（1 人 1-100，6 人 1-600），每次提示大了/小了，猜中直接获胜；无人加入自动进入单人猜数字）与 **封面猜猜**（单人游戏，选电影/剧集/动漫，整页 HTML 题目卡四选一，答错直接下一题，结算为今日排行榜：答对题数 → 用时）；群级会话、超时自动结算、结算卡片，积分奖励有每日上限 |
+| 🎲 | **群聊小游戏** | `/小游戏` 打开暮黎游戏厅（HTML 大厅卡）：**猜数字**（最多 6 人，组队 30 秒/房主秒开，按加入顺序 @ 群友轮流猜；范围随人数自适应扩大（1 人 1-100，6 人 1-600），每次提示大了/小了，猜中直接获胜；无人加入自动进入单人猜数字）、**封面猜猜**（单人游戏，选电影/剧集/动漫，整页 HTML 题目卡四选一，答错直接下一题，结算为今日排行榜：答对题数 → 用时）与 **谁是卧底**（4-6 人，私聊发词、轮流一句话描述、投票找出拿到不同词的人；暗卧底、平票加时、结算揭晓双方词与身份，需要机器人具备群聊私聊权限）；群级会话、超时自动结算、结算卡片，积分奖励有每日上限 |
 | 🤚 | **表情包娱乐** | `摸摸 @某人` / `给你一脚 @某人` / `给我按摩 @某人` 生成 GIF |
 | 🔐 | **入群审核（QQ）** | 新成员入群 @ 他并发送「20-100 加减法」**图形验证码**，限时答对才留下，答错达上限/超时自动移出群聊 |
 
@@ -52,36 +52,63 @@
 
 ## 🖼️ 效果预览
 
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg" width="45%" alt="短剧搜索">&nbsp;
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg" width="45%" alt="短剧日报">
-</p>
+> 真实运行截图，按主题两两分组。**点击缩略图可查看原图**。
 
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg" width="45%" alt="影视日报">&nbsp;
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/software_daily.jpg" width="45%" alt="软件日报">
-</p>
+<table width="100%">
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_drama.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/search_drama.jpg" width="100%" alt="短剧搜索"></a><br>
+      <sub><b>短剧搜索</b> · 多源聚合列表</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/drama_daily.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/drama_daily.jpg" width="100%" alt="短剧日报"></a><br>
+      <sub><b>短剧日报</b> · 杂志风排版</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/movie_daily.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/movie_daily.jpg" width="100%" alt="影视日报"></a><br>
+      <sub><b>影视日报</b> · 毛玻璃风格</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/software_daily.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/software_daily.jpg" width="100%" alt="软件日报"></a><br>
+      <sub><b>软件日报</b> · 夏日风</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/game_daily.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/game_daily.jpg" width="100%" alt="游戏日报"></a><br>
+      <sub><b>游戏日报</b> · 卡通风</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/checkin_card.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/checkin_card.jpg" width="100%" alt="每日签到卡片"></a><br>
+      <sub><b>签到卡片</b> · 壁纸 / 喜加一 / 每日一言</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_novel_card.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/search_novel_card.jpg" width="100%" alt="小说搜索列表"></a><br>
+      <sub><b>小说搜索</b> · 多源聚合列表</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_pan_card.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/search_pan_card.jpg" width="100%" alt="网盘资源列表"></a><br>
+      <sub><b>网盘资源</b> · 多线路列表</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_card.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/points_card.jpg" width="100%" alt="积分卡片"></a><br>
+      <sub><b>积分卡片</b> · 余额 / 签到 / 消耗</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_rank.jpg"><img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/thumbs/points_rank.jpg" width="100%" alt="积分排行"></a><br>
+      <sub><b>积分排行</b> · 今日榜</sub>
+    </td>
+  </tr>
+</table>
 
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/game_daily.jpg" width="45%" alt="游戏日报">
-</p>
-
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/checkin_card.jpg" width="45%" alt="每日签到卡片">&nbsp;
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_novel_card.jpg" width="45%" alt="小说搜索列表">
-</p>
-
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/search_pan_card.jpg" width="45%" alt="网盘资源列表">
-</p>
-
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_card.jpg" width="45%" alt="积分卡片">&nbsp;
-  <img src="https://cdn.jsdelivr.net/gh/MuliyStudio/astrbot_plugin_muliyresources@main/assets/screenshots/points_rank.jpg" width="45%" alt="积分排行">
-</p>
-
-> 以上均为**真实运行效果**（从左到右、上到下）：短剧搜索 → 网盘链接 · 短剧日报（杂志风）· 影视日报（毛玻璃）· 软件日报（夏日风）· 游戏日报（卡通风）· 签到卡片 · 小说搜索列表 · 网盘资源列表 · 积分卡片 · 积分排行。
-> 条目较多的搜索列表会自动排版成图片（带 logo、序号、页码与操作提示），回复数字选择、翻页指令不变。
+> 缩略图统一为 3:5，由 `tools/make_readme_gallery.py` 生成；长截图只展示顶部内容，点击可看完整原图。
+> 搜索列表条目多时会自动排版成图片（带 logo、序号、页码与操作提示），回复数字选择、翻页指令不变。
 
 ---
 
@@ -166,6 +193,10 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 
 > LLM 只是「翻译官」，搜索/详情/下载全部由插件工具执行，不会编造结果。
 
+网盘资源列表会按发布时间和网盘类型给出过期概率标签（🟢较新 / 🟡一般 / 🟠偏高 / 🔴极高）；选定网盘分类时会并发遍历检测该分类下全部链接（夸克/UC/阿里走官方分享接口，百度/天翼/123 按分享页状态判断），确认失效的直接过滤并记录，不再让你一条条点开试；选中后还会再校验一次，失效会推荐其他网盘。
+
+影视/游戏/软件/短剧/小说取到资源后可以选择新的对话，不会互相干扰。如果链接失效想换资源：**引用/回复机器人发的那条列表消息**，再回复序号，就会从那条列表继续（直接发序号不算，避免误触发）。断点按用户隔离，30 分钟无操作自动清理；同一资源换网盘/换集不会重复扣积分。
+
 ### 第 3 步：按需开启高级功能
 
 | 想用 | 需要配置 |
@@ -197,7 +228,7 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `/积分` `/我的积分` | 所有人 | 查看自己的积分、连续签到与获取资源消耗 |
 | `/积分排行` | 所有人 | 查看积分排行榜（前 10 名） |
 | `/积分管理 <用户ID> <数量>` | 管理员 | 增减用户积分（正加负扣）；`设置 <ID> <数量>` 直接设置，`查询 [ID]` 查询（省略 ID 查自己）；目标支持 `@某人`、`回复`（引用对象）或 `平台:用户ID` |
-| `/小游戏` `/小游戏 1` `/小游戏 2` | 所有人（群聊） | 打开游戏大厅；`/小游戏 1` 直接开猜数字并加入组队，`/小游戏 2` 直接开单人封面猜猜 |
+| `/小游戏` `/小游戏 1` `/小游戏 2` `/小游戏 3` | 所有人（群聊） | 打开游戏大厅；`/小游戏 1` 直接开猜数字并加入组队，`/小游戏 2` 直接开单人封面猜猜，`/小游戏 3` 直接开谁是卧底报名 |
 | `/结束游戏` | 所有人（群聊） | 提前结束本群进行中的小游戏 |
 | `/movie_status` | 所有人 | 检查影视站可达性 |
 | `/入群验证 状态` | 管理员 | 查看入群审核配置与在验证人数 |
@@ -247,6 +278,9 @@ git clone https://github.com/MuliyStudio/astrbot_plugin_muliyresources.git
 | `muliy_cookie` | `""` | **片库主站（备用源）Cookie**（`app_auth=...;PHPSESSID=...`，用 `;` 隔开）。与账号密码二选一，两者都填时 Cookie 优先。⚠️ 勿填 `browser_verified`/`browser_pow`（插件自动求解 PoW） |
 | `muliy_release_url` | `""` | 片库系发布页（默认挂了.com，留空即可） |
 | `muliy_cache_ttl` | `3600` | 片库主站登录态缓存秒数 |
+| `pan_expiry_hint` | `true` | 网盘资源过期概率标签：按发布时间 / 网盘类型 / 历史失效反馈估算，显示 🟢较新 · 🟡一般 · 🟠偏高 · 🔴极高，高风险置底 |
+| `pan_link_check` | `true` | 选中网盘时真实校验分享页：确认失效会自动提示并推荐其他资源，同时记录该链接供后续置底 |
+| `pan_link_scan` | `true` | 选定网盘分类时遍历检测该分类全部链接（最多 60 个、8 并发），自动过滤确认失效的资源并记录；结果缓存 10 分钟 |
 | `movie_report_*` / `movie_group_ids` / `movie_sections` | — | 影视日报开关/定时/群/区块（群号留空 = 全部群；mv电影·tv剧集·ac动漫；日报 pdy0 优先、片库备用） |
 
 ### 🎵 网易云（music）

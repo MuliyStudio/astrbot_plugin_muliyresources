@@ -1228,6 +1228,7 @@ def format_pan_list(panlist: list, page: int = 0, page_size: int = 12,
         head += f"，第 {page+1}/{pt} 页"
     head += "）："
     lines = [head, "=" * 36, ""]
+    has_health = False
     for i, p in enumerate(show, 1):
         icon = MULIY_PAN_ICONS.get(p.get("type", ""), "💾")
         name = p.get("name", "")
@@ -1237,8 +1238,15 @@ def format_pan_list(panlist: list, page: int = 0, page_size: int = 12,
         tail = ""
         if usr or tm:
             tail = f"  ({usr}·{tm})" if usr and tm else (f"  ({usr})" if usr else f"  ({tm})")
-        lines.append(f"{emoji_index(i, ed - st)} {icon} {name_trim}{tail}")
+        h = p.get("_health") if isinstance(p.get("_health"), dict) else None
+        badge = ""
+        if h:
+            has_health = True
+            badge = f"  {h.get('emoji', '')}{h.get('label', '')}"
+        lines.append(f"{emoji_index(i, ed - st)} {icon} {name_trim}{badge}{tail}")
     lines.append("")
+    if has_health:
+        lines.append("🟢较新 · 🟡一般 · 🟠偏高 · 🔴极高（按发布时间估算，高风险已置底）")
     if pt > 1:
         nav = []
         if st > 0:
@@ -1246,7 +1254,7 @@ def format_pan_list(panlist: list, page: int = 0, page_size: int = 12,
         if ed < t:
             nav.append("「下一页」")
         lines.append("💡 翻页指令： " + " ｜ ".join(nav))
-    lines.append(f"💬 请输入序号（1-{ed-st}）选择网盘；回复 0 取消。")
+    lines.append(f"💬 请输入序号（1-{ed-st}）选择网盘；链接失效可引用本条消息回复其他序号换资源；回复 0 取消。")
     lines.append("⏱️ 120秒无操作自动取消。")
     return "\n".join(lines)
 

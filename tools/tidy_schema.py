@@ -24,6 +24,7 @@ ITEM_ORDER = {
              "game_schedule_hour", "game_schedule_minute", "game_group_ids"],
     "software": ["schedule_hour", "schedule_minute", "group_ids"],
     "movie": ["movie_source", "muliy_release_url", "muliy_cache_ttl",
+              "pan_expiry_hint", "pan_link_check", "pan_link_scan",
               "muliy_username", "muliy_password", "muliy_cookie",
               "movie_report_enabled", "movie_report_max", "movie_sections",
               "movie_schedule_hour", "movie_schedule_minute", "movie_group_ids"],

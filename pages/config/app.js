@@ -19,6 +19,7 @@ const state = {
   dirty: new Set(),
   active: "overview",
   query: "",
+  collapsed: new Set(),
   ctx: {},
 };
 
@@ -747,15 +748,92 @@ function renderGroup(group) {
     )
   );
 
-  fragment.append(
-    h(
-      "section",
-      { class: "panel" },
-      h("div", { class: "fields-grid" }, ...fields.map((f) => renderField(f, group)))
-    )
-  );
+  const sections = Array.isArray(group.sections) ? group.sections : [];
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  const grouped = new Set();
+  sections.forEach((s) => (s.keys || []).forEach((k) => grouped.add(k)));
+  const loose = fields.filter((f) => !grouped.has(f.key));
+
+  if (loose.length) {
+    const grid = h(
+      "div",
+      { class: "fields-grid" },
+      ...loose.map((f) => renderField(f, group))
+    );
+    fragment.append(
+      sections.length
+        ? h(
+            "div",
+            { class: "global-fields" },
+            h(
+              "div",
+              { class: "global-fields-head" },
+              h("span", { html: icon("settings", 14) }),
+              h("span", { text: "全局设置" })
+            ),
+            grid
+          )
+        : h("section", { class: "panel" }, grid)
+    );
+  }
+
+  sections.forEach((section) => {
+    const secFields = (section.keys || [])
+      .map((k) => byKey.get(k))
+      .filter(Boolean);
+    if (secFields.length) {
+      fragment.append(renderSectionBlock(section, secFields, group));
+    }
+  });
 
   return fragment;
+}
+
+function renderSectionBlock(section, fields, group) {
+  const id = `sec_${group.key}_${section.key}`;
+  const collapseKey = `${group.key}:${section.key}`;
+  const collapsed = state.collapsed.has(collapseKey);
+
+  const body = h(
+    "div",
+    { class: "section-block-body", id, hidden: collapsed },
+    h("div", { class: "fields-grid" }, ...fields.map((f) => renderField(f, group)))
+  );
+
+  const head = h(
+    "button",
+    {
+      class: "section-block-head",
+      type: "button",
+      "aria-expanded": collapsed ? "false" : "true",
+      "aria-controls": id,
+      onClick: () => {
+        const willOpen = body.hidden;
+        body.hidden = !willOpen;
+        head.setAttribute("aria-expanded", willOpen ? "true" : "false");
+        if (willOpen) state.collapsed.delete(collapseKey);
+        else state.collapsed.add(collapseKey);
+        block.classList.toggle("collapsed", !willOpen);
+      },
+    },
+    h("span", { class: "sec-icon", html: icon(section.icon || "apps", 16) }),
+    h(
+      "span",
+      { class: "sec-main" },
+      h("strong", { text: section.title }),
+      section.hint ? h("small", { text: section.hint }) : null
+    ),
+    h("span", { class: "sec-count", text: `${fields.length} 项` }),
+    h("span", { class: "sec-chevron", html: icon("chevron", 16) })
+  );
+
+  const block = h(
+    "section",
+    { class: `section-block${collapsed ? " collapsed" : ""}` },
+    head,
+    body
+  );
+  return block;
 }
 
 function renderField(field, group, options = {}) {

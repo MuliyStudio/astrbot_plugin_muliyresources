@@ -1065,6 +1065,135 @@ img {
   padding: 16px 18px;
 }
 
+/* ---------- 组内二级分类 ---------- */
+
+.global-fields {
+  margin-bottom: 4px;
+}
+
+.global-fields-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  margin-bottom: 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.global-fields .fields-grid {
+  padding: 4px 0 14px;
+}
+
+.section-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.section-block:last-child {
+  margin-bottom: 0;
+}
+
+.section-block-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 18px;
+  border: 0;
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s;
+}
+
+.section-block-head:hover {
+  background: var(--surface-2);
+}
+
+.section-block-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.sec-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.sec-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sec-main strong {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.sec-main small {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-count {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.sec-chevron {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  transition: transform 0.16s;
+}
+
+.section-block.collapsed .sec-chevron {
+  transform: rotate(-90deg);
+}
+
+.section-block-body .fields-grid {
+  padding: 16px 18px;
+}
+
+@media (max-width: 720px) {
+  .fields-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sec-main small {
+    white-space: normal;
+  }
+}
+
 .field {
   position: relative;
   min-width: 0;

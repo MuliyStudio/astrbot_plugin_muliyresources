@@ -402,7 +402,7 @@ class MiniGameStore:
         self.path = path
         self._tz_getter = tz_getter
         self._lock = threading.RLock()
-        self._data = {"version": 1, "users": {}, "cover": {}}
+        self._data = {"version": 1, "users": {}, "cover": {}, "uc": {}}
         self.load()
 
     def _now(self) -> datetime:
@@ -431,6 +431,8 @@ class MiniGameStore:
                     self._data = data
                     if not isinstance(self._data.get("cover"), dict):
                         self._data["cover"] = {}
+                    if not isinstance(self._data.get("uc"), dict):
+                        self._data["uc"] = {}
             except FileNotFoundError:
                 return
             except Exception:
@@ -603,3 +605,57 @@ class MiniGameStore:
     def cover_count(self, day: str = "") -> int:
         with self._lock:
             return len(self._cover_rows(day))
+
+    # ==================== 谁是卧底战绩 ====================
+
+    def uc_record(self, key: str, name: str, role: str, win: bool,
+                  rounds: int = 0, desc_count: int = 0,
+                  votes_received: int = 0) -> dict:
+        """记一局卧底：身份、胜负、参与轮数、被投次数。"""
+        with self._lock:
+            uc = self._data.setdefault("uc", {})
+            user = uc.get(key)
+            if not isinstance(user, dict):
+                user = {
+                    "name": name or "", "plays": 0, "wins": 0,
+                    "spy_plays": 0, "spy_wins": 0,
+                    "rounds": 0, "descs": 0, "votes_received": 0,
+                    "days": {},
+                }
+                uc[key] = user
+            user["name"] = name or user.get("name") or ""
+            user["plays"] = max(0, int(user.get("plays", 0) or 0)) + 1
+            if win:
+                user["wins"] = max(0, int(user.get("wins", 0) or 0)) + 1
+            if role == "spy":
+                user["spy_plays"] = max(0, int(user.get("spy_plays", 0) or 0)) + 1
+                if win:
+                    user["spy_wins"] = max(0, int(user.get("spy_wins", 0) or 0)) + 1
+            user["rounds"] = max(0, int(user.get("rounds", 0) or 0)) + max(0, int(rounds))
+            user["descs"] = max(0, int(user.get("descs", 0) or 0)) + max(0, int(desc_count))
+            user["votes_received"] = (max(0, int(user.get("votes_received", 0) or 0))
+                                      + max(0, int(votes_received)))
+            days = user.setdefault("days", {})
+            if not isinstance(days, dict):
+                days = {}
+                user["days"] = days
+            today = self.today()
+            cell = days.get(today)
+            if not isinstance(cell, dict):
+                cell = {"plays": 0, "wins": 0}
+                days[today] = cell
+            cell["plays"] = max(0, int(cell.get("plays", 0) or 0)) + 1
+            if win:
+                cell["wins"] = max(0, int(cell.get("wins", 0) or 0)) + 1
+            keep = {(self._now().date() - timedelta(days=i)).isoformat()
+                    for i in range(14)}
+            for d in list(days):
+                if d not in keep:
+                    days.pop(d, None)
+            self._save()
+            return dict(user)
+
+    def uc_stats(self, key: str) -> dict:
+        with self._lock:
+            user = (self._data.get("uc") or {}).get(key)
+            return dict(user) if isinstance(user, dict) else {}
